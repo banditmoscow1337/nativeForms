@@ -246,7 +246,8 @@ func (w *Window) paint(hwnd,dc uintptr) error {
 		w.framebuffer=image.NewRGBA(image.Rect(0,0,width,height))
 		w.dib=make([]byte,width*height*4)
 	}
-	if resized || w.manager.NeedsFrame() {
+	rendered:=resized || w.manager.NeedsFrame()
+	if rendered {
 		logicalWidth:=max(1,int((int64(width)*96+int64(w.dpi)/2)/int64(w.dpi)))
 		logicalHeight:=max(1,int((int64(height)*96+int64(w.dpi)/2)/int64(w.dpi)))
 		now:=time.Now()
@@ -270,11 +271,13 @@ func (w *Window) paint(hwnd,dc uintptr) error {
 		uintptr(width),uintptr(height),pointer(&w.dib[0]),pointer(&info),dibRGBColors,srccopy)
 	keep(w.dib,&info)
 	if int32(result)==-1 { return fmt.Errorf("windows: StretchDIBits failed") }
-	call(win.killTimer,hwnd,1)
-	if delay:=w.manager.NextFrameAfter();delay>0 {
-		ms:=uint64((delay+time.Millisecond-1)/time.Millisecond)
-		if ms>0xffffffff { ms=0xffffffff }
-		call(win.setTimer,hwnd,1,uintptr(max(uint64(1),ms)),0)
+	if rendered {
+		call(win.killTimer,hwnd,1)
+		if delay:=w.manager.NextFrameAfter();delay>0 {
+			ms:=uint64((delay+time.Millisecond-1)/time.Millisecond)
+			if ms>0xffffffff { ms=0xffffffff }
+			call(win.setTimer,hwnd,1,uintptr(max(uint64(1),ms)),0)
+		}
 	}
 	return nil
 }
