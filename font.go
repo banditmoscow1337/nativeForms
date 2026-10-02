@@ -1,16 +1,15 @@
 package nativeforms
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
+	"os"
+	"runtime"
 	"strings"
 	"sync"
-
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/gofont/goregular"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/math/fixed"
+	"unicode"
 )
 
 const (
@@ -27,12 +26,60 @@ type glyphInfo struct {
 var scalableGlyphs map[rune]glyphInfo
 var atlasOnce sync.Once
 var atlasImage image.Image
+var fontMu sync.Mutex
+var selectedFace *TrueTypeFace
+var atlasReady bool
+
+// SetFontData installs a TrueType font before the first measurement or frame.
+// The bytes are copied so callers can release their buffer immediately.
+func SetFontData(data []byte) error {
+	face, err := ParseTrueType(data)
+	if err != nil { return err }
+	fontMu.Lock()
+	defer fontMu.Unlock()
+	if atlasReady { return fmt.Errorf("font atlas has already been initialized") }
+	face.data = append([]byte(nil), data...)
+	// Table slices must reference the copied bytes, not the caller's buffer.
+	face, err = ParseTrueType(face.data)
+	if err != nil { return err }
+	selectedFace = face
+	return nil
+}
 
 // FontAtlas is shared by the software and Vulkan renderers. It also
 // initializes the glyph metrics used by MeasureText.
 func FontAtlas() image.Image {
-	atlasOnce.Do(func() { atlasImage = buildFontAtlas() })
+	atlasOnce.Do(func() {
+		fontMu.Lock()
+		face := selectedFace
+		if face == nil { face = defaultSystemFace() }
+		atlasImage = buildFontAtlas(face)
+		atlasReady = true
+		fontMu.Unlock()
+	})
 	return atlasImage
+}
+
+func defaultSystemFace() *TrueTypeFace {
+	var paths []string
+	switch runtime.GOOS {
+	case "windows":
+		windir := os.Getenv("WINDIR")
+		if windir == "" { windir = "C:\\Windows" }
+		paths = []string{windir+"\\Fonts\\segoeui.ttf", windir+"\\Fonts\\arial.ttf"}
+	case "darwin":
+		paths = []string{"/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"}
+	default:
+		paths = []string{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"}
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil { continue }
+		face, err := ParseTrueType(data)
+		if err == nil { return face }
+	}
+	return nil
 }
 
 var glyphRows = map[byte][7]byte{
@@ -106,18 +153,9 @@ var glyphRows = map[byte][7]byte{
 	'~':  {0x00, 0x00, 0x09, 0x16},
 }
 
-func buildFontAtlas() image.Image {
+func buildFontAtlas(face *TrueTypeFace) image.Image {
 	atlas := image.NewNRGBA(image.Rect(0, 0, fontAtlasSize, fontAtlasSize))
 	atlas.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
-	parsed, err := opentype.Parse(goregular.TTF)
-	if err != nil {
-		return atlas
-	}
-	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: fontReferenceSize, DPI: 72, Hinting: font.HintingFull})
-	if err != nil {
-		return atlas
-	}
-	defer face.Close()
 
 	characters := make([]rune, 0, 800)
 	appendRange := func(first, last rune) {
@@ -131,21 +169,39 @@ func buildFontAtlas() image.Image {
 	characters = append(characters, '–', '—', '‘', '’', '“', '”', '…', '№', '€', '₽')
 	cellsPerRow := fontAtlasSize / fontCellSize
 	scalableGlyphs = make(map[rune]glyphInfo, len(characters))
-	drawer := font.Drawer{Dst: atlas, Src: image.NewUniform(color.White), Face: face}
 	for index, character := range characters {
 		if index >= cellsPerRow*cellsPerRow {
 			break
 		}
 		x, y := index%cellsPerRow, index/cellsPerRow
-		drawer.Dot = fixed.P(x*fontCellSize+5, y*fontCellSize+fontCellSize-10)
-		advance := float32(drawer.MeasureString(string(character))) / 64 / fontReferenceSize
-		if advance <= 0 {
-			advance = 0.6
+		advance := float32(0.75)
+		if face != nil {
+			id := face.glyphIndex(character)
+			if id == 0 && character != ' ' { continue }
+			advance = face.advance(id)
+			if err := face.drawGlyph(atlas, id, x*fontCellSize, y*fontCellSize); err != nil { continue }
+		} else {
+			key := unicode.ToUpper(character)
+			if key > 127 && character != ' ' { continue }
+			drawBitmapGlyph(atlas, glyphRows[byte(key)], x*fontCellSize, y*fontCellSize)
 		}
-		drawer.DrawString(string(character))
 		scalableGlyphs[character] = glyphInfo{cellX: x, cellY: y, advance: advance}
 	}
 	return atlas
+}
+
+func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
+	for row, bits := range rows {
+		for col:=0; col<5; col++ {
+			if bits&(1<<uint(4-col))==0 { continue }
+			for yy:=0; yy<6; yy++ {
+				for xx:=0; xx<6; xx++ {
+					atlas.SetNRGBA(x+10+col*6+xx,y+10+row*6+yy,
+						color.NRGBA{R:255,G:255,B:255,A:255})
+				}
+			}
+		}
+	}
 }
 
 func glyphForRune(character rune) glyphInfo {

@@ -1,8 +1,8 @@
 # Desktop v1: scope and architecture
 
-Status: design target. Core/backend separation and offscreen CPU painting are
-implemented on the migration branch. The desktop window and the other v1
-features below remain future work.
+Status: core/backend separation, offscreen CPU painting, first-party TrueType
+rendering, and the initial Windows software window are implemented on the
+migration branches. The other v1 features below remain future work.
 
 ## Goal
 
@@ -30,8 +30,7 @@ renderer. The next milestone presents the software frame in a Windows window.
 - Calls into OS-provided APIs and frameworks are permitted through first-party
   bindings. On Linux, direct X11/Wayland and keyboard protocol work is a separate
   platform milestone if external native client libraries are also disallowed.
-- The repository still depends on `miniVK` and `golang.org/x/image`.
-  Removing the font dependency remains a later milestone.
+- The module retains the author's `miniVK`; `golang.org/x/image` is removed.
 
 ## Desktop v1 scope
 
@@ -59,10 +58,10 @@ all OpenType outline formats and features, platform accessibility adapters,
 system file dialogs, and broad drag-and-drop support are later milestones.
 APIs should leave room for these features without promising them in desktop v1.
 
-The first Windows release can use OS text services for shaping and font
-rasterization through direct bindings. A first-party TrueType engine and
-cross-platform fallback/shaping remain separate work. A text capability should
-be documented according to the backend that actually implements it.
+The initial text implementation reads quadratic TrueType outlines in Go,
+using installed system fonts or caller-supplied bytes. OS text shaping and
+cross-platform fallback remain separate work. Text capabilities should be
+documented according to the backend that actually implements them.
 
 ## Ownership boundaries
 
@@ -103,9 +102,8 @@ typing and selection keys before optional game-navigation shortcuts. Pointer
 capture and focused targets are cleared when their components are removed,
 hidden, disabled, or their window loses focus.
 
-One UI owner serializes tree changes and callbacks. `App.Post(func())` is the
-proposed cross-goroutine entry point; its exact public name is decided during
-implementation. Native window work runs on the OS-required thread. Renderer
+One UI owner serializes tree changes and callbacks. `Manager.Post(func())` is
+the cross-goroutine entry point. Native window work runs on the OS-required thread. Renderer
 resources have an explicit creation/close lifetime. Library initialization
 returns errors to callers instead of terminating the process.
 
@@ -126,9 +124,9 @@ initially; dirty-region rendering is an optimization after profiling.
 - Vulkan initialization and destruction live in the Vulkan backend. Shader
   file paths must be supplied by the game host until embedded resources exist.
   Creating a UI tree does not initialize a graphics device.
-- Remove `golang.org/x/image` only after the replacement text path can
-  measure and draw the supported first-release scripts. Do not silently
-  downgrade Cyrillic support during the migration.
+- The first-party font path measures and draws Latin and Cyrillic when the
+  installed or caller-supplied TrueType font includes those glyphs. The
+  embedded emergency bitmap fallback is ASCII only.
 - Overflow of a drawing buffer must grow, batch, or return a visible error;
   dropping widgets or text silently is not permitted.
 - Each backend renders the same command stream, so behavior and clipping can
@@ -151,5 +149,5 @@ initially; dirty-region rendering is an optimization after profiling.
    supported Latin and Cyrillic text has consistent measurement and painting.
 
 Later platform adapters and the broader text/accessibility milestones should
-follow their own implementation plans. Verification belongs to each later
-implementation step; this design-only change does not run builds or tests.
+follow their own implementation plans. Builds and tests for stages 7-8 are
+left to the project owner as requested.
