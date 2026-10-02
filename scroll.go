@@ -11,12 +11,19 @@ func NewScrollPanel(content Component) *ScrollPanel {
 	panel := &ScrollPanel{Content: content}
 	panel.owner = panel
 	panel.clip = true
-	panel.Add(content)
+	if content != nil { panel.Add(content) }
 	return panel
+}
+
+func (panel *ScrollPanel) Measure(constraints Constraints) Vec2 {
+	if panel.Content == nil { return panel.State.Measure(constraints) }
+	content := panel.Content.Measure(Constraints{Max: Vec2{X: constraints.Max.X}})
+	return measureWithState(&panel.State, content, constraints)
 }
 
 func (panel *ScrollPanel) Arrange(rect Rect) {
 	panel.rect = rect
+	if panel.Content == nil { return }
 	size := panel.Content.Measure(Constraints{Max: Vec2{X: rect.W}})
 	panel.height = size.Y
 	panel.Offset = clampFloat32(panel.Offset, 0, maxFloat32(0, panel.height-rect.H))
@@ -24,14 +31,19 @@ func (panel *ScrollPanel) Arrange(rect Rect) {
 }
 
 func (panel *ScrollPanel) Scroll(pixels float32) {
+	before := panel.Offset
 	panel.Offset = clampFloat32(panel.Offset+pixels, 0, maxFloat32(0, panel.height-panel.rect.H))
-	panel.Arrange(panel.rect)
+	if panel.Offset != before {
+		panel.Arrange(panel.rect)
+		panel.invalidatePaint()
+	}
 }
 
 func (panel *ScrollPanel) Handle(event Event) bool {
 	if event.Type == PointerScroll {
+		before := panel.Offset
 		panel.Scroll(-event.Scroll.Y * 40)
-		return true
+		if panel.Offset != before { return true }
 	}
 	return panel.State.Handle(event)
 }

@@ -5,15 +5,28 @@ import (
 	"strings"
 )
 
-type Vertex struct {
-	X, Y       float32
-	U, V       float32
-	R, G, B, A float32
+type CommandKind uint8
+
+const (
+	CommandQuad CommandKind = iota
+	CommandLine
+)
+
+// DrawCommand is an ordered paint operation in logical coordinates.
+// Quad UVs address the shared font atlas; its white texel draws solid shapes.
+type DrawCommand struct {
+	Kind  CommandKind
+	Rect  Rect
+	UV    Rect
+	Clip  Rect
+	Tint  Color
+	From  Vec2
+	To    Vec2
+	Width float32
 }
 
 type Canvas struct {
-	vertices *[]Vertex
-	limit    int
+	commands *[]DrawCommand
 	clips    []Rect
 	theme    *Theme
 }
@@ -35,7 +48,7 @@ func (canvas *Canvas) PopClip() {
 
 func (canvas *Canvas) Rect(rect Rect, tint Color) {
 	const uv = 0.5 / fontAtlasSize
-	canvas.quad(rect, Rect{X: uv, Y: uv, W: 0, H: 0}, tint)
+	canvas.quad(rect, Rect{X: uv, Y: uv}, tint)
 }
 
 func (canvas *Canvas) Border(rect Rect, width float32, tint Color) {
@@ -53,30 +66,19 @@ func (canvas *Canvas) Line(from, to Vec2, width float32, tint Color) {
 	if width <= 0 || tint.A <= 0 || len(canvas.clips) == 0 {
 		return
 	}
+	clip := canvas.clips[len(canvas.clips)-1]
+	if clip.Empty() {
+		return
+	}
+	// Preserve strokes whose centerline lies just outside the clip.
+	expanded := Rect{X: clip.X - width*0.5, Y: clip.Y - width*0.5, W: clip.W + width, H: clip.H + width}
 	var visible bool
-	from, to, visible = clipLine(from, to, canvas.clips[len(canvas.clips)-1])
-	if !visible {
-		return
+	from, to, visible = clipLine(from, to, expanded)
+	if visible {
+		*canvas.commands = append(*canvas.commands, DrawCommand{
+			Kind: CommandLine, From: from, To: to, Width: width, Clip: clip, Tint: tint,
+		})
 	}
-	dx, dy := to.X-from.X, to.Y-from.Y
-	length := float32(math.Sqrt(float64(dx*dx + dy*dy)))
-	if length < 0.001 {
-		canvas.Rect(Rect{X: from.X - width*0.5, Y: from.Y - width*0.5, W: width, H: width}, tint)
-		return
-	}
-	if len(*canvas.vertices)+6 > canvas.limit {
-		return
-	}
-	nx, ny := -dy/length*width*0.5, dx/length*width*0.5
-	const uv = 0.5 / fontAtlasSize
-	vertex := func(x, y float32) Vertex {
-		return Vertex{X: x, Y: y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
-	}
-	a := vertex(from.X+nx, from.Y+ny)
-	b := vertex(to.X+nx, to.Y+ny)
-	c := vertex(from.X-nx, from.Y-ny)
-	d := vertex(to.X-nx, to.Y-ny)
-	*canvas.vertices = append(*canvas.vertices, a, b, c, c, b, d)
 }
 
 func clipLine(from, to Vec2, bounds Rect) (Vec2, Vec2, bool) {
@@ -111,9 +113,8 @@ func clipLine(from, to Vec2, bounds Rect) (Vec2, Vec2, bool) {
 		!clip(dy, bounds.Y+bounds.H-from.Y) {
 		return Vec2{}, Vec2{}, false
 	}
-	clippedFrom := Vec2{X: from.X + dx*t0, Y: from.Y + dy*t0}
-	clippedTo := Vec2{X: from.X + dx*t1, Y: from.Y + dy*t1}
-	return clippedFrom, clippedTo, true
+	return Vec2{X: from.X + dx*t0, Y: from.Y + dy*t0},
+		Vec2{X: from.X + dx*t1, Y: from.Y + dy*t1}, true
 }
 
 func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAlign, tint Color) {
@@ -147,8 +148,7 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 				cell := float32(fontCellSize) / fontAtlasSize
 				canvas.quad(
 					Rect{X: x, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
-					Rect{X: cellX, Y: cellY, W: cell, H: cell},
-					tint,
+					Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
 				)
 			}
 			x += glyph.advance * size
@@ -165,34 +165,111 @@ func (canvas *Canvas) quad(rect, uv Rect, tint Color) {
 	if rect.Empty() || tint.A <= 0 || len(canvas.clips) == 0 {
 		return
 	}
-	clipped := intersect(rect, canvas.clips[len(canvas.clips)-1])
-	if clipped.Empty() {
-		return
+	clip := canvas.clips[len(canvas.clips)-1]
+	if !intersect(rect, clip).Empty() {
+		*canvas.commands = append(*canvas.commands, DrawCommand{
+			Kind: CommandQuad, Rect: rect, UV: uv, Clip: clip, Tint: tint,
+		})
 	}
-	vertices := *canvas.vertices
-	if len(vertices)+6 > canvas.limit {
-		return
-	}
+}
 
-	u0, v0 := uv.X, uv.Y
-	u1, v1 := uv.X+uv.W, uv.Y+uv.H
-	if uv.W != 0 {
-		u0 += uv.W * (clipped.X - rect.X) / rect.W
-		u1 -= uv.W * ((rect.X + rect.W) - (clipped.X + clipped.W)) / rect.W
-	}
-	if uv.H != 0 {
-		v0 += uv.H * (clipped.Y - rect.Y) / rect.H
-		v1 -= uv.H * ((rect.Y + rect.H) - (clipped.Y + clipped.H)) / rect.H
-	}
+// Vertex is the format consumed by the optional Vulkan backend.
+type Vertex struct {
+	X, Y       float32
+	U, V       float32
+	R, G, B, A float32
+}
 
-	vertex := func(x, y, u, v float32) Vertex {
-		return Vertex{X: x, Y: y, U: u, V: v, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
+// Tessellate returns all vertices in paint order without silently truncating.
+func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
+	dst = dst[:0]
+	for _, c := range commands {
+		if c.Kind == CommandQuad {
+			r := intersect(c.Rect, c.Clip)
+			if r.Empty() {
+				continue
+			}
+			u0, v0 := c.UV.X, c.UV.Y
+			u1, v1 := c.UV.X+c.UV.W, c.UV.Y+c.UV.H
+			if c.UV.W != 0 {
+				u0 += c.UV.W * (r.X-c.Rect.X) / c.Rect.W
+				u1 -= c.UV.W * (c.Rect.X+c.Rect.W-r.X-r.W) / c.Rect.W
+			}
+			if c.UV.H != 0 {
+				v0 += c.UV.H * (r.Y-c.Rect.Y) / c.Rect.H
+				v1 -= c.UV.H * (c.Rect.Y+c.Rect.H-r.Y-r.H) / c.Rect.H
+			}
+			v := func(x, y, u, vv float32) Vertex {
+				return Vertex{X: x, Y: y, U: u, V: vv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
+			}
+			x0, y0, x1, y1 := r.X, r.Y, r.X+r.W, r.Y+r.H
+			dst = append(dst, v(x0, y0, u0, v0), v(x1, y0, u1, v0), v(x0, y1, u0, v1),
+				v(x0, y1, u0, v1), v(x1, y0, u1, v0), v(x1, y1, u1, v1))
+		} else if c.Kind == CommandLine {
+			dx, dy := c.To.X-c.From.X, c.To.Y-c.From.Y
+			length := float32(math.Sqrt(float64(dx*dx + dy*dy)))
+			uv := float32(0.5 / fontAtlasSize)
+			v := func(x, y float32) Vertex {
+				return Vertex{X: x, Y: y, U: uv, V: uv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
+			}
+			if length < 0.001 {
+				r := intersect(Rect{X: c.From.X-c.Width*0.5, Y: c.From.Y-c.Width*0.5, W: c.Width, H: c.Width}, c.Clip)
+				if !r.Empty() {
+					dst = append(dst, v(r.X, r.Y), v(r.X+r.W, r.Y), v(r.X, r.Y+r.H),
+						v(r.X, r.Y+r.H), v(r.X+r.W, r.Y), v(r.X+r.W, r.Y+r.H))
+				}
+				continue
+			}
+			nx, ny := -dy/length*c.Width*0.5, dx/length*c.Width*0.5
+			polygon := []Vec2{
+				{X: c.From.X+nx, Y: c.From.Y+ny},
+				{X: c.To.X+nx, Y: c.To.Y+ny},
+				{X: c.To.X-nx, Y: c.To.Y-ny},
+				{X: c.From.X-nx, Y: c.From.Y-ny},
+			}
+			polygon = clipPolygon(polygon, c.Clip)
+			for i := 1; i+1 < len(polygon); i++ {
+				dst = append(dst, v(polygon[0].X, polygon[0].Y),
+					v(polygon[i].X, polygon[i].Y),
+					v(polygon[i+1].X, polygon[i+1].Y))
+			}
+		}
 	}
-	x0, y0 := clipped.X, clipped.Y
-	x1, y1 := clipped.X+clipped.W, clipped.Y+clipped.H
-	vertices = append(vertices,
-		vertex(x0, y0, u0, v0), vertex(x1, y0, u1, v0), vertex(x0, y1, u0, v1),
-		vertex(x0, y1, u0, v1), vertex(x1, y0, u1, v0), vertex(x1, y1, u1, v1),
-	)
-	*canvas.vertices = vertices
+	return dst
+}
+
+func clipPolygon(points []Vec2, r Rect) []Vec2 {
+	if r.Empty() { return nil }
+	type edge struct {
+		inside func(Vec2) bool
+		at     func(Vec2, Vec2) Vec2
+	}
+	edges := []edge{
+		{func(p Vec2) bool { return p.X >= r.X }, func(a, b Vec2) Vec2 {
+			t := (r.X-a.X)/(b.X-a.X); return Vec2{X: r.X, Y: a.Y+t*(b.Y-a.Y)}
+		}},
+		{func(p Vec2) bool { return p.X <= r.X+r.W }, func(a, b Vec2) Vec2 {
+			x := r.X+r.W; t := (x-a.X)/(b.X-a.X); return Vec2{X: x, Y: a.Y+t*(b.Y-a.Y)}
+		}},
+		{func(p Vec2) bool { return p.Y >= r.Y }, func(a, b Vec2) Vec2 {
+			t := (r.Y-a.Y)/(b.Y-a.Y); return Vec2{X: a.X+t*(b.X-a.X), Y: r.Y}
+		}},
+		{func(p Vec2) bool { return p.Y <= r.Y+r.H }, func(a, b Vec2) Vec2 {
+			y := r.Y+r.H; t := (y-a.Y)/(b.Y-a.Y); return Vec2{X: a.X+t*(b.X-a.X), Y: y}
+		}},
+	}
+	for _, e := range edges {
+		if len(points) == 0 { break }
+		out := make([]Vec2, 0, len(points)+2)
+		previous := points[len(points)-1]
+		wasInside := e.inside(previous)
+		for _, current := range points {
+			isInside := e.inside(current)
+			if isInside != wasInside { out = append(out, e.at(previous, current)) }
+			if isInside { out = append(out, current) }
+			previous, wasInside = current, isInside
+		}
+		points = out
+	}
+	return points
 }

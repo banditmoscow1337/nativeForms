@@ -33,6 +33,15 @@ func NewTextField(text string, onChange func(string)) *TextField {
 	return field
 }
 
+func (field *TextField) SetText(text string) {
+	if field.Text == text { return }
+	field.Text = text
+	field.Cursor = utf8.RuneCountInString(text)
+	field.selectAll = false
+	field.invalidatePaint()
+	if field.OnChange != nil { field.OnChange(text) }
+}
+
 func (field *TextField) Measure(constraints Constraints) Vec2 {
 	return measureWithState(&field.State, Vec2{X: 240, Y: field.Theme().ControlHeight}, constraints)
 }
@@ -198,6 +207,12 @@ func NewLabel(text string) *Label {
 	return label
 }
 
+func (label *Label) SetText(text string) {
+	if label.Text == text { return }
+	label.Text = text
+	label.invalidateLayout()
+}
+
 func (label *Label) currentText() string {
 	if label.TextFunc != nil {
 		return label.TextFunc()
@@ -241,6 +256,12 @@ func NewButton(text string, onClick func()) *Button {
 	button.focusable = true
 	button.minimum = Vec2{X: 240}
 	return button
+}
+
+func (button *Button) SetText(text string) {
+	if button.Text == text { return }
+	button.Text = text
+	button.invalidateLayout()
 }
 
 func (button *Button) Measure(constraints Constraints) Vec2 {
@@ -316,6 +337,13 @@ func NewToggle(text string, value bool, onChange func(bool)) *Toggle {
 	toggle.focusable = true
 	toggle.minimum = Vec2{X: 300}
 	return toggle
+}
+
+func (toggle *Toggle) SetValue(value bool) {
+	if toggle.Value == value { return }
+	toggle.Value = value
+	toggle.invalidatePaint()
+	if toggle.OnChange != nil { toggle.OnChange(value) }
 }
 
 func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
@@ -406,6 +434,7 @@ func (slider *Slider) setValue(value float32, notify bool) {
 		return
 	}
 	slider.Value = value
+	slider.invalidatePaint()
 	if notify && slider.OnChange != nil {
 		slider.OnChange(value)
 	}
@@ -499,6 +528,12 @@ func NewProgressBar(value float32) *ProgressBar {
 	bar.owner = bar
 	bar.preferred = Vec2{X: 240, Y: 24}
 	return bar
+}
+
+func (bar *ProgressBar) SetValue(value float32) {
+	if bar.Value == value { return }
+	bar.Value = value
+	bar.invalidatePaint()
 }
 
 func (bar *ProgressBar) Paint(canvas *Canvas) {
