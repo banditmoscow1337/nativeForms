@@ -261,8 +261,8 @@ func (manager *Manager) NeedsFrame() bool {
 	return dirty
 }
 
-// NextFrameAfter reports when the next notification expires. A host can use
-// this with its event loop timer; zero means no notification timer is pending.
+// NextFrameAfter reports the next notification or caret deadline. A host can
+// use it with its event loop timer; zero means no scheduled frame is pending.
 func (manager *Manager) NextFrameAfter() time.Duration {
 	manager.notificationMu.Lock()
 	defer manager.notificationMu.Unlock()

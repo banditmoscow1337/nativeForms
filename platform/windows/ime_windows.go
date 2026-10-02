@@ -20,7 +20,7 @@ func (w *Window) composition(hwnd,flags uintptr) {
 		copied:=int32(call(win.immGetComposition,context,which,pointer(&units[0]),uintptr(len(units)*2)))
 		keep(units)
 		if copied<=0 { return "" }
-		return string(utf16.Decode(units[:int(copied)/2]))
+		return string(utf16.Decode(units[:min(int(copied)/2,len(units))]))
 	}
 	if flags&gcsResultStr!=0 {
 		w.manager.HandleEvent(ui.Event{Type:ui.CompositionEnd,Text:read(gcsResultStr)})
