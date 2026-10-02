@@ -35,6 +35,9 @@ type Manager struct {
 	dirtyLayout    bool
 	dirtyPaint     bool
 	wake           func()
+	clipboardRead func() (string,error)
+	clipboardWrite func(string) error
+	caretDue time.Time
 	postMu         sync.Mutex
 	pending        []func()
 
@@ -193,6 +196,12 @@ func (manager *Manager) ClearNotifications() {
 
 func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.ProcessPending()
+	if !manager.caretDue.IsZero() && !time.Now().Before(manager.caretDue) {
+		if field,ok:=manager.focused.(*TextField);ok {
+			field.BlinkCaret()
+			manager.caretDue=time.Now().Add(500*time.Millisecond)
+		} else { manager.caretDue=time.Time{} }
+	}
 
 	manager.mu.Lock()
 	root := manager.root
@@ -257,12 +266,20 @@ func (manager *Manager) NeedsFrame() bool {
 func (manager *Manager) NextFrameAfter() time.Duration {
 	manager.notificationMu.Lock()
 	defer manager.notificationMu.Unlock()
-	if len(manager.notifications) == 0 { return 0 }
-	remaining := manager.notifications[0].remaining
-	for _, item := range manager.notifications[1:] {
-		if item.remaining < remaining { remaining = item.remaining }
+	var delay time.Duration
+	if len(manager.notifications)>0 {
+		remaining:=manager.notifications[0].remaining
+		for _,item:=range manager.notifications[1:] {
+			if item.remaining<remaining { remaining=item.remaining }
+		}
+		delay=time.Duration(remaining*float64(time.Second))
 	}
-	return time.Duration(remaining * float64(time.Second))
+	if !manager.caretDue.IsZero() {
+		caret:=time.Until(manager.caretDue)
+		if caret<=0 { caret=time.Millisecond }
+		if delay<=0 || caret<delay { delay=caret }
+	}
+	return delay
 }
 
 // SetWakeHandler installs a thread-safe signal to wake the host event loop.
@@ -271,6 +288,12 @@ func (manager *Manager) SetWakeHandler(wake func()) {
 	manager.mu.Lock()
 	manager.wake = wake
 	manager.mu.Unlock()
+}
+
+// SetClipboardHandlers connects focused editors to the host clipboard. Both
+// functions are called on the UI owner goroutine; pass nil to detach a host.
+func (manager *Manager) SetClipboardHandlers(read func()(string,error),write func(string) error) {
+	manager.clipboardRead,manager.clipboardWrite=read,write
 }
 
 // Post queues a mutation from another goroutine. ProcessPending runs it on
@@ -306,6 +329,7 @@ func paintComponent(component Component, canvas *Canvas) {
 	for _, child := range state.children {
 		paintComponent(child, canvas)
 	}
+	if overlay,ok:=component.(interface{ PaintOverlay(*Canvas) });ok { overlay.PaintOverlay(canvas) }
 	if state.clip {
 		canvas.PopClip()
 	}
@@ -361,9 +385,7 @@ func (manager *Manager) HandleEvent(event Event) bool {
 	if !handled && unhandled != nil {
 		handled = unhandled(event)
 	}
-	if visible && interactive && root != nil {
-		manager.InvalidatePaint()
-	}
+	if visible && interactive && root != nil && (event.Type==PointerDown || event.Type==PointerUp) { manager.InvalidatePaint() }
 	return handled || (visible && interactive && root != nil && consumeUnhandled)
 }
 
@@ -426,8 +448,8 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 		manager.captured = nil
 		return handled
 	case PointerScroll:
-		return dispatchEvent(hitTest(root, event.X, event.Y), event)
-	case TextInput:
+		return dispatchScroll(hitTest(root, event.X, event.Y),event)
+	case TextInput,CompositionStart,CompositionUpdate,CompositionEnd:
 		return dispatchEvent(manager.focused, event)
 	case KeyDown, KeyUp:
 		if manager.focused != nil && dispatchEvent(manager.focused, event) {
@@ -479,6 +501,26 @@ func dispatchEvent(target Component, event Event) bool {
 	return false
 }
 
+func dispatchScroll(target Component,event Event) bool {
+	remaining:=Vec2{X:-event.Scroll.X*40,Y:-event.Scroll.Y*40}
+	used:=false
+	for target!=nil {
+		if target.UIState().Enabled() {
+			if panel,ok:=target.(*ScrollPanel);ok {
+				before:=remaining
+				remaining=panel.ScrollBy(remaining.X,remaining.Y)
+				if remaining!=before { used=true }
+				if remaining==(Vec2{}) { return true }
+			} else {
+				event.Scroll=Vec2{X:-remaining.X/40,Y:-remaining.Y/40}
+				if target.Handle(event) { return true }
+			}
+		}
+		target=target.UIState().parent
+	}
+	return used
+}
+
 func (manager *Manager) setHovered(component Component) {
 	if sameComponent(manager.hovered, component) {
 		return
@@ -490,6 +532,7 @@ func (manager *Manager) setHovered(component Component) {
 	if component != nil {
 		component.UIState().hovered = true
 	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) setFocus(component Component) {
@@ -503,7 +546,16 @@ func (manager *Manager) setFocus(component Component) {
 	manager.focused = component
 	if component != nil {
 		component.UIState().focused = true
+		for ancestor:=component.UIState().parent;ancestor!=nil;ancestor=ancestor.UIState().parent {
+			if scroll,ok:=ancestor.(*ScrollPanel);ok { scroll.ScrollIntoView(component) }
+		}
 	}
+	manager.caretDue=time.Time{}
+	if field,ok:=component.(*TextField);ok {
+		field.caretVisible=true
+		manager.caretDue=time.Now().Add(500*time.Millisecond)
+	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) focusNext(root Component, direction int) bool {
@@ -568,6 +620,7 @@ func (manager *Manager) clearInteractionLocked() Component {
 	manager.focused = nil
 	manager.hovered = nil
 	manager.captured = nil
+	manager.caretDue=time.Time{}
 	return blurred
 }
 
@@ -603,6 +656,12 @@ func (manager *Manager) clearSubtreeInteraction(root *State) {
 func (manager *Manager) TextInputFocused() bool {
 	_, ok := manager.focused.(*TextField)
 	return ok
+}
+
+func (manager *Manager) FocusedCaretRect() (Rect,bool) {
+	field,ok:=manager.focused.(*TextField)
+	if !ok { return Rect{},false }
+	return field.CaretRect(),true
 }
 
 func (manager *Manager) HoveredTextInput() bool {

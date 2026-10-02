@@ -11,6 +11,9 @@ const (
 	PointerScroll
 	TextInput
 	FocusLost
+	CompositionStart
+	CompositionUpdate
+	CompositionEnd
 )
 
 type Key uint16
@@ -43,6 +46,9 @@ const (
 	KeyF5
 	KeyF6
 	KeyF8
+	KeyC
+	KeyV
+	KeyX
 )
 
 type MouseButton uint8
@@ -63,6 +69,8 @@ type Event struct {
 	Scroll Vec2
 	Mods   int
 	Rune   rune
+	Text   string // IME preedit or committed result
+	Clicks int    // 1: caret, 2: word, 3: line
 }
 
 func (event Event) IsPointer() bool {

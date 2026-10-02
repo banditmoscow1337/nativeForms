@@ -32,8 +32,9 @@ metrics, and glyph masks use first-party TrueType code; `golang.org/x/image`
 has been removed.
 
 The Windows adapter handles resize, DPI, pointer, keyboard, Unicode `WM_CHAR`,
-clipboard methods, cursor, and idle wake-ups. Clipboard shortcuts in widgets,
-IME composition, richer font shaping, and other desktop controls remain future
-work. The first-party font parser supports quadratic TrueType outlines and
+IME composition through IMM32, clipboard shortcuts, cursor, and idle wake-ups.
+`NewTextArea`, `NewForm`, `NewGrid`, `NewSplitPane`, and two-axis `ScrollPanel`
+cover longer forms; [stages 9–11](docs/stages-9-11.md) document their contracts.
+The first-party font parser supports quadratic TrueType outlines and
 Unicode cmap format 4/12; it does not support CFF, variable fonts, hinting,
 or GSUB/GPOS shaping.

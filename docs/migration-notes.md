@@ -1,10 +1,11 @@
 # Migration notes: core, Vulkan, and offscreen software
 
-This branch implements stages 2-8 of the migration plan: detach Vulkan from
+This branch implements stages 2-11 of the migration plan: detach Vulkan from
 the UI core, correct selected lifecycle/layout issues, establish a serialized
 UI mutation path, record drawing commands, and rasterize those commands into
 an offscreen image, replace the font dependency, and present a software frame
-in one Windows window.
+in one Windows window, and add text editing, form layout, scrolling and
+event-driven repaint. See [stages 9–11](stages-9-11.md) for the new APIs.
 
 ## API changes
 
@@ -65,7 +66,7 @@ Direct writes to existing exported fields remain possible for compatibility;
 after such writes, call `InvalidateLayout` if measurements/positions change,
 otherwise `InvalidatePaint`. `NeedsFrame` tells a host when it should paint.
 The host can use `NextFrameAfter` to schedule notification expiration and
-pass elapsed seconds to `BeginFrame`. Caret blinking needs a later scheduler.
+caret blinking, and pass elapsed seconds to `BeginFrame`.
 
 Removing, hiding, or disabling a component clears focus, hover, and pointer
 capture in its subtree. Removing focus emits `FocusLost`. Flex distribution
@@ -96,9 +97,10 @@ creates one resizable Win32 window and handles events, DPI, repaint, and
 shutdown. `Window.Close` may signal it from another goroutine. The adapter
 converts logical input coordinates and scales paint commands to physical
 pixels. `SetClipboardText` and `ClipboardText` are available on the UI thread;
-the text widget does not invoke them on Ctrl+C/V yet. IME composition is not
-implemented. The window repaints on input, invalidation, resize, and the
-notification timer instead of continuously drawing.
+focused text widgets use them for Ctrl+C/X/V. Win32 IMM32 sends composition
+updates and committed text to the editor and positions the candidate window
+near the caret. The window repaints on changes, resize, and scheduled
+notification/caret timers; an expose event can reuse its existing DIB.
 
 ## Deliberate limits
 
@@ -107,8 +109,9 @@ notification timer instead of continuously drawing.
   logical positions to a physical pixel buffer.
 - The CPU renderer uses nearest atlas sampling and limited stroke
   antialiasing. Renderer visual parity requires further visual review.
-- The Windows adapter has a clipboard API but no widget copy/paste shortcuts
-  or IME bridge. Other OS window adapters are future work.
+- The grapheme implementation covers common UAX #29 rules but lacks complete
+  Unicode property tables for rare Indic and prepend cases. Complex shaping
+  and other OS window adapters are future work.
 - Public fields in `Panel` and widgets do not automatically invalidate.
 - The Vulkan renderer's host must synchronize resource destruction with
   GPU work, as it did before this separation.

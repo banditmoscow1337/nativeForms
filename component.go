@@ -24,6 +24,9 @@ type State struct {
 	offset    Vec2
 	anchor    Anchor
 	flex      float32
+	basis     float32
+	shrink    float32
+	shrinkSet bool
 
 	hidden    bool
 	disabled  bool
@@ -168,6 +171,8 @@ func (state *State) SetFocusable(focusable bool) {
 }
 func (state *State) SetClip(clip bool) { state.clip = clip; state.invalidatePaint() }
 func (state *State) SetFlex(flex float32) { state.flex = maxFloat32(0, flex); state.invalidateLayout() }
+func (state *State) SetFlexBasis(basis float32) { state.basis=maxFloat32(0,basis);state.invalidateLayout() }
+func (state *State) SetFlexShrink(shrink float32) { state.shrink=maxFloat32(0,shrink);state.shrinkSet=true;state.invalidateLayout() }
 func (state *State) SetMargin(margin Insets) { state.margin = margin; state.invalidateLayout() }
 func (state *State) SetOffset(offset Vec2) { state.offset = offset; state.invalidateLayout() }
 func (state *State) SetAnchor(anchor Anchor) { state.anchor = anchor; state.invalidateLayout() }
@@ -242,7 +247,7 @@ func (panel *Panel) Measure(constraints Constraints) Vec2 {
 		X: maxFloat32(0, constraints.Max.X-panel.Padding.Left-panel.Padding.Right),
 		Y: maxFloat32(0, constraints.Max.Y-panel.Padding.Top-panel.Padding.Bottom),
 	}
-	childConstraints := Constraints{Max: innerMax}
+	childConstraints := Constraints{Max: innerMax,BoundedX:constraints.HasMaxX(),BoundedY:constraints.HasMaxY()}
 	visibleCount := 0
 	content := Vec2{}
 
@@ -306,95 +311,106 @@ func (panel *Panel) Arrange(rect Rect) {
 }
 
 func (panel *Panel) arrangeStack(inner Rect) {
-	clear(panel.layoutChildren)
 	children := panel.layoutChildren[:0]
-	measured := panel.layoutSizes[:0]
-	mainFixed := float32(0)
-	flexTotal := float32(0)
-	for _, child := range panel.children {
-		if child == nil || !child.UIState().Visible() {
-			continue
-		}
-		size := child.Measure(Constraints{Max: Vec2{X: inner.W, Y: inner.H}})
-		children = append(children, child)
-		measured = append(measured, size)
-		state := child.UIState()
-		margin := state.margin
-		if panel.Direction == Horizontal {
-			mainFixed += margin.Left + margin.Right
-			if state.flex <= 0 {
-				mainFixed += size.X
-			}
-		} else {
-			mainFixed += margin.Top + margin.Bottom
-			if state.flex <= 0 {
-				mainFixed += size.Y
-			}
-		}
-		flexTotal += state.flex
-	}
-	panel.layoutChildren = children
-	panel.layoutSizes = measured
-	if len(children) > 1 {
-		mainFixed += panel.Gap * float32(len(children)-1)
-	}
+	sizes := panel.layoutSizes[:0]
 	mainAvailable := inner.W
-	if panel.Direction == Vertical {
-		mainAvailable = inner.H
+	if panel.Direction == Vertical { mainAvailable = inner.H }
+	total := float32(0)
+	for _, child := range panel.children {
+		if child == nil || !child.UIState().Visible() { continue }
+		limits := Constraints{Max: Vec2{X: inner.W, Y: inner.H}}
+		if panel.Direction == Vertical { limits.BoundedX = true;limits.Max.Y=0
+		} else { limits.BoundedY = true;limits.Max.X=0 }
+		size := child.Measure(limits)
+		state := child.UIState()
+		if state.basis > 0 {
+			if panel.Direction == Vertical { size.Y = state.basis } else { size.X = state.basis }
+		}
+		children = append(children, child)
+		sizes = append(sizes, size)
+		if panel.Direction == Vertical {
+			total += size.Y + state.margin.Top + state.margin.Bottom
+		} else { total += size.X + state.margin.Left + state.margin.Right }
 	}
-	flexSpace := maxFloat32(0, mainAvailable-mainFixed)
-	// Freeze flex items that hit min/max, then redistribute the remainder.
-	active := make([]bool, len(children))
-	for i, child := range children { active[i] = child.UIState().flex > 0 }
-	remaining, weight := flexSpace, flexTotal
-	for weight > 0 {
-		clamped := false
-		for i, child := range children {
+	panel.layoutChildren,panel.layoutSizes=children,sizes
+	if len(children)>1 { total+=panel.Gap*float32(len(children)-1) }
+	delta:=mainAvailable-total
+	weights:=make([]float32,len(children))
+	active:=make([]bool,len(children))
+	weight:=float32(0)
+	for i,child:=range children {
+		state:=child.UIState()
+		if delta>=0 { weights[i]=state.flex
+		} else {
+			shrink:=float32(1)
+			if state.shrinkSet { shrink=state.shrink }
+			base:=sizes[i].X
+			if panel.Direction==Vertical { base=sizes[i].Y }
+			weights[i]=shrink*base
+		}
+		active[i]=weights[i]>0
+		weight+=weights[i]
+	}
+	remaining:=delta
+	for weight>0 {
+		frozen:=false
+		for i,child:=range children {
 			if !active[i] { continue }
-			state := child.UIState()
-			share := maxFloat32(0, remaining) * state.flex / weight
-			minimum, maximum := state.minimum.X, state.maximum.X
-			if panel.Direction == Vertical { minimum, maximum = state.minimum.Y, state.maximum.Y }
-			value := share
-			if value < minimum { value = minimum }
-			if maximum > 0 && value > maximum { value = maximum }
-			if value != share {
-				if panel.Direction == Horizontal { measured[i].X = value } else { measured[i].Y = value }
-				active[i] = false
-				remaining -= value
-				weight -= state.flex
-				clamped = true
+			state:=child.UIState()
+			base,low,high:=sizes[i].X,state.minimum.X,state.maximum.X
+			if panel.Direction==Vertical { base,low,high=sizes[i].Y,state.minimum.Y,state.maximum.Y }
+			proposed:=base+remaining*weights[i]/weight
+			bounded:=maxFloat32(low,proposed)
+			if high>0 { bounded=minFloat32(bounded,high) }
+			if bounded!=proposed {
+				if panel.Direction==Vertical { sizes[i].Y=bounded } else { sizes[i].X=bounded }
+				remaining-=bounded-base
+				weight-=weights[i]
+				active[i]=false
+				frozen=true
 			}
 		}
-		if clamped { continue }
-		for i, child := range children {
+		if frozen { continue }
+		for i:=range children {
 			if !active[i] { continue }
-			value := maxFloat32(0, remaining) * child.UIState().flex / weight
-			if panel.Direction == Horizontal { measured[i].X = value } else { measured[i].Y = value }
+			if panel.Direction==Vertical { sizes[i].Y+=remaining*weights[i]/weight
+			} else { sizes[i].X+=remaining*weights[i]/weight }
 		}
 		break
 	}
-	cursor := inner.X
-	if panel.Direction == Vertical {
-		cursor = inner.Y
+	baseline:=float32(0)
+	if panel.Align==AlignBaseline && panel.Direction==Horizontal {
+		for i,child:=range children {
+			height:=child.Measure(Constraints{Max:Vec2{X:sizes[i].X,Y:inner.H},BoundedX:true,BoundedY:true}).Y
+			sizes[i].Y=height
+			value:=height*0.8
+			if b,ok:=child.(interface{ Baseline() float32 });ok { value=b.Baseline() }
+			baseline=maxFloat32(baseline,value+child.UIState().margin.Top)
+		}
 	}
-
-	for index, child := range children {
-		state := child.UIState()
-		margin := state.margin
-		size := measured[index]
-		if panel.Direction == Horizontal {
-			cursor += margin.Left
-			availableCross := maxFloat32(0, inner.H-margin.Top-margin.Bottom)
-			y, height := alignCross(inner.Y+margin.Top, availableCross, size.Y, panel.Align)
-			child.Arrange(Rect{X: cursor, Y: y, W: size.X, H: height})
-			cursor += size.X + margin.Right + panel.Gap
+	cursor:=inner.X
+	if panel.Direction==Vertical { cursor=inner.Y }
+	for i,child:=range children {
+		state:=child.UIState()
+		margin:=state.margin
+		size:=sizes[i]
+		if panel.Direction==Horizontal {
+			cursor+=margin.Left
+			cross:=maxFloat32(0,inner.H-margin.Top-margin.Bottom)
+			y,height:=alignCross(inner.Y+margin.Top,cross,size.Y,panel.Align)
+			if panel.Align==AlignBaseline {
+				value:=size.Y*0.8
+				if b,ok:=child.(interface{ Baseline() float32 });ok { value=b.Baseline() }
+				y=inner.Y+baseline-value;height=size.Y
+			}
+			child.Arrange(Rect{X:cursor,Y:y,W:maxFloat32(0,size.X),H:height})
+			cursor+=size.X+margin.Right+panel.Gap
 		} else {
-			cursor += margin.Top
-			availableCross := maxFloat32(0, inner.W-margin.Left-margin.Right)
-			x, width := alignCross(inner.X+margin.Left, availableCross, size.X, panel.Align)
-			child.Arrange(Rect{X: x, Y: cursor, W: width, H: size.Y})
-			cursor += size.Y + margin.Bottom + panel.Gap
+			cursor+=margin.Top
+			cross:=maxFloat32(0,inner.W-margin.Left-margin.Right)
+			x,width:=alignCross(inner.X+margin.Left,cross,size.X,panel.Align)
+			child.Arrange(Rect{X:x,Y:cursor,W:width,H:maxFloat32(0,size.Y)})
+			cursor+=size.Y+margin.Bottom+panel.Gap
 		}
 	}
 }

@@ -2,7 +2,6 @@ package nativeforms
 
 import (
 	"fmt"
-	"unicode/utf8"
 )
 
 type Label struct {
@@ -12,193 +11,7 @@ type Label struct {
 	Color    Color
 	FontSize float32
 	Align    TextAlign
-}
-
-type TextField struct {
-	State
-	Text        string
-	Placeholder string
-	Cursor      int
-	OnChange    func(string)
-	OnSubmit    func(string)
-	selectAll   bool
-	scrollX     float32
-}
-
-func NewTextField(text string, onChange func(string)) *TextField {
-	field := &TextField{Text: text, Cursor: utf8.RuneCountInString(text), OnChange: onChange}
-	field.owner = field
-	field.focusable = true
-	field.minimum = Vec2{X: 180}
-	return field
-}
-
-func (field *TextField) SetText(text string) {
-	if field.Text == text { return }
-	field.Text = text
-	field.Cursor = utf8.RuneCountInString(text)
-	field.selectAll = false
-	field.invalidatePaint()
-	if field.OnChange != nil { field.OnChange(text) }
-}
-
-func (field *TextField) Measure(constraints Constraints) Vec2 {
-	return measureWithState(&field.State, Vec2{X: 240, Y: field.Theme().ControlHeight}, constraints)
-}
-
-func (field *TextField) Paint(canvas *Canvas) {
-	background, border := canvas.theme.Control, canvas.theme.Border
-	if field.Focused() {
-		background, border = canvas.theme.ControlHover, canvas.theme.Accent
-	}
-	canvas.Rect(field.rect, background)
-	canvas.Border(field.rect, 1, border)
-	text, color := field.Text, canvas.theme.Text
-	if text == "" {
-		text, color = field.Placeholder, canvas.theme.MutedText
-	}
-	inner := field.rect.Inset(Symmetric(10, 4))
-	canvas.PushClip(inner)
-	defer canvas.PopClip()
-	if field.selectAll && field.Focused() {
-		canvas.Rect(inner, canvas.theme.Accent.WithAlpha(0.25))
-	}
-	runes := []rune(field.Text)
-	cursor := min(max(field.Cursor, 0), len(runes))
-	caret := measureTextLine(string(runes[:cursor]), canvas.theme.FontSize)
-	if field.Focused() {
-		if caret-field.scrollX > inner.W-4 {
-			field.scrollX = maxFloat32(0, caret-inner.W+4)
-		}
-		if caret < field.scrollX {
-			field.scrollX = caret
-		}
-	} else {
-		field.scrollX = 0
-	}
-	textBounds := inner
-	textBounds.X -= field.scrollX
-	textBounds.W += field.scrollX
-	canvas.Text(text, textBounds, canvas.theme.FontSize, TextLeft, color)
-	if field.Focused() {
-		runes := []rune(field.Text)
-		cursor := min(max(field.Cursor, 0), len(runes))
-		cursorX := inner.X - field.scrollX + measureTextLine(string(runes[:cursor]), canvas.theme.FontSize)
-		canvas.Line(Vec2{X: cursorX, Y: inner.Y + 3}, Vec2{X: cursorX, Y: inner.Y + inner.H - 3}, 1, canvas.theme.AccentHover)
-	}
-}
-
-func (field *TextField) Handle(event Event) bool {
-	if !field.Enabled() {
-		return false
-	}
-	runes := []rune(field.Text)
-	field.Cursor = min(max(field.Cursor, 0), len(runes))
-	changed := false
-	switch event.Type {
-	case FocusLost:
-		field.selectAll = false
-		if field.OnSubmit != nil {
-			field.OnSubmit(field.Text)
-		}
-		return true
-	case PointerDown:
-		field.selectAll = false
-		if event.Button != MouseLeft {
-			return false
-		}
-		local := maxFloat32(0, event.X-field.rect.X-10+field.scrollX)
-		field.Cursor = len(runes)
-		advance := float32(0)
-		for index, character := range runes {
-			next := advance + glyphForRune(character).advance*field.Theme().FontSize
-			if local < (advance+next)*0.5 {
-				field.Cursor = index
-				break
-			}
-			advance = next
-		}
-		return true
-	case TextInput:
-		if event.Rune >= 32 && event.Rune != 127 {
-			if field.selectAll {
-				runes = runes[:0]
-				field.Cursor = 0
-				field.selectAll = false
-			}
-			runes = append(runes, 0)
-			copy(runes[field.Cursor+1:], runes[field.Cursor:])
-			runes[field.Cursor] = event.Rune
-			field.Cursor++
-			changed = true
-		}
-	case KeyDown:
-		if event.Key == KeyA && event.Mods&(ModControl|ModSuper) != 0 {
-			field.selectAll = true
-			return true
-		}
-		if field.selectAll && (event.Key == KeyDelete || event.Key == KeyBackspace) {
-			field.Text, field.Cursor, field.selectAll = "", 0, false
-			if field.OnChange != nil {
-				field.OnChange(field.Text)
-			}
-			return true
-		}
-		switch event.Key {
-		case KeyBackspace:
-			if field.Cursor > 0 {
-				runes = append(runes[:field.Cursor-1], runes[field.Cursor:]...)
-				field.Cursor--
-				changed = true
-			}
-		case KeyDelete:
-			if field.Cursor < len(runes) {
-				runes = append(runes[:field.Cursor], runes[field.Cursor+1:]...)
-				changed = true
-			}
-		case KeyLeftArrow:
-			field.selectAll = false
-			if field.Cursor > 0 {
-				field.Cursor--
-			}
-			return true
-		case KeyRightArrow:
-			field.selectAll = false
-			if field.Cursor < len(runes) {
-				field.Cursor++
-			}
-			return true
-		case KeyHome:
-			field.selectAll = false
-			field.Cursor = 0
-			return true
-		case KeyEnd:
-			field.selectAll = false
-			field.Cursor = len(runes)
-			return true
-		case KeyEnter:
-			if field.OnSubmit != nil {
-				field.OnSubmit(field.Text)
-			}
-			return true
-		default:
-			if event.Mods&(ModControl|ModSuper) == 0 {
-				switch event.Key {
-				case KeyW, KeyA, KeyS, KeyD, KeyQ, KeyE, KeyR, KeyF, KeyZ, KeyY, KeySpace:
-					return true
-				}
-			}
-			return false
-		}
-	}
-	if changed {
-		field.Text = string(runes)
-		if field.OnChange != nil {
-			field.OnChange(field.Text)
-		}
-		return true
-	}
-	return field.State.Handle(event)
+	Wrap     bool
 }
 
 func NewLabel(text string) *Label {
@@ -225,7 +38,14 @@ func (label *Label) Measure(constraints Constraints) Vec2 {
 	if fontSize <= 0 {
 		fontSize = label.State.Theme().FontSize
 	}
-	return measureWithState(&label.State, MeasureText(label.currentText(), fontSize), constraints)
+	text:=label.currentText()
+	if label.Wrap && constraints.HasMaxX() { text=WrapText(text,maxFloat32(0,constraints.Max.X),fontSize) }
+	return measureWithState(&label.State, MeasureText(text, fontSize), constraints)
+}
+
+func (label *Label) Baseline() float32 {
+	size:=label.FontSize;if size<=0 { size=label.Theme().FontSize }
+	return size*0.85
 }
 
 func (label *Label) Paint(canvas *Canvas) {
@@ -240,7 +60,9 @@ func (label *Label) Paint(canvas *Canvas) {
 	if !label.Enabled() {
 		color = canvas.theme.Disabled
 	}
-	canvas.Text(label.currentText(), label.rect, fontSize, label.Align, color)
+	text:=label.currentText()
+	if label.Wrap { text=WrapText(text,label.rect.W,fontSize) }
+	canvas.Text(text, label.rect, fontSize, label.Align, color)
 }
 
 type Button struct {
