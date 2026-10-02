@@ -79,7 +79,7 @@ func (w *Window) Run() error {
 	w.dpi=96
 	w.err=nil
 	activeWindow = w
-	defer func() { activeWindow = nil; w.manager.SetWakeHandler(nil) }()
+	defer func() { activeWindow = nil; w.manager.SetWakeHandler(nil);w.manager.SetClipboardHandlers(nil,nil) }()
 	hwnd := call(win.createWindow, 0, ptr16(className), ptr16(name), wsOverlappedWindow,
 		cwUseDefault, cwUseDefault, uintptr(width), uintptr(height), 0, 0,
 		call(win.getModuleHandle, 0), 0)
@@ -91,6 +91,8 @@ func (w *Window) Run() error {
 	w.manager.SetWakeHandler(func() {
 		if h := w.hwnd.Load(); h != 0 { call(win.postMessage,h,wmWake,0,0) }
 	})
+	w.manager.SetClipboardHandlers(w.ClipboardText,w.SetClipboardText)
+	w.manager.SetInteractive(true)
 	call(win.showWindow,hwnd,swShow)
 	if w.options.OnReady != nil { w.options.OnReady(w) }
 	w.invalidate()
@@ -174,9 +176,10 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp,lp uintptr) uintptr {
 		return 0
 	case wmTimer:
 		call(win.killTimer,hwnd,1)
+		w.manager.InvalidatePaint()
 		w.invalidate()
 		return 0
-	case wmMouseMove,wmLeftDown,wmLeftUp,wmRightDown,wmRightUp,wmMiddleDown,wmMiddleUp,wmMouseWheel:
+	case wmMouseMove,wmLeftDown,wmLeftUp,wmRightDown,wmRightUp,wmMiddleDown,wmMiddleUp,wmMouseWheel,wmMouseHWheel:
 		w.mouse(hwnd,msg,wp,lp)
 		return 0
 	case wmMouseLeave:
@@ -193,6 +196,19 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp,lp uintptr) uintptr {
 		return 0
 	case wmChar:
 		w.character(uint16(wp))
+		return 0
+	case wmIMEStart:
+		if !w.manager.TextInputFocused() { break }
+		w.manager.HandleEvent(ui.Event{Type:ui.CompositionStart})
+		w.placeCandidate(hwnd)
+		return 0
+	case wmIMEComposition:
+		if !w.manager.TextInputFocused() { break }
+		w.composition(hwnd,lp)
+		return 0
+	case wmIMEEnd:
+		if !w.manager.TextInputFocused() { break }
+		w.manager.HandleEvent(ui.Event{Type:ui.CompositionEnd})
 		return 0
 	case wmKillFocus:
 		w.highSurrogate=0
@@ -225,23 +241,28 @@ func (w *Window) paint(hwnd,dc uintptr) error {
 	if width>16384 || height>16384 || int64(width)*int64(height)>64*1024*1024 {
 		return fmt.Errorf("windows: framebuffer exceeds 64 megapixels")
 	}
-	if w.framebuffer==nil || w.framebuffer.Bounds().Dx()!=width || w.framebuffer.Bounds().Dy()!=height {
+	resized:=w.framebuffer==nil || w.framebuffer.Bounds().Dx()!=width || w.framebuffer.Bounds().Dy()!=height
+	if resized {
 		w.framebuffer=image.NewRGBA(image.Rect(0,0,width,height))
 		w.dib=make([]byte,width*height*4)
 	}
-	logicalWidth:=max(1,int((int64(width)*96+int64(w.dpi)/2)/int64(w.dpi)))
-	logicalHeight:=max(1,int((int64(height)*96+int64(w.dpi)/2)/int64(w.dpi)))
-	now:=time.Now()
-	delta:=now.Sub(w.lastFrame).Seconds()
-	w.lastFrame=now
-	w.manager.BeginFrame(logicalWidth,logicalHeight,delta)
-	if err:=w.renderer.RenderScaled(w.manager.Frame(),w.framebuffer);err!=nil { return err }
-	for y:=0;y<height;y++ {
-		for x:=0;x<width;x++ {
-			i:=w.framebuffer.PixOffset(x,y)
-			j:=(y*width+x)*4
-			w.dib[j],w.dib[j+1],w.dib[j+2],w.dib[j+3]=
-				w.framebuffer.Pix[i+2],w.framebuffer.Pix[i+1],w.framebuffer.Pix[i],w.framebuffer.Pix[i+3]
+	rendered:=resized || w.manager.NeedsFrame()
+	if rendered {
+		logicalWidth:=max(1,int((int64(width)*96+int64(w.dpi)/2)/int64(w.dpi)))
+		logicalHeight:=max(1,int((int64(height)*96+int64(w.dpi)/2)/int64(w.dpi)))
+		now:=time.Now()
+		delta:=now.Sub(w.lastFrame).Seconds()
+		w.lastFrame=now
+		w.manager.BeginFrame(logicalWidth,logicalHeight,delta)
+		if err:=w.renderer.RenderScaled(w.manager.Frame(),w.framebuffer);err!=nil { return err }
+		w.placeCandidate(hwnd)
+		for y:=0;y<height;y++ {
+			for x:=0;x<width;x++ {
+				i:=w.framebuffer.PixOffset(x,y)
+				j:=(y*width+x)*4
+				w.dib[j],w.dib[j+1],w.dib[j+2],w.dib[j+3]=
+					w.framebuffer.Pix[i+2],w.framebuffer.Pix[i+1],w.framebuffer.Pix[i],w.framebuffer.Pix[i+3]
+			}
 		}
 	}
 	info:=bitmapInfo{Size:uint32(unsafe.Sizeof(bitmapInfo{})),Width:int32(width),Height:-int32(height),
@@ -250,11 +271,13 @@ func (w *Window) paint(hwnd,dc uintptr) error {
 		uintptr(width),uintptr(height),pointer(&w.dib[0]),pointer(&info),dibRGBColors,srccopy)
 	keep(w.dib,&info)
 	if int32(result)==-1 { return fmt.Errorf("windows: StretchDIBits failed") }
-	call(win.killTimer,hwnd,1)
-	if delay:=w.manager.NextFrameAfter();delay>0 {
-		ms:=uint64((delay+time.Millisecond-1)/time.Millisecond)
-		if ms>0xffffffff { ms=0xffffffff }
-		call(win.setTimer,hwnd,1,uintptr(max(uint64(1),ms)),0)
+	if rendered {
+		call(win.killTimer,hwnd,1)
+		if delay:=w.manager.NextFrameAfter();delay>0 {
+			ms:=uint64((delay+time.Millisecond-1)/time.Millisecond)
+			if ms>0xffffffff { ms=0xffffffff }
+			call(win.setTimer,hwnd,1,uintptr(max(uint64(1),ms)),0)
+		}
 	}
 	return nil
 }
@@ -276,7 +299,7 @@ func (w *Window) mouse(hwnd uintptr,msg uint32,wp,lp uintptr) {
 		call(win.trackMouse,pointer(&tracking))
 	}
 	p:=point{X:int32(int16(lp&0xffff)),Y:int32(int16((lp>>16)&0xffff))}
-	if msg==wmMouseWheel {
+	if msg==wmMouseWheel || msg==wmMouseHWheel {
 		call(win.screenToClient,hwnd,pointer(&p))
 	}
 	scale:=float32(96)/float32(w.dpi)
@@ -286,6 +309,10 @@ func (w *Window) mouse(hwnd uintptr,msg uint32,wp,lp uintptr) {
 	case wmMouseWheel:
 		event.Type=ui.PointerScroll
 		event.Scroll.Y=float32(int16((wp>>16)&0xffff))/120
+		if event.Mods&ui.ModShift!=0 { event.Scroll.X=-event.Scroll.Y;event.Scroll.Y=0 }
+	case wmMouseHWheel:
+		event.Type=ui.PointerScroll
+		event.Scroll.X=-float32(int16((wp>>16)&0xffff))/120
 	case wmLeftDown,wmRightDown,wmMiddleDown:
 		event.Type=ui.PointerDown
 		event.Button=button(msg)
@@ -350,6 +377,9 @@ func translateKey(key uint32) ui.Key {
 	case 'F': return ui.KeyF
 	case 'Z': return ui.KeyZ
 	case 'Y': return ui.KeyY
+	case 'C': return ui.KeyC
+	case 'V': return ui.KeyV
+	case 'X': return ui.KeyX
 	default: return ui.KeyUnknown
 	}
 }

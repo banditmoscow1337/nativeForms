@@ -47,9 +47,14 @@ type trackMouseEvent struct {
 	HWND uintptr
 	HoverTime uint32
 }
+type candidateForm struct {
+	Index,Style uint32
+	Position point
+	Area rect
+}
 
 type functions struct {
-	user,kernel,gdi uintptr
+	user,kernel,gdi,imm uintptr
 	createWindow,registerClass,defProc,getMessage,translateMessage,dispatchMessage,showWindow uintptr
 	destroyWindow,postQuit,postMessage,beginPaint,endPaint,invalidateRect uintptr
 	getClientRect,screenToClient,getDpi,setDpi,setWindowPos uintptr
@@ -57,6 +62,7 @@ type functions struct {
 	setTimer,killTimer,openClipboard,closeClipboard,emptyClipboard uintptr
 	setClipboardData,getClipboardData,globalAlloc,globalLock,globalUnlock,globalFree,globalSize uintptr
 	stretchDIBits,getModuleHandle uintptr
+	immGetContext,immReleaseContext,immGetComposition,immSetCandidate uintptr
 }
 var win functions
 
@@ -65,6 +71,7 @@ func load() error {
 	win.user,err=purego.Dlopen("user32.dll",0);if err!=nil{return err}
 	win.gdi,err=purego.Dlopen("gdi32.dll",0);if err!=nil{return err}
 	win.kernel,err=purego.Dlopen("kernel32.dll",0);if err!=nil{return err}
+	win.imm,err=purego.Dlopen("imm32.dll",0);if err!=nil{return err}
 	get:=func(lib uintptr,name string,dst *uintptr) error {
 		*dst,err=purego.Dlsym(lib,name)
 		if err!=nil{return fmt.Errorf("resolve %s: %w",name,err)}
@@ -108,6 +115,10 @@ func load() error {
 		{win.kernel,"GlobalSize",&win.globalSize},
 		{win.gdi,"StretchDIBits",&win.stretchDIBits},
 		{win.kernel,"GetModuleHandleW",&win.getModuleHandle},
+		{win.imm,"ImmGetContext",&win.immGetContext},
+		{win.imm,"ImmReleaseContext",&win.immReleaseContext},
+		{win.imm,"ImmGetCompositionStringW",&win.immGetComposition},
+		{win.imm,"ImmSetCandidateWindow",&win.immSetCandidate},
 	}
 	for _,s:=range symbols {if err:=get(s.lib,s.name,s.dst);err!=nil{return err}}
 	// A host may have set its process DPI policy already. That is fine.
@@ -135,6 +146,9 @@ const (
 	wmKeyDown=0x0100
 	wmKeyUp=0x0101
 	wmChar=0x0102
+	wmIMEStart=0x010D
+	wmIMEEnd=0x010E
+	wmIMEComposition=0x010F
 	wmTimer=0x0113
 	wmMouseMove=0x0200
 	wmLeftDown=0x0201
@@ -144,6 +158,7 @@ const (
 	wmMiddleDown=0x0207
 	wmMiddleUp=0x0208
 	wmMouseWheel=0x020A
+	wmMouseHWheel=0x020E
 	wmMouseLeave=0x02A3
 	wmCaptureChanged=0x0215
 	wmDpiChanged=0x02E0
@@ -158,4 +173,7 @@ const (
 	srccopy=0x00CC0020
 	cfUnicodeText=13
 	gmemMoveable=0x0002
+	gcsCompStr=0x0008
+	gcsResultStr=0x0800
+	cfsExclude=0x0080
 )

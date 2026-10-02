@@ -1,8 +1,9 @@
 # Desktop v1: scope and architecture
 
 Status: core/backend separation, offscreen CPU painting, first-party TrueType
-rendering, and the initial Windows software window are implemented on the
-migration branches. The other v1 features below remain future work.
+rendering, the Windows software window, editing, form layout, and event-driven
+painting are implemented on the migration branches. Other v1 features below
+remain future work.
 
 ## Goal
 
