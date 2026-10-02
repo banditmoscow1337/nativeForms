@@ -1,9 +1,10 @@
 # Migration notes: core, Vulkan, and offscreen software
 
-This branch implements stages 2-6 of the migration plan: detach Vulkan from
+This branch implements stages 2-8 of the migration plan: detach Vulkan from
 the UI core, correct selected lifecycle/layout issues, establish a serialized
 UI mutation path, record drawing commands, and rasterize those commands into
-an offscreen image. It does not create or present an OS window.
+an offscreen image, replace the font dependency, and present a software frame
+in one Windows window.
 
 ## API changes
 
@@ -47,7 +48,8 @@ err := software.New().Render(manager.Frame(), dst)
 
 `Render` clears the destination and requires a zero-origin RGBA buffer whose
 size matches the frame. The result can be encoded with `image/png` or passed
-to a future OS window adapter. `Frame().Commands` is borrowed storage; render
+to the Windows adapter. `RenderScaled` maps logical commands to a physical
+pixel buffer. `Frame().Commands` is borrowed storage; render
 or copy it before the next `BeginFrame`, and do not mutate it.
 
 ## UI ownership and invalidation
@@ -76,16 +78,37 @@ should call `SetConsumeUnhandledInput(true)`.
 Arrow/WASD focus navigation is now opt-in with `SetGameNavigation(true)`;
 Tab and Shift+Tab remain available by default.
 
+## Fonts and Windows
+
+`SetFontData(ttfBytes)` installs a TrueType font before the first text
+measurement or frame. Without it, nativeForms tries an OS-installed font and
+then an embedded ASCII fallback. The shared 2048² atlas is generated in Go;
+no font asset is redistributed. Unicode cmap 4/12 and quadratic glyph outlines
+cover basic Latin, Greek, and Cyrillic in a suitable font. Complex shaping,
+variable outlines, CFF, advanced composite placement, and glyphs outside the
+fixed atlas repertoire require further work. Rasterization does not apply
+hinting, and the renderer samples the atlas with nearest pixels.
+
+The Windows package is available on Windows amd64/arm64 and expects Windows 10
+with GetDpiForWindow. Run the [example](../examples/windows/main_windows.go)
+with `go run ./examples/windows`. `Window.Run` locks the calling OS thread,
+creates one resizable Win32 window and handles events, DPI, repaint, and
+shutdown. `Window.Close` may signal it from another goroutine. The adapter
+converts logical input coordinates and scales paint commands to physical
+pixels. `SetClipboardText` and `ClipboardText` are available on the UI thread;
+the text widget does not invoke them on Ctrl+C/V yet. IME composition is not
+implemented. The window repaints on input, invalidation, resize, and the
+notification timer instead of continuously drawing.
+
 ## Deliberate limits
 
 - The CPU renderer supports the current Canvas primitives: solid and
-  atlas-backed rectangles, text, borders, and lines. It draws at 1:1 logical
-  to physical pixels; DPI conversion belongs to a future platform adapter.
+  atlas-backed rectangles, text, borders, and lines. `RenderScaled` maps
+  logical positions to a physical pixel buffer.
 - The CPU renderer uses nearest atlas sampling and limited stroke
   antialiasing. Renderer visual parity requires further visual review.
-- The current font atlas still uses `golang.org/x/image`. The dependency
-  policy is not fully met until the font replacement stage.
-- There is no platform event loop, clipboard, IME bridge, or native window.
+- The Windows adapter has a clipboard API but no widget copy/paste shortcuts
+  or IME bridge. Other OS window adapters are future work.
 - Public fields in `Panel` and widgets do not automatically invalidate.
 - The Vulkan renderer's host must synchronize resource destruction with
   GPU work, as it did before this separation.

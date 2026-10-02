@@ -605,6 +605,19 @@ func (manager *Manager) TextInputFocused() bool {
 	return ok
 }
 
+func (manager *Manager) HoveredTextInput() bool {
+	_, ok := manager.hovered.(*TextField)
+	return ok
+}
+
+func (manager *Manager) CancelPointerCapture() {
+	if manager.captured != nil {
+		manager.captured.UIState().pressed = false
+		manager.captured = nil
+		manager.InvalidatePaint()
+	}
+}
+
 func (manager *Manager) UnhandledEventHandler() func(Event) bool {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()

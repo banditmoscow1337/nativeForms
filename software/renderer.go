@@ -16,6 +16,29 @@ type Renderer struct {
 
 func New() *Renderer { return &Renderer{atlas: ui.FontAtlas().(*image.NRGBA)} }
 
+// RenderScaled maps logical UI coordinates to a physical pixel buffer.
+// Pixel dimensions are taken from dst, avoiding rounding gaps on resize.
+func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
+	if dst == nil || frame.Width <= 0 || frame.Height <= 0 {
+		return fmt.Errorf("invalid scaled UI target")
+	}
+	sx := float32(dst.Bounds().Dx()) / float32(frame.Width)
+	sy := float32(dst.Bounds().Dy()) / float32(frame.Height)
+	scaleRect := func(r ui.Rect) ui.Rect {
+		return ui.Rect{X:r.X*sx,Y:r.Y*sy,W:r.W*sx,H:r.H*sy}
+	}
+	commands := make([]ui.DrawCommand,len(frame.Commands))
+	for i,c := range frame.Commands {
+		c.Rect,c.Clip=scaleRect(c.Rect),scaleRect(c.Clip)
+		c.From=ui.Vec2{X:c.From.X*sx,Y:c.From.Y*sy}
+		c.To=ui.Vec2{X:c.To.X*sx,Y:c.To.Y*sy}
+		c.Width*=min(sx,sy)
+		commands[i]=c
+	}
+	return renderer.Render(ui.Frame{Width:dst.Bounds().Dx(),Height:dst.Bounds().Dy(),
+		Commands:commands},dst)
+}
+
 // Render clears dst and paints a frame. dst must have the frame's dimensions.
 // The same Renderer can be reused, but calls must be serialized.
 func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
