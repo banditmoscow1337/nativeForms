@@ -11,6 +11,7 @@ type Component interface {
 type State struct {
 	owner    Component
 	parent   Component
+	manager  *Manager
 	children []Component
 	rect     Rect
 	theme    Theme
@@ -71,11 +72,12 @@ func (state *State) Add(children ...Component) {
 		}
 		childState.parent = state.owner
 		state.children = append(state.children, child)
-		bindTree(child, state.owner)
+		bindTree(child, state.owner, state.manager)
 		if state.themed {
 			applyTheme(child, state.theme)
 		}
 	}
+	state.invalidateLayout()
 }
 
 func componentContainsState(component Component, target *State) bool {
@@ -102,19 +104,24 @@ func (state *State) Remove(child Component) bool {
 		copy(state.children[index:], state.children[index+1:])
 		state.children[len(state.children)-1] = nil
 		state.children = state.children[:len(state.children)-1]
-		child.UIState().parent = nil
+		bindTree(child, nil, nil)
+		if state.manager != nil { state.manager.clearSubtreeInteraction(child.UIState()) }
+		state.invalidateLayout()
 		return true
 	}
 	return false
 }
 
 func (state *State) ClearChildren() {
-	for _, child := range state.children {
+	children := state.children
+	state.children = nil
+	for _, child := range children {
 		if child != nil {
-			child.UIState().parent = nil
+			bindTree(child, nil, nil)
+			if state.manager != nil { state.manager.clearSubtreeInteraction(child.UIState()) }
 		}
 	}
-	state.children = state.children[:0]
+	state.invalidateLayout()
 }
 
 func (state *State) Children() []Component {
@@ -140,28 +147,52 @@ func (state *State) Theme() Theme {
 	return DefaultTheme()
 }
 
-func (state *State) SetVisible(visible bool)             { state.hidden = !visible }
-func (state *State) SetEnabled(enabled bool)             { state.disabled = !enabled }
-func (state *State) SetFocusable(focusable bool)         { state.focusable = focusable }
-func (state *State) SetClip(clip bool)                   { state.clip = clip }
-func (state *State) SetFlex(flex float32)                { state.flex = maxFloat32(0, flex) }
-func (state *State) SetMargin(margin Insets)             { state.margin = margin }
-func (state *State) SetOffset(offset Vec2)               { state.offset = offset }
-func (state *State) SetAnchor(anchor Anchor)             { state.anchor = anchor }
-func (state *State) SetPreferredSize(size Vec2)          { state.preferred = size }
-func (state *State) SetMinimumSize(size Vec2)            { state.minimum = size }
-func (state *State) SetMaximumSize(size Vec2)            { state.maximum = size }
+func (state *State) SetVisible(visible bool) {
+	if state.hidden == !visible { return }
+	if !visible && state.manager != nil { state.manager.clearSubtreeInteraction(state) }
+	state.hidden = !visible
+	state.invalidateLayout()
+}
+func (state *State) SetEnabled(enabled bool) {
+	if state.disabled == !enabled { return }
+	if !enabled && state.manager != nil { state.manager.clearSubtreeInteraction(state) }
+	state.disabled = !enabled
+	state.invalidatePaint()
+}
+func (state *State) SetFocusable(focusable bool) {
+	state.focusable = focusable
+	if !focusable && state.manager != nil && sameComponent(state.owner, state.manager.focused) {
+		state.manager.setFocus(nil)
+	}
+	state.invalidatePaint()
+}
+func (state *State) SetClip(clip bool) { state.clip = clip; state.invalidatePaint() }
+func (state *State) SetFlex(flex float32) { state.flex = maxFloat32(0, flex); state.invalidateLayout() }
+func (state *State) SetMargin(margin Insets) { state.margin = margin; state.invalidateLayout() }
+func (state *State) SetOffset(offset Vec2) { state.offset = offset; state.invalidateLayout() }
+func (state *State) SetAnchor(anchor Anchor) { state.anchor = anchor; state.invalidateLayout() }
+func (state *State) SetPreferredSize(size Vec2) { state.preferred = size; state.invalidateLayout() }
+func (state *State) SetMinimumSize(size Vec2) { state.minimum = size; state.invalidateLayout() }
+func (state *State) SetMaximumSize(size Vec2) { state.maximum = size; state.invalidateLayout() }
 func (state *State) SetEventHandler(fn func(Event) bool) { state.onEvent = fn }
 
-func bindTree(component Component, parent Component) {
+func (state *State) invalidateLayout() {
+	if state.manager != nil { state.manager.InvalidateLayout() }
+}
+func (state *State) invalidatePaint() {
+	if state.manager != nil { state.manager.InvalidatePaint() }
+}
+
+func bindTree(component Component, parent Component, manager *Manager) {
 	if component == nil {
 		return
 	}
 	state := component.UIState()
 	state.owner = component
 	state.parent = parent
+	state.manager = manager
 	for _, child := range state.children {
-		bindTree(child, component)
+		bindTree(child, component, manager)
 	}
 }
 
@@ -312,6 +343,37 @@ func (panel *Panel) arrangeStack(inner Rect) {
 		mainAvailable = inner.H
 	}
 	flexSpace := maxFloat32(0, mainAvailable-mainFixed)
+	// Freeze flex items that hit min/max, then redistribute the remainder.
+	active := make([]bool, len(children))
+	for i, child := range children { active[i] = child.UIState().flex > 0 }
+	remaining, weight := flexSpace, flexTotal
+	for weight > 0 {
+		clamped := false
+		for i, child := range children {
+			if !active[i] { continue }
+			state := child.UIState()
+			share := maxFloat32(0, remaining) * state.flex / weight
+			minimum, maximum := state.minimum.X, state.maximum.X
+			if panel.Direction == Vertical { minimum, maximum = state.minimum.Y, state.maximum.Y }
+			value := share
+			if value < minimum { value = minimum }
+			if maximum > 0 && value > maximum { value = maximum }
+			if value != share {
+				if panel.Direction == Horizontal { measured[i].X = value } else { measured[i].Y = value }
+				active[i] = false
+				remaining -= value
+				weight -= state.flex
+				clamped = true
+			}
+		}
+		if clamped { continue }
+		for i, child := range children {
+			if !active[i] { continue }
+			value := maxFloat32(0, remaining) * child.UIState().flex / weight
+			if panel.Direction == Horizontal { measured[i].X = value } else { measured[i].Y = value }
+		}
+		break
+	}
 	cursor := inner.X
 	if panel.Direction == Vertical {
 		cursor = inner.Y
@@ -323,18 +385,12 @@ func (panel *Panel) arrangeStack(inner Rect) {
 		size := measured[index]
 		if panel.Direction == Horizontal {
 			cursor += margin.Left
-			if state.flex > 0 && flexTotal > 0 {
-				size.X = flexSpace * state.flex / flexTotal
-			}
 			availableCross := maxFloat32(0, inner.H-margin.Top-margin.Bottom)
 			y, height := alignCross(inner.Y+margin.Top, availableCross, size.Y, panel.Align)
 			child.Arrange(Rect{X: cursor, Y: y, W: size.X, H: height})
 			cursor += size.X + margin.Right + panel.Gap
 		} else {
 			cursor += margin.Top
-			if state.flex > 0 && flexTotal > 0 {
-				size.Y = flexSpace * state.flex / flexTotal
-			}
 			availableCross := maxFloat32(0, inner.W-margin.Left-margin.Right)
 			x, width := alignCross(inner.X+margin.Left, availableCross, size.X, panel.Align)
 			child.Arrange(Rect{X: x, Y: cursor, W: width, H: size.Y})

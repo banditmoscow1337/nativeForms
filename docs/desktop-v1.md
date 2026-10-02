@@ -1,7 +1,8 @@
 # Desktop v1: scope and architecture
 
-Status: design target. This document describes the intended result of the
-migration; it does not describe the current implementation as complete.
+Status: design target. Core/backend separation and offscreen CPU painting are
+implemented on the migration branch. The desktop window and the other v1
+features below remain future work.
 
 ## Goal
 
@@ -21,15 +22,16 @@ renderer. The next milestone presents the software frame in a Windows window.
   platform bindings. Standard-library `image` packages are permitted.
 - `miniVK` is an author-owned integration and belongs only to the optional
   Vulkan backend. A software-only consumer must not import or initialize it.
-  The packaging/module boundary must preserve that property.
+  The package boundary now preserves that property for software imports. The
+  Go module still lists the author-owned `miniVK` dependency for its Vulkan
+  package; separating modules is an optional later packaging decision.
 - SDL, GLFW, Cairo, FreeType, HarfBuzz, `golang.org/x/image`, and other external
   UI, drawing, font, or window packages are outside this design.
 - Calls into OS-provided APIs and frameworks are permitted through first-party
   bindings. On Linux, direct X11/Wayland and keyboard protocol work is a separate
   platform milestone if external native client libraries are also disallowed.
-- The repository currently depends on `miniVK` and `golang.org/x/image`.
-  This document is a migration policy, not a claim that the dependency rule
-  already holds.
+- The repository still depends on `miniVK` and `golang.org/x/image`.
+  Removing the font dependency remains a later milestone.
 
 ## Desktop v1 scope
 
@@ -74,10 +76,8 @@ be documented according to the backend that actually implements it.
 | Platform adapter | Window lifetime, event translation, DPI, clipboard, cursor, presentation, wake-up | Component layout or drawing semantics |
 
 Package names and exact public interfaces can change during implementation.
-The ownership rules above should remain stable. In particular, a generic
-`Renderer` interface must not expose `Device`, `SwapRenderPass`,
-`DescriptorPool`, or any other Vulkan-specific type. The current interface
-does expose such methods and is a migration target.
+The ownership rules above should remain stable. The Vulkan-specific `Renderer`
+interface now lives in the `vulkan` package rather than in the UI core.
 
 ## Data flow and contracts
 
@@ -123,8 +123,9 @@ initially; dirty-region rendering is an optimization after profiling.
   `BeginFrame`, and `Render`. Avoid pretending these signatures are already
   backend-neutral; document any breaking change and offer a small conversion
   example.
-- Move Vulkan initialization, shader resources, and destruction to the Vulkan
-  backend. Do not initialize a graphics device when creating a UI tree.
+- Vulkan initialization and destruction live in the Vulkan backend. Shader
+  file paths must be supplied by the game host until embedded resources exist.
+  Creating a UI tree does not initialize a graphics device.
 - Remove `golang.org/x/image` only after the replacement text path can
   measure and draw the supported first-release scripts. Do not silently
   downgrade Cyrillic support during the migration.

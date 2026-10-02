@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"math"
 	"strings"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/goregular"
@@ -24,6 +25,15 @@ type glyphInfo struct {
 }
 
 var scalableGlyphs map[rune]glyphInfo
+var atlasOnce sync.Once
+var atlasImage image.Image
+
+// FontAtlas is shared by the software and Vulkan renderers. It also
+// initializes the glyph metrics used by MeasureText.
+func FontAtlas() image.Image {
+	atlasOnce.Do(func() { atlasImage = buildFontAtlas() })
+	return atlasImage
+}
 
 var glyphRows = map[byte][7]byte{
 	'!':  {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04},
@@ -139,6 +149,7 @@ func buildFontAtlas() image.Image {
 }
 
 func glyphForRune(character rune) glyphInfo {
+	FontAtlas()
 	if glyph, ok := scalableGlyphs[character]; ok {
 		return glyph
 	}
