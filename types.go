@@ -83,8 +83,8 @@ type Constraints struct {
 	BoundedX, BoundedY bool
 }
 
-func (c Constraints) HasMaxX() bool { return c.BoundedX || c.Max.X>0 }
-func (c Constraints) HasMaxY() bool { return c.BoundedY || c.Max.Y>0 }
+func (c Constraints) HasMaxX() bool { return c.BoundedX || c.Max.X > 0 }
+func (c Constraints) HasMaxY() bool { return c.BoundedY || c.Max.Y > 0 }
 
 func (constraints Constraints) Constrain(size Vec2) Vec2 {
 	size.X = maxFloat32(size.X, constraints.Min.X)
@@ -152,6 +152,10 @@ type Theme struct {
 	ControlPressed Color
 	Disabled       Color
 	Danger         Color
+	Selection      Color
+	Tooltip        Color
+	Scrim          Color
+	Header         Color
 	FontSize       float32
 	ControlHeight  float32
 }
@@ -170,6 +174,10 @@ func DefaultTheme() Theme {
 		ControlPressed: RGBA(31, 37, 47, 255),
 		Disabled:       RGBA(75, 79, 86, 210),
 		Danger:         RGBA(205, 68, 68, 255),
+		Selection:      RGBA(63, 86, 119, 255),
+		Tooltip:        RGBA(37, 43, 54, 255),
+		Scrim:          RGBA(0, 0, 0, 150),
+		Header:         RGBA(31, 38, 49, 255),
 		FontSize:       18,
 		ControlHeight:  44,
 	}
