@@ -41,8 +41,8 @@ was added.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Win32 | Yes | Yes | Yes | Yes | Yes | Yes | File paths from shell | Yes |
 | AppKit via purego | Yes | Yes | Yes | Yes | No | No | No | Yes |
-| Local X11 wire protocol | Yes | Yes | Core keysyms | No | No | Yes | No | No |
-| Wayland xdg-shell + shm | Yes | Yes | Basic XKB symbols, US fallback | No | No | Yes | No | No |
+| Local X11 wire protocol | Yes | Yes | Core keysyms | UTF-8 selection | No | Yes | No | No |
+| Wayland xdg-shell + shm | Yes | Yes | Basic XKB symbols, US fallback | UTF-8 data device | No | Yes | Local file URI paths | No |
 
 The AppKit adapter uses `NSApplication`, `NSWindow`, `NSBitmapImageRep`,
 `NSImageView`, `NSEvent`, and `NSPasteboard`. It currently draws text with the
@@ -50,15 +50,23 @@ framework's shared TrueType atlas, not Core Text. The X11 adapter opens a
 Unix display socket, negotiates MIT-MAGIC-COOKIE-1, checks the default visual,
 creates a window, and sends rows as bounded `PutImage` requests. It handles
 pointer motion and buttons, wheel, resize, core keyboard mapping, and basic
-text entry. X11 input does not yet handle locale compose, XIM, or clipboard
-selection. `ProbeWayland` performs `wl_display.get_registry` and sync on a
+text entry. X11 clipboard uses CLIPBOARD/UTF8_STRING, handles TARGETS and
+SelectionRequest, and pumps events while waiting for SelectionNotify and
+GetProperty. The owner window must keep running. Transfers that need the
+INCR protocol return an explicit error. X11 input does not yet handle locale
+compose or XIM. `ProbeWayland` performs `wl_display.get_registry` and sync on a
 Unix socket. `WaylandWindow.Run` binds the compositor, shared memory, seat,
 and xdg-shell, then presents software frames with `wl_shm` buffers. It handles
 configure/close, pointer movement and buttons, scrolling, and basic evdev
 keys. It reads ordinary Latin and Cyrillic symbol records from the supplied
 XKB keymap and follows the active group; unknown layouts fall back to US
 evdev input. Full XKB types/modifiers, compose, repeat, and IME require
-further work.
+further work. Wayland clipboard binds `wl_data_device_manager` when available,
+offers UTF-8 on a valid input serial, receives text through a file descriptor,
+and caps each transfer at 16 MiB. The compositor must advertise a seat and
+data device manager for clipboard handlers to be available. Wayland also
+accepts a `text/uri-list` file drop and passes decoded local paths to
+`WaylandOptions.OnFilesDropped` on the UI goroutine.
 `Close()` requests exit and the read loop observes it within 50 ms. It does
 not open an Xwayland window.
 
@@ -71,8 +79,8 @@ Win32 and AppKit provide `OpenFile` and `SaveFile`; cancellation returns an
 empty path and no error. Both must be called on the adapter UI goroutine.
 On Linux these methods return `platform.ErrUnsupported`.
 
-Stage 13 still has gaps: Linux clipboard, keymap and IME, macOS IME and
-multiwindow, Core Text shaping, file drops on macOS/Linux, and native Linux
+Stage 13 still has gaps: X11 INCR and locale input, full XKB and IME, macOS IME and
+multiwindow, Core Text shaping, file drops on macOS/X11, and native Linux
 file dialogs. Keep those feature flags false in production UI until the
 respective adapter implements them. The shared editor scenario uses the
 features marked Yes above, subject to platform verification.

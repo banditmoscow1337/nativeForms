@@ -20,9 +20,10 @@ import (
 )
 
 type WaylandOptions struct {
-	Title         string
-	Width, Height int
-	OnReady       func(*WaylandWindow)
+	Title          string
+	Width, Height  int
+	OnReady        func(*WaylandWindow)
+	OnFilesDropped func([]string)
 }
 
 type waylandWire struct {
@@ -165,8 +166,8 @@ type wlBuffer struct {
 	busy, retired bool
 }
 
-// WaylandWindow uses xdg-shell and wl_shm directly over the compositor's Unix
-// socket. Keyboard text uses the US evdev layout until XKB parsing is added.
+// WaylandWindow uses xdg-shell, wl_shm and the data device protocol directly
+// over the compositor's Unix socket.
 type WaylandWindow struct {
 	Manager                                                              *ui.Manager
 	Options                                                              WaylandOptions
@@ -185,6 +186,12 @@ type WaylandWindow struct {
 	globals                                                              map[uint32]string
 	keymap                                                               waylandSymbols
 	keyGroup                                                             uint32
+	dataManager, dataDevice, ownSource, serial, dragOffer                uint32
+	dataOffers                                                           map[uint32]map[string]bool
+	dataSources                                                          map[uint32]string
+	selection                                                            uint32
+	ownedText                                                            string
+	receivingDrag                                                        bool
 }
 
 func NewWayland(manager *ui.Manager, options WaylandOptions) *WaylandWindow {
@@ -233,10 +240,19 @@ func (w *WaylandWindow) Run() error {
 	w.renderer = software.New()
 	w.buffers = make(map[uint32]*wlBuffer)
 	w.pressed = make(map[uint32]bool)
+	w.dataOffers = make(map[uint32]map[string]bool)
+	w.dataSources = make(map[uint32]string)
 	w.lastFrame = time.Now()
 	w.Manager.SetInteractive(true)
 	w.Manager.SetWakeHandler(func() { _ = unix.SetReadDeadline(time.Now()) })
-	defer func() { w.Manager.SetWakeHandler(nil); w.Manager.SetInteractive(false) }()
+	if w.dataDevice != 0 {
+		w.Manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
+	}
+	defer func() {
+		w.Manager.SetWakeHandler(nil)
+		w.Manager.SetClipboardHandlers(nil, nil)
+		w.Manager.SetInteractive(false)
+	}()
 	if w.Options.OnReady != nil {
 		w.Options.OnReady(w)
 	}
@@ -325,6 +341,12 @@ func (w *WaylandWindow) setup() error {
 			}
 			id, err = w.wire.bind(global, 1)
 			w.seat = id
+		case "wl_data_device_manager":
+			if w.dataManager != 0 {
+				continue
+			}
+			id, err = w.wire.bind(global, 1)
+			w.dataManager = id
 		}
 		if err != nil {
 			return err
@@ -338,6 +360,12 @@ func (w *WaylandWindow) setup() error {
 	}
 	if w.compositor == 0 || w.shm == 0 || w.wm == 0 {
 		return fmt.Errorf("wayland: compositor lacks wl_compositor, wl_shm or xdg_wm_base")
+	}
+	if w.dataManager != 0 && w.seat != 0 {
+		w.dataDevice = w.wire.id()
+		if err := w.wire.send(w.dataManager, 1, append(wlWord(w.dataDevice), wlWord(w.seat)...)); err != nil {
+			return err
+		}
 	}
 	w.surface = w.wire.id()
 	if err := w.wire.send(w.compositor, 0, wlWord(w.surface)); err != nil {
@@ -551,10 +579,24 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 			}
 		}
 	case w.pointer:
+		if opcode == 3 && len(payload) >= 4 {
+			w.serial = u32(0)
+		}
 		return w.pointerEvent(opcode, payload)
 	case w.keyboard:
+		if (opcode == 2 || opcode == 3) && len(payload) >= 4 {
+			w.serial = u32(0)
+		}
 		return w.keyboardEvent(opcode, payload)
+	case w.dataDevice:
+		return w.dataDeviceEvent(opcode, payload)
 	default:
+		if _, ok := w.dataSources[object]; ok {
+			return w.dataSourceEvent(object, opcode, payload)
+		}
+		if _, ok := w.dataOffers[object]; ok {
+			return w.dataOfferEvent(object, opcode, payload)
+		}
 		if buffer := w.buffers[object]; buffer != nil && opcode == 0 {
 			buffer.busy = false
 			if buffer.retired {

@@ -11,11 +11,11 @@ import (
 )
 
 func X11Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, MultipleWindows: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true}
 }
 
 func WaylandCapabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, MultipleWindows: true, Wayland: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true, DragDrop: true, Wayland: true}
 }
 
 // BackendName selects a display endpoint without routing Wayland through Xwayland.

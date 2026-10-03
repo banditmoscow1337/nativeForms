@@ -32,24 +32,28 @@ type X11Options struct {
 // X11Window speaks the core X11 protocol over a Unix socket, without Xlib.
 // The caller owns its Manager and must invoke Run on the UI goroutine.
 type X11Window struct {
-	manager            *ui.Manager
-	options            X11Options
-	conn               net.Conn
-	id, gc, root       uint32
-	base, mask, nextID uint32
-	depth              byte
-	minKey, maxKey     byte
-	maxRequest         int
-	width, height      int
-	framebuffer        *image.RGBA
-	renderer           *software.Renderer
-	lastFrame          time.Time
-	closeRequested     atomic.Bool
-	keysyms            map[byte][]uint32
-	wmDelete           uint32
-	sequence           uint16
-	incoming           [32]byte
-	have               int
+	manager                                                       *ui.Manager
+	options                                                       X11Options
+	conn                                                          net.Conn
+	id, gc, root                                                  uint32
+	base, mask, nextID                                            uint32
+	depth                                                         byte
+	minKey, maxKey                                                byte
+	maxRequest                                                    int
+	width, height                                                 int
+	framebuffer                                                   *image.RGBA
+	renderer                                                      *software.Renderer
+	lastFrame                                                     time.Time
+	closeRequested                                                atomic.Bool
+	keysyms                                                       map[byte][]uint32
+	wmDelete                                                      uint32
+	clipboard, utf8Atom, targetsAtom, textAtom, selectionProperty uint32
+	clipboardText                                                 string
+	clipboardOwned                                                bool
+	clipboardError                                                error
+	sequence                                                      uint16
+	incoming                                                      [32]byte
+	have                                                          int
 }
 
 func NewX11(manager *ui.Manager, options X11Options) *X11Window {
@@ -63,9 +67,6 @@ func (w *X11Window) Close() {
 		return
 	}
 	w.closeRequested.Store(true)
-	if w.conn != nil {
-		_ = w.conn.SetReadDeadline(time.Now())
-	}
 }
 
 func x11Display() (string, int, string, error) {
@@ -347,6 +348,19 @@ func (w *X11Window) createWindow() error {
 	if err != nil {
 		return err
 	}
+	for _, entry := range []struct {
+		name string
+		dst  *uint32
+	}{
+		{"CLIPBOARD", &w.clipboard}, {"UTF8_STRING", &w.utf8Atom},
+		{"TARGETS", &w.targetsAtom}, {"TEXT", &w.textAtom},
+		{"_NATIVEFORMS_CLIPBOARD", &w.selectionProperty},
+	} {
+		*entry.dst, err = w.atom(entry.name)
+		if err != nil {
+			return err
+		}
+	}
 	prop := make([]byte, 28)
 	prop[0] = 18
 	prop[1] = 0
@@ -436,12 +450,17 @@ func (w *X11Window) Run() error {
 	w.renderer = software.New()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
+	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
 	w.manager.SetWakeHandler(func() {
 		if w.conn != nil {
 			_ = w.conn.SetReadDeadline(time.Now())
 		}
 	})
-	defer func() { w.manager.SetWakeHandler(nil); w.manager.SetInteractive(false) }()
+	defer func() {
+		w.manager.SetWakeHandler(nil)
+		w.manager.SetClipboardHandlers(nil, nil)
+		w.manager.SetInteractive(false)
+	}()
 	if w.options.OnReady != nil {
 		w.options.OnReady(w)
 	}
@@ -473,6 +492,9 @@ func (w *X11Window) Run() error {
 		}
 		if w.handle(message) {
 			paint = true
+		}
+		if w.clipboardError != nil {
+			return w.clipboardError
 		}
 	}
 	return nil
@@ -690,6 +712,15 @@ func (w *X11Window) handle(message []byte) bool {
 		w.manager.HandleEvent(ui.Event{Type: kind, Button: mouse, X: x, Y: y, Mods: x11Mods(le.Uint16(message[28:]))})
 	case 8, 10:
 		w.manager.ClearInteraction()
+	case 29: // SelectionClear
+		if le.Uint32(message[12:]) == w.clipboard {
+			w.clipboardOwned = false
+			w.clipboardText = ""
+		}
+	case 30: // SelectionRequest
+		if err := w.selectionRequest(message); err != nil {
+			w.clipboardError = err
+		}
 	case 12:
 		return true
 	case 22:
