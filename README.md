@@ -3,12 +3,12 @@
 nativeForms is a Go UI toolkit with a component tree, layout, input dispatch,
 themes, and basic widgets. The core now records backend-independent paint
 commands. An offscreen software renderer and an optional Vulkan backend consume
-the same frame. A Win32 adapter presents software frames in one resizable window.
+the same frame. Win32, AppKit and local X11 adapters present software frames.
 
 The [desktop v1 scope and architecture](docs/desktop-v1.md) records the target.
 The [migration notes](docs/migration-notes.md) describe the API changes and
-current limitations. The first window target is Windows; macOS and Linux are
-later platform targets.
+current limitations. [Stages 12–13](docs/stages-12-13.md) describe popup
+widgets, virtual models, desktop examples and platform feature availability.
 
 For an offscreen example that writes `frame.png`, see
 [`examples/offscreen`](examples/offscreen/main.go). The caller creates a
@@ -22,6 +22,12 @@ UI thread; use `manager.Post` for updates from other goroutines. Set an
 application font with `nativeforms.SetFontData(ttfBytes)` before the first
 measurement or frame. Otherwise the toolkit loads a local system TrueType font
 and falls back to its embedded ASCII bitmap glyphs if none is available.
+
+The shared editor demo runs with `go run ./examples/editor_windows`,
+`go run ./examples/editor_darwin`, or `go run ./examples/editor_linux` on
+their respective platforms. Linux currently supports a local X11 display.
+Wayland registry discovery is available but its window adapter reports an
+unsupported feature error until surface, input, and clipboard support land.
 
 ## Dependency policy
 
