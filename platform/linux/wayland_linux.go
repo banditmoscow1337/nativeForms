@@ -11,9 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	ui "github.com/banditmoscow1337/nativeForms"
-	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
 type WaylandGlobal struct {
@@ -22,23 +19,31 @@ type WaylandGlobal struct {
 	Version   uint32
 }
 
-// ProbeWayland exchanges wl_display.get_registry and sync messages directly
-// with the compositor. It never loads libwayland-client.
-func ProbeWayland() ([]WaylandGlobal, error) {
+func waylandPath() (string, error) {
 	name := os.Getenv("WAYLAND_DISPLAY")
 	if name == "" {
-		return nil, fmt.Errorf("wayland: WAYLAND_DISPLAY is unset")
+		return "", fmt.Errorf("wayland: WAYLAND_DISPLAY is unset")
 	}
 	path := name
 	if !filepath.IsAbs(path) {
 		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 		if runtimeDir == "" {
-			return nil, fmt.Errorf("wayland: XDG_RUNTIME_DIR is unset")
+			return "", fmt.Errorf("wayland: XDG_RUNTIME_DIR is unset")
 		}
 		if strings.ContainsRune(name, '/') {
-			return nil, fmt.Errorf("wayland: invalid display name")
+			return "", fmt.Errorf("wayland: invalid display name")
 		}
 		path = filepath.Join(runtimeDir, name)
+	}
+	return path, nil
+}
+
+// ProbeWayland exchanges wl_display.get_registry and sync messages directly
+// with the compositor. It never loads libwayland-client.
+func ProbeWayland() ([]WaylandGlobal, error) {
+	path, err := waylandPath()
+	if err != nil {
+		return nil, err
 	}
 	conn, err := net.DialTimeout("unix", path, 2*time.Second)
 	if err != nil {
@@ -97,15 +102,4 @@ func ProbeWayland() ([]WaylandGlobal, error) {
 		}
 		globals = append(globals, WaylandGlobal{Name: id, Interface: iface, Version: binary.LittleEndian.Uint32(payload[offset:])})
 	}
-}
-
-type WaylandWindow struct{ Manager *ui.Manager }
-
-func (w *WaylandWindow) Capabilities() platform.Capabilities { return WaylandCapabilities() }
-
-func (w *WaylandWindow) Run() error {
-	if _, err := ProbeWayland(); err != nil {
-		return err
-	}
-	return platform.Unsupported("wayland", platform.FeatureWayland)
 }

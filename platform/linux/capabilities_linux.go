@@ -11,15 +11,14 @@ import (
 )
 
 func X11Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, MultipleWindows: true}
 }
 
 func WaylandCapabilities() platform.Capabilities {
-	return platform.Capabilities{Wayland: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, MultipleWindows: true, Wayland: true}
 }
 
-// BackendName selects a display endpoint. An unsupported Wayland session is
-// reported explicitly; it is never silently routed through Xwayland.
+// BackendName selects a display endpoint without routing Wayland through Xwayland.
 func BackendName() (string, error) {
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		return "wayland", nil

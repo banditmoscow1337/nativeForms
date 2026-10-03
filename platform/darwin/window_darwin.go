@@ -59,7 +59,7 @@ func New(manager *ui.Manager, options Options) *Window {
 }
 
 func Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, FileDialog: true}
 }
 
 func (w *Window) Capabilities() platform.Capabilities { return Capabilities() }
@@ -101,7 +101,16 @@ func (w *Window) Run() error {
 	if w.window == 0 {
 		return fmt.Errorf("darwin: NSWindow initialization failed")
 	}
-	defer w.window.Send(selector("release"))
+	// AppKit otherwise releases the window when its close button is pressed.
+	// We keep an owning reference and inspect isVisible after sendEvent returns.
+	w.window.Send(selector("setReleasedWhenClosed:"), false)
+	defer func() {
+		if objc.Send[bool](w.window, selector("isVisible")) {
+			w.window.Send(selector("close"))
+		}
+		w.window.Send(selector("release"))
+		w.window = 0
+	}()
 	title := w.options.Title
 	if title == "" {
 		title = "nativeForms"
@@ -233,6 +242,40 @@ func (w *Window) SetClipboardText(value string) error {
 		return fmt.Errorf("darwin: clipboard write failed")
 	}
 	return nil
+}
+
+// OpenFile shows an AppKit file panel on the Run goroutine. An empty path
+// with a nil error means the user cancelled.
+func (w *Window) OpenFile() (string, error) {
+	if w == nil || w.window == 0 {
+		return "", fmt.Errorf("darwin: file dialog needs a running window")
+	}
+	panel := class("NSOpenPanel").Send(selector("openPanel"))
+	if panel == 0 {
+		return "", fmt.Errorf("darwin: NSOpenPanel unavailable")
+	}
+	if objc.Send[int64](panel, selector("runModal")) != 1 {
+		return "", nil
+	}
+	return stringValue(panel.Send(selector("URL")).Send(selector("path"))), nil
+}
+
+// SaveFile shows an AppKit save panel with an optional initial file name.
+func (w *Window) SaveFile(defaultName string) (string, error) {
+	if w == nil || w.window == 0 {
+		return "", fmt.Errorf("darwin: file dialog needs a running window")
+	}
+	panel := class("NSSavePanel").Send(selector("savePanel"))
+	if panel == 0 {
+		return "", fmt.Errorf("darwin: NSSavePanel unavailable")
+	}
+	if defaultName != "" {
+		panel.Send(selector("setNameFieldStringValue:"), nsString(defaultName))
+	}
+	if objc.Send[int64](panel, selector("runModal")) != 1 {
+		return "", nil
+	}
+	return stringValue(panel.Send(selector("URL")).Send(selector("path"))), nil
 }
 
 func stringValue(value objc.ID) string {

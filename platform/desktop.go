@@ -25,6 +25,13 @@ type Capabilities struct {
 	DragDrop, FileDialog, Wayland               bool
 }
 
+// FileDialogs opens a native file picker on the adapter's UI goroutine.
+// The empty path with a nil error means the user cancelled the picker.
+type FileDialogs interface {
+	OpenFile() (string, error)
+	SaveFile(defaultName string) (string, error)
+}
+
 func (c Capabilities) Supports(feature Feature) bool {
 	switch feature {
 	case FeatureClipboard:

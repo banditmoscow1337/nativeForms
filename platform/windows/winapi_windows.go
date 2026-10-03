@@ -54,7 +54,7 @@ type candidateForm struct {
 }
 
 type functions struct {
-	user, kernel, gdi, imm                                                                            uintptr
+	user, kernel, gdi, imm, shell                                                                     uintptr
 	createWindow, registerClass, defProc, getMessage, translateMessage, dispatchMessage, showWindow   uintptr
 	destroyWindow, postQuit, postMessage, beginPaint, endPaint, invalidateRect                        uintptr
 	getClientRect, screenToClient, getDpi, setDpi, setWindowPos                                       uintptr
@@ -63,6 +63,7 @@ type functions struct {
 	setClipboardData, getClipboardData, globalAlloc, globalLock, globalUnlock, globalFree, globalSize uintptr
 	stretchDIBits, getModuleHandle                                                                    uintptr
 	immGetContext, immReleaseContext, immGetComposition, immSetCandidate                              uintptr
+	dragAcceptFiles, dragQueryFile, dragFinish                                                        uintptr
 }
 
 var win functions
@@ -89,6 +90,10 @@ func load() error {
 		return err
 	}
 	win.imm, err = open("imm32.dll")
+	if err != nil {
+		return err
+	}
+	win.shell, err = open("shell32.dll")
 	if err != nil {
 		return err
 	}
@@ -145,6 +150,9 @@ func load() error {
 		{win.imm, "ImmReleaseContext", &win.immReleaseContext},
 		{win.imm, "ImmGetCompositionStringW", &win.immGetComposition},
 		{win.imm, "ImmSetCandidateWindow", &win.immSetCandidate},
+		{win.shell, "DragAcceptFiles", &win.dragAcceptFiles},
+		{win.shell, "DragQueryFileW", &win.dragQueryFile},
+		{win.shell, "DragFinish", &win.dragFinish},
 	}
 	for _, s := range symbols {
 		if err := get(s.lib, s.name, s.dst); err != nil {
@@ -171,6 +179,7 @@ func keep(values ...any) {
 
 const (
 	wmDestroy          = 0x0002
+	wmDropFiles        = 0x0233
 	wmSize             = 0x0005
 	wmSetCursor        = 0x0020
 	wmKillFocus        = 0x0008
