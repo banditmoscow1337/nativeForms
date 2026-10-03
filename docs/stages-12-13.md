@@ -42,7 +42,7 @@ was added.
 | Win32 | Yes | Yes | Yes | Yes | Yes | Yes | File paths from shell | Yes |
 | AppKit via purego | Yes | Yes | Yes | Yes | No | No | No | Yes |
 | Local X11 wire protocol | Yes | Yes | Core keysyms | No | No | Yes | No | No |
-| Wayland xdg-shell + shm | Yes | Yes | US evdev fallback | No | No | Yes | No | No |
+| Wayland xdg-shell + shm | Yes | Yes | Basic XKB symbols, US fallback | No | No | Yes | No | No |
 
 The AppKit adapter uses `NSApplication`, `NSWindow`, `NSBitmapImageRep`,
 `NSImageView`, `NSEvent`, and `NSPasteboard`. It currently draws text with the
@@ -55,8 +55,10 @@ selection. `ProbeWayland` performs `wl_display.get_registry` and sync on a
 Unix socket. `WaylandWindow.Run` binds the compositor, shared memory, seat,
 and xdg-shell, then presents software frames with `wl_shm` buffers. It handles
 configure/close, pointer movement and buttons, scrolling, and basic evdev
-keys. Keyboard text currently assumes a US layout regardless of compositor
-keymap; Cyrillic input, compose, repeat, and IME require further work.
+keys. It reads ordinary Latin and Cyrillic symbol records from the supplied
+XKB keymap and follows the active group; unknown layouts fall back to US
+evdev input. Full XKB types/modifiers, compose, repeat, and IME require
+further work.
 `Close()` requests exit and the read loop observes it within 50 ms. It does
 not open an Xwayland window.
 

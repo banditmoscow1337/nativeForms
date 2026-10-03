@@ -27,8 +27,10 @@ The shared editor demo runs with `go run ./examples/editor_windows`,
 `go run ./examples/editor_darwin`, or `go run ./examples/editor_linux` on
 their respective platforms. Linux selects Wayland when `WAYLAND_DISPLAY` is
 set and X11 otherwise. The Wayland adapter uses xdg-shell and `wl_shm` over a
-Unix socket. Its basic keyboard text input currently assumes a US layout;
-clipboard and IME are not yet implemented there.
+Unix socket. Its keyboard path reads ordinary symbol records from the
+compositor's XKB keymap, including common Cyrillic names. It falls back to a
+US layout when it cannot read those records; compose, clipboard, and IME are
+not yet implemented there.
 
 On Windows and macOS, `OpenFile()` and `SaveFile(defaultName)` show native
 file panels from the UI goroutine. An empty path means the user cancelled.

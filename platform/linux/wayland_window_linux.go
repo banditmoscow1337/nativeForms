@@ -183,6 +183,8 @@ type WaylandWindow struct {
 	pointerPos                                                           ui.Vec2
 	pressed                                                              map[uint32]bool
 	globals                                                              map[uint32]string
+	keymap                                                               waylandSymbols
+	keyGroup                                                             uint32
 }
 
 func NewWayland(manager *ui.Manager, options WaylandOptions) *WaylandWindow {
@@ -632,7 +634,17 @@ func (w *WaylandWindow) keyboardEvent(opcode uint16, p []byte) error {
 		if err != nil {
 			return err
 		}
-		_ = syscall.Close(fd) // XKB parsing and compose still need implementation.
+		file := os.NewFile(uintptr(fd), "wayland-keymap")
+		defer file.Close()
+		w.keymap = nil
+		if len(p) < 8 || u(0) != 1 || u(4) == 0 || u(4) > 4<<20 {
+			return nil
+		}
+		data := make([]byte, u(4))
+		if _, err := io.ReadFull(file, data); err != nil {
+			return fmt.Errorf("wayland: read keymap: %w", err)
+		}
+		w.keymap = parseWaylandKeymap(data)
 	case 2:
 		w.pressed = make(map[uint32]bool)
 		w.Manager.ClearInteraction()
@@ -664,6 +676,9 @@ func (w *WaylandWindow) keyboardEvent(opcode uint16, p []byte) error {
 			mods |= ui.ModSuper
 		}
 		key, character := evdevUS(code, mods&ui.ModShift != 0)
+		if w.keymap != nil {
+			character = w.keymap.character(code, w.keyGroup, mods&ui.ModShift != 0)
+		}
 		kind := ui.KeyDown
 		if !down {
 			kind = ui.KeyUp
@@ -671,6 +686,10 @@ func (w *WaylandWindow) keyboardEvent(opcode uint16, p []byte) error {
 		w.Manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods})
 		if down && character >= 32 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 && unicode.IsPrint(character) {
 			w.Manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: character})
+		}
+	case 4:
+		if len(p) >= 20 {
+			w.keyGroup = u(16)
 		}
 	}
 	return nil
