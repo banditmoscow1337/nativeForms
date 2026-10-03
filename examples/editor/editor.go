@@ -44,10 +44,11 @@ func New(manager *ui.Manager) ui.Component {
 		{id: "mesh-a", name: "Cube", kind: "Mesh"},
 		{id: "mesh-b", name: "Sphere", kind: "Mesh"},
 	}
-	tree := ui.NewVirtualTree(hierarchy{
+	scene := hierarchy{
 		labels:   map[string]string{"scene": "Scene", "camera": "Camera", "light": "Sun", "geometry": "Geometry", "mesh-a": "Cube", "mesh-b": "Sphere"},
 		children: map[string][]string{"scene": {"camera", "light", "geometry"}, "geometry": {"mesh-a", "mesh-b"}},
-	})
+	}
+	tree := ui.NewVirtualTree(scene)
 	tree.SetExpanded("scene", true)
 	tree.SetExpanded("geometry", true)
 	tree.SetMinimumSize(ui.Vec2{X: 150})
@@ -55,7 +56,32 @@ func New(manager *ui.Manager) ui.Component {
 	table.SetMinimumSize(ui.Vec2{X: 250})
 	selected := ui.NewLabel("Выберите объект")
 	selected.Wrap = true
-	show := func(id string) { selected.SetText("Выбран: " + id) }
+	selectedID := ""
+	nameField := ui.NewTextField("Имя объекта", func(name string) {
+		if selectedID == "" {
+			return
+		}
+		for i := range data {
+			if data[i].id == selectedID {
+				data[i].name = name
+				break
+			}
+		}
+		scene.labels[selectedID] = name
+		manager.InvalidatePaint()
+	})
+	show := func(id string) {
+		selectedID = id
+		selected.SetText("Выбран: " + id)
+		name := scene.Label(id)
+		for _, object := range data {
+			if object.id == id {
+				name = object.name
+				break
+			}
+		}
+		nameField.SetText(name)
+	}
 	tree.OnSelect = show
 	table.OnSelect = show
 	properties := ui.NewStack(ui.Vertical, 10)
@@ -63,7 +89,7 @@ func New(manager *ui.Manager) ui.Component {
 	properties.Background = ui.DefaultTheme().PanelAlt
 	properties.SetMinimumSize(ui.Vec2{X: 170})
 	properties.Add(ui.NewLabel("Свойства"), selected)
-	properties.Add(ui.NewTextField("Имя объекта", nil))
+	properties.Add(nameField)
 	properties.Add(ui.NewCheckbox("Виден", true, nil))
 	properties.Add(ui.NewRadioGroup([]ui.RadioOption{{ID: "local", Label: "Local"}, {ID: "world", Label: "World"}}, "local", nil))
 	properties.Add(ui.NewComboBox([]ui.RadioOption{{ID: "solid", Label: "Solid"}, {ID: "wire", Label: "Wireframe"}}, "solid", nil))

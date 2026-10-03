@@ -153,8 +153,13 @@ func (w *Window) Run() error {
 		date := class("NSDate").Send(selector("dateWithTimeIntervalSinceNow:"), seconds)
 		event := w.app.Send(selector("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), date, mode, true)
 		if event != 0 {
+			eventType := objc.Send[uint64](event, selector("type"))
 			w.event(event, newHeight)
-			w.app.Send(selector("sendEvent:"), event)
+			// Keyboard input belongs to the nativeForms tree. Forwarding it to
+			// an NSImageView without a text responder makes AppKit beep.
+			if eventType != 10 && eventType != 11 {
+				w.app.Send(selector("sendEvent:"), event)
+			}
 		}
 		iterationPool.Send(selector("drain"))
 	}
@@ -290,7 +295,11 @@ func (w *Window) event(event objc.ID, height int) {
 		if typ == 11 {
 			kind = ui.KeyUp
 		}
-		w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: flags, Repeat: objc.Send[bool](event, selector("isARepeat"))})
+		handled := w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: flags, Repeat: objc.Send[bool](event, selector("isARepeat"))})
+		if typ == 10 && flags&ui.ModSuper != 0 && key == ui.KeyQ && !handled {
+			w.Close()
+			break
+		}
 		if typ == 10 && flags&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
 			value := stringValue(event.Send(selector("characters")))
 			for len(value) > 0 {
