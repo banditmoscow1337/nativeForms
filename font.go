@@ -21,6 +21,9 @@ const (
 type glyphInfo struct {
 	cellX, cellY int
 	advance      float32
+	face         *TrueTypeFace
+	id           uint16
+	visible      bool
 }
 
 var scalableGlyphs map[rune]glyphInfo
@@ -28,12 +31,13 @@ var atlasOnce sync.Once
 var atlasImage image.Image
 var fontMu sync.Mutex
 var selectedFace *TrueTypeFace
+var fallbackFaces []*TrueTypeFace
 var atlasReady bool
 
 // SetFontData installs a TrueType font before the first measurement or frame.
 // The bytes are copied so callers can release their buffer immediately.
 func SetFontData(data []byte) error {
-	face, err := ParseTrueType(data)
+	face, err := ParseTrueType(append([]byte(nil), data...))
 	if err != nil {
 		return err
 	}
@@ -42,13 +46,30 @@ func SetFontData(data []byte) error {
 	if atlasReady {
 		return fmt.Errorf("font atlas has already been initialized")
 	}
-	face.data = append([]byte(nil), data...)
-	// Table slices must reference the copied bytes, not the caller's buffer.
-	face, err = ParseTrueType(face.data)
-	if err != nil {
-		return err
-	}
 	selectedFace = face
+	return nil
+}
+
+// SetFallbackFontData replaces the ordered portable fallback chain before the
+// first measurement/frame. Buffers are copied; a failed call changes nothing.
+// SetFontData is the primary face, followed by these fonts. When no fonts are
+// configured, known system fonts are tried instead. The final fallback is ASCII.
+// Native TextShapers, such as Core Text, manage their own fonts.
+func SetFallbackFontData(fonts ...[]byte) error {
+	faces := make([]*TrueTypeFace, 0, len(fonts))
+	for i, data := range fonts {
+		face, err := ParseTrueType(append([]byte(nil), data...))
+		if err != nil {
+			return fmt.Errorf("fallback font %d: %w", i, err)
+		}
+		faces = append(faces, face)
+	}
+	fontMu.Lock()
+	defer fontMu.Unlock()
+	if atlasReady {
+		return fmt.Errorf("font atlas has already been initialized")
+	}
+	fallbackFaces = faces
 	return nil
 }
 
@@ -57,18 +78,22 @@ func SetFontData(data []byte) error {
 func FontAtlas() image.Image {
 	atlasOnce.Do(func() {
 		fontMu.Lock()
-		face := selectedFace
-		if face == nil {
-			face = defaultSystemFace()
+		defer fontMu.Unlock()
+		var faces []*TrueTypeFace
+		if selectedFace != nil {
+			faces = append(faces, selectedFace)
 		}
-		atlasImage = buildFontAtlas(face)
+		faces = append(faces, fallbackFaces...)
+		if len(faces) == 0 {
+			faces = defaultSystemFaces()
+		}
+		atlasImage = buildFontAtlas(faces)
 		atlasReady = true
-		fontMu.Unlock()
 	})
 	return atlasImage
 }
 
-func defaultSystemFace() *TrueTypeFace {
+func defaultSystemFaces() []*TrueTypeFace {
 	var paths []string
 	switch runtime.GOOS {
 	case "windows":
@@ -83,6 +108,7 @@ func defaultSystemFace() *TrueTypeFace {
 		paths = []string{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"}
 	}
+	var faces []*TrueTypeFace
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -90,10 +116,10 @@ func defaultSystemFace() *TrueTypeFace {
 		}
 		face, err := ParseTrueType(data)
 		if err == nil {
-			return face
+			faces = append(faces, face)
 		}
 	}
-	return nil
+	return faces
 }
 
 var glyphRows = map[byte][7]byte{
@@ -167,7 +193,7 @@ var glyphRows = map[byte][7]byte{
 	'~':  {0x00, 0x00, 0x09, 0x16},
 }
 
-func buildFontAtlas(face *TrueTypeFace) image.Image {
+func buildFontAtlas(faces []*TrueTypeFace) image.Image {
 	atlas := image.NewNRGBA(image.Rect(0, 0, fontAtlasSize, fontAtlasSize))
 	atlas.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
 
@@ -180,7 +206,7 @@ func buildFontAtlas(face *TrueTypeFace) image.Image {
 	appendRange(32, 126)
 	appendRange(160, 383)
 	appendRange(0x370, 0x52f) // Greek, Coptic and Cyrillic.
-	characters = append(characters, '–', '—', '‘', '’', '“', '”', '…', '№', '€', '₽')
+	characters = append(characters, '‐', '‑', '–', '—', '‘', '’', '“', '”', '„', '…', '№', '€', '₽', '•', '−')
 	cellsPerRow := fontAtlasSize / fontCellSize
 	scalableGlyphs = make(map[rune]glyphInfo, len(characters))
 	for index, character := range characters {
@@ -188,24 +214,28 @@ func buildFontAtlas(face *TrueTypeFace) image.Image {
 			break
 		}
 		x, y := index%cellsPerRow, index/cellsPerRow
-		advance := float32(0.75)
-		if face != nil {
+		glyph := glyphInfo{cellX: x, cellY: y, advance: 0.75, visible: !unicode.IsSpace(character)}
+		found := false
+		for _, face := range faces {
 			id := face.glyphIndex(character)
-			if id == 0 && character != ' ' {
+			if id == 0 {
 				continue
 			}
-			advance = face.advance(id)
 			if err := face.drawGlyph(atlas, id, x*fontCellSize, y*fontCellSize); err != nil {
 				continue
 			}
-		} else {
+			glyph.advance, glyph.face, glyph.id = face.advance(id), face, id
+			found = true
+			break
+		}
+		if !found {
 			key := unicode.ToUpper(character)
-			if key > 127 && character != ' ' {
+			if _, ok := glyphRows[byte(key)]; (key > 127 || !ok) && character != ' ' {
 				continue
 			}
 			drawBitmapGlyph(atlas, glyphRows[byte(key)], x*fontCellSize, y*fontCellSize)
 		}
-		scalableGlyphs[character] = glyphInfo{cellX: x, cellY: y, advance: advance}
+		scalableGlyphs[character] = glyph
 	}
 	return atlas
 }
@@ -228,8 +258,20 @@ func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 
 func glyphForRune(character rune) glyphInfo {
 	FontAtlas()
+	// Format controls have no ink/advance, including inside a shaped caret run.
+	switch character {
+	case '\r', '\n', '\u0085', '\u2028', '\u2029', '\u00ad', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff':
+		return glyphInfo{}
+	case '\t':
+		return glyphInfo{advance: scalableGlyphs[' '].advance * 4}
+	case '\u202f', '\u2009':
+		return glyphInfo{advance: scalableGlyphs[' '].advance * 0.6}
+	}
 	if glyph, ok := scalableGlyphs[character]; ok {
 		return glyph
+	}
+	if character == '\u00a0' {
+		return scalableGlyphs[' ']
 	}
 	if glyph, ok := scalableGlyphs['?']; ok {
 		return glyph
@@ -241,7 +283,7 @@ func MeasureText(text string, size float32) Vec2 {
 	if size <= 0 {
 		return Vec2{}
 	}
-	lines := strings.Split(text, "\n")
+	lines := strings.Split(normalizeTextBreaks(text), "\n")
 	maxWidth := float32(0)
 	for _, line := range lines {
 		maxWidth = float32(math.Max(float64(maxWidth), float64(measureTextLine(line, size))))
@@ -256,9 +298,5 @@ func measureTextLine(text string, size float32) float32 {
 	if shaped, ok := shapeText(text, size); ok {
 		return shaped.Advance
 	}
-	width := float32(0)
-	for _, character := range text {
-		width += glyphForRune(character).advance * size
-	}
-	return width
+	return walkAtlasText(text, size, nil, nil)
 }

@@ -253,7 +253,9 @@ func hangulLink(a, b rune) bool {
 	return x == 1 && (y == 1 || y == 2 || y == 4 || y == 5) ||
 		(x == 2 || x == 4) && (y == 2 || y == 3) || (x == 3 || x == 5) && y == 3
 }
-func wordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
+func wordRune(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || r == '_'
+}
 func wordBoundary(r []rune, at, direction int) int {
 	at = min(max(at, 0), len(r))
 	if direction < 0 {

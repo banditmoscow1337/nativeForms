@@ -464,6 +464,7 @@ func (t *Tabs) Handle(e Event) bool {
 // NewDialog returns content that can be passed to Manager.OpenDialog.
 func NewDialog(title string, body Component, actions ...*Button) *Panel {
 	p := NewStack(Vertical, 12)
+	p.SetAccessibility(AccessibilityInfo{Role: RoleDialog, Name: title})
 	p.Background = DefaultTheme().PanelAlt
 	p.Border, p.BorderWidth = DefaultTheme().Border, 1
 	p.Padding = All(16)

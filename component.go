@@ -36,8 +36,10 @@ type State struct {
 	pressed   bool
 	focused   bool
 
-	onEvent func(Event) bool
-	tooltip string
+	onEvent       func(Event) bool
+	tooltip       string
+	accessibleID  AccessibleID
+	accessibility AccessibilityInfo
 }
 
 func (state *State) UIState() *State { return state }

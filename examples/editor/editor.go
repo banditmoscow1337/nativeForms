@@ -70,6 +70,7 @@ func New(manager *ui.Manager) ui.Component {
 		scene.labels[selectedID] = name
 		manager.InvalidatePaint()
 	})
+	nameField.SetAccessibility(ui.AccessibilityInfo{Name: "Имя объекта"})
 	show := func(id string) {
 		selectedID = id
 		selected.SetText("Выбран: " + id)
@@ -97,7 +98,9 @@ func New(manager *ui.Manager) ui.Component {
 	details.Padding = ui.All(12)
 	details.Add(ui.NewLabel("Таблица объектов"), table)
 	table.SetFlex(1)
-	tabs := ui.NewTabs([]ui.Tab{{ID: "objects", Title: "Объекты", Content: details}, {ID: "notes", Title: "Заметки", Content: ui.NewTextArea("Сцена", nil)}}, "objects", nil)
+	notes := ui.NewTextArea("Сцена", nil)
+	notes.SetAccessibility(ui.AccessibilityInfo{Name: "Заметки"})
+	tabs := ui.NewTabs([]ui.Tab{{ID: "objects", Title: "Объекты", Content: details}, {ID: "notes", Title: "Заметки", Content: notes}}, "objects", nil)
 	center := ui.NewSplitPane(ui.Horizontal, tabs, properties)
 	center.Ratio = 0.72
 	workspace := ui.NewSplitPane(ui.Horizontal, tree, center)
@@ -121,6 +124,7 @@ func New(manager *ui.Manager) ui.Component {
 		dialogID = manager.OpenDialog(dialog, 340, 180)
 	}))
 	root := ui.NewStack(ui.Vertical, 0)
+	root.SetAccessibility(ui.AccessibilityInfo{Name: "Редактор nativeForms", Language: "ru"})
 	root.Background = ui.DefaultTheme().Panel
 	root.Add(header, workspace)
 	return root

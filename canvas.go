@@ -124,6 +124,7 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 	if size <= 0 || bounds.Empty() || tint.A <= 0 {
 		return
 	}
+	text = normalizeTextBreaks(text)
 	lineCount := strings.Count(text, "\n") + 1
 	lineHeight := size * 1.2
 	y := bounds.Y + (bounds.H-lineHeight*float32(lineCount))*0.5
@@ -148,19 +149,15 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()), H: float32(mask.Bounds().Dy())}, tint)
 			}
 		} else {
-			for _, character := range line {
-				glyph := glyphForRune(character)
-				if character != ' ' {
-					cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-					cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-					cell := float32(fontCellSize) / fontAtlasSize
-					canvas.quad(
-						Rect{X: x, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
-						Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-					)
-				}
-				x += glyph.advance * size
-			}
+			walkAtlasText(line, size, nil, func(glyph glyphInfo, offset float32) {
+				cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
+				cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
+				cell := float32(fontCellSize) / fontAtlasSize
+				canvas.quad(
+					Rect{X: x + offset, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
+					Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
+				)
+			})
 		}
 		if lastLine {
 			break
