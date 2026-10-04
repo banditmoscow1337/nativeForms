@@ -30,60 +30,141 @@ the three desktop entry points import the same application tree.
 
 ## Stage 13: native adapters
 
-`platform.Capabilities` exposes what a backend actually implements. A false
-value means callers should disable that feature. `platform.ErrUnsupported`
-can be checked with `errors.Is` for requests that cannot be served. The
-implementation uses the Go standard library, `purego` for AppKit/Win32, and
-the author's own optional `miniVK` for Vulkan; no new third-party dependency
-was added.
+The implementation covers the remaining native-adapter work. Platform execution
+and acceptance checks are left to the project owner; no builds or tests were run
+here. Only the standard library and `purego` are used by these adapters. The
+optional Vulkan package continues to use the author's `miniVK`.
 
-| Backend | Frame | Pointer | Keyboard and basic text | Clipboard | IME | Multiwindow | Drag and drop | File dialogs |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Win32 | Yes | Yes | Yes | Yes | Yes | Yes | File paths from shell | Yes |
-| AppKit via purego | Yes | Yes | Yes | Yes | No | No | No | Yes |
-| Local X11 wire protocol | Yes | Yes | Core keysyms | UTF-8 selection | No | Yes | No | No |
-| Wayland xdg-shell + shm | Yes | Yes | Basic XKB symbols, US fallback | UTF-8 data device | No | Yes | Local file URI paths | No |
+| Backend | Frame/input | Clipboard | IME | Multiple windows | Incoming file drops | File dialogs |
+| --- | --- | --- | --- | --- | --- | --- |
+| Win32 | Software, Win32 input | UTF-16 | IMM32 | Independent UI threads | Shell HDROP | Open/Save panels |
+| AppKit | Software, Core Text | NSPasteboard | NSTextInputClient | One shared AppKit loop | File URLs and path lists | NSOpenPanel/NSSavePanel |
+| Local X11 | PutImage, keysyms, compose | UTF-8, including INCR | IBus when available | Independent connections | Xdnd 3–5, copy | Desktop portal when available |
+| Native Wayland | xdg-shell, wl_shm, XKB, compose | wl_data_device | text-input-v3 when advertised | Independent connections | Local file URI lists | Desktop portal when available |
 
-The AppKit adapter uses `NSApplication`, `NSWindow`, `NSBitmapImageRep`,
-`NSImageView`, `NSEvent`, and `NSPasteboard`. It currently draws text with the
-framework's shared TrueType atlas, not Core Text. The X11 adapter opens a
-Unix display socket, negotiates MIT-MAGIC-COOKIE-1, checks the default visual,
-creates a window, and sends rows as bounded `PutImage` requests. It handles
-pointer motion and buttons, wheel, resize, core keyboard mapping, and basic
-text entry. X11 clipboard uses CLIPBOARD/UTF8_STRING, handles TARGETS and
-SelectionRequest, and pumps events while waiting for SelectionNotify and
-GetProperty. The owner window must keep running. Transfers that need the
-INCR protocol return an explicit error. X11 input does not yet handle locale
-compose or XIM. `ProbeWayland` performs `wl_display.get_registry` and sync on a
-Unix socket. `WaylandWindow.Run` binds the compositor, shared memory, seat,
-and xdg-shell, then presents software frames with `wl_shm` buffers. It handles
-configure/close, pointer movement and buttons, scrolling, and basic evdev
-keys. It reads ordinary Latin and Cyrillic symbol records from the supplied
-XKB keymap and follows the active group; unknown layouts fall back to US
-evdev input. Full XKB types/modifiers, compose, repeat, and IME require
-further work. Wayland clipboard binds `wl_data_device_manager` when available,
-offers UTF-8 on a valid input serial, receives text through a file descriptor,
-and caps each transfer at 16 MiB. The compositor must advertise a seat and
-data device manager for clipboard handlers to be available. Wayland also
-accepts a `text/uri-list` file drop and passes decoded local paths to
-`WaylandOptions.OnFilesDropped` on the UI goroutine.
-`Close()` requests exit and the read loop observes it within 50 ms. It does
-not open an Xwayland window.
+### Capability discovery and UI ownership
 
-The AppKit window keeps ownership after the title-bar close action and releases
-its reference only after the event loop has returned. Win32 routes each HWND
-to its own `Window`; each `Run` owns a locked UI thread and its own manager.
-Linux windows use independent display connections. The Windows shell file drop
-handler passes UTF-16 paths to `Options.OnFilesDropped` and releases the HDROP.
-Win32 and AppKit provide `OpenFile` and `SaveFile`; cancellation returns an
-empty path and no error. Both must be called on the adapter UI goroutine.
-On Linux these methods return `platform.ErrUnsupported`.
+Use the **window instance's** `Capabilities()` from `OnReady` or later for
+session-dependent features. Package-level helpers describe the baseline backend;
+Linux IME and file-dialog flags require runtime discovery. `FileDialog` depends
+on a working `org.freedesktop.portal.FileChooser` service. X11 IME depends on an
+IBus input context; Wayland IME depends on the compositor advertising
+`zwp_text_input_manager_v3`. Wayland clipboard/drop needs a seat and data device.
+There is no Xwayland fallback and no external helper executable.
 
-Stage 13 still has gaps: X11 INCR and locale input, full XKB and IME, macOS IME and
-multiwindow, Core Text shaping, file drops on macOS/X11, and native Linux
-file dialogs. Keep those feature flags false in production UI until the
-respective adapter implements them. The shared editor scenario uses the
-features marked Yes above, subject to platform verification.
+All tree operations, clipboard access and file dialogs run on the owning UI
+goroutine. Use `Manager.Post` for work from another goroutine. `Close` is a
+thread-safe exit request. Use a distinct manager for each window. Normal native
+loops wait at most 50 ms before checking for posted work. Protocol requests have
+bounded waits; an open file picker waits for the user and closes its portal
+request when its parent window closes.
 
-The owner requested no local builds or tests. Code was formatted and inspected,
-but no desktop backend was exercised here.
+`OpenFile()` and `SaveFile(defaultName)` return an empty path with no error on
+cancellation. These methods choose paths; they do not read, write or overwrite
+files. `OnFilesDropped` receives local paths on the UI goroutine. Drag sources,
+non-file payloads and move/delete semantics are outside this file-drop API.
+
+### X11
+
+CLIPBOARD supports TARGETS, UTF8_STRING, TEXT and Latin-1 STRING. Both incoming
+and outgoing large values use ICCCM INCR, with bounded chunks, a 16 MiB transfer
+limit and timeout cleanup. GetProperty replies keep partial packets across
+wakeups and are routed by sequence during nested event dispatch. A vanished
+selection requestor does not terminate the owner's event loop. The owner must
+keep running for other clients to request its selection.
+
+Xdnd advertises version 5 and accepts a copy of `text/uri-list`. It negotiates
+types/actions, receives XdndSelection through the same selection machinery,
+acknowledges completion and decodes local paths. Nonlocal file hosts are rejected.
+
+Input uses the server's keysyms and group, updates keyboard mapping on
+MappingNotify, handles Shift/CapsLock/NumLock and Unicode/legacy keysym mapping.
+Locale compose data is read from XCompose files, including user overrides and
+bounded includes. IBus is accessed directly over authenticated Unix D-Bus,
+using `IBUS_ADDRESS`, the display-specific IBus address file, or the session bus. IBus supplies
+preedit, commit, surrounding-text deletion and candidate placement. This adapter
+uses **IBus rather than implementing the separate XIM transport**. Without IBus,
+ordinary keysyms and compose remain available; `IME` is false.
+
+### Wayland
+
+The compositor owns keyboard actions and modifier state. The first-party reader
+consumes its resolved XKB keymap: keycodes, aliases, symbols, per-group types,
+modifier-to-level maps, virtual modifiers, multiple symbols per level and group
+wrap/clamp/redirect. It uses effective modifier/group events and compositor
+repeat settings; repeat stops on release or focus loss. Compose uses the same
+XCompose reader as X11. The built-in US map is the fallback if no usable keymap
+was supplied. Source XKB `include` files are not evaluated by this client.
+
+Text-input-v3 binds version 1. Enable/disable follows editor and surface focus;
+preedit/commit/delete events are applied on `done`, with serial tracking,
+bounded UTF-8 surrounding text, password hints and cursor rectangles. Clipboard
+and file drop still use the data-device protocol and file descriptors with a
+16 MiB limit. Linux file dialogs use the desktop portal via the first-party
+D-Bus codec. X11 provides a parent XID; Wayland currently passes an empty parent
+identifier, so its picker can be unparented on some desktops.
+
+### AppKit
+
+Lock the main goroutine to the startup OS thread in `main`'s `init`:
+
+```go
+func init() { runtime.LockOSThread() }
+
+func main() {
+    // Each window has its own manager and component tree.
+    if err := darwin.Run(firstWindow, secondWindow); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+`Window.Run()` is shorthand for `darwin.Run(window)`. Call `Window.Open()` from
+an existing window's UI callback to add another window. The shared loop routes
+events by NSWindow and closes only the selected window. It exits after the last
+window closes. Calling `Run` again concurrently returns an error. NSWindow has
+`releasedWhenClosed = false`; its owning reference, view and bitmap are released
+once, after dispatch returns. See `examples/multiwindow_darwin` for two initial
+windows and a button that opens more.
+
+A registered NSImageView subclass implements NSTextInputClient, including
+marked/selected ranges, UTF-16 conversion, substring queries, candidate
+coordinates, command selectors and text insertion. Key events pass through
+`interpretKeyEvents` once. Marked text is a virtual replacement of the selected
+text, with its own selection/caret, and does not enter undo history until commit.
+
+`Run` installs Core Text automatically. If the app measures text before running,
+call `darwin.EnableCoreText()` first. Core Text shapes whole lines, performs system
+font fallback, supplies caret offsets and rasterizes immutable alpha masks for
+the software renderer. Its cache is bounded. This native path uses system fonts;
+`SetFontData` configures the separate portable atlas. `ui.SetTextShaper(nil)`
+restores that portable path; invalidate existing layouts after changing shapers.
+The shared mask command has a Vulkan fallback using alpha spans, which can reach
+Vulkan's existing 64K-vertex limit sooner than atlas text. Masks are monochrome,
+including glyphs from color fonts.
+
+The portable font repertoire, full Unicode grapheme tables, rich text, advanced
+bidi selection, accessibility and touch remain separate typography/product
+milestones. Implementing native IME does not expand the portable atlas repertoire.
+
+### Owner's acceptance checklist
+
+The editor examples now expose Open/Save buttons and display dropped file paths.
+Run the existing examples on their respective systems and check:
+
+1. Close by the title-bar button, by `Close`, and after using an IME or file picker.
+2. On macOS, run `go run ./examples/multiwindow_darwin`; close one window, continue
+   editing the other, open another, then close the last window.
+3. Type Russian/Latin, dead keys, compose sequences, AltGr characters, held keys,
+   and IME preedit/commit/cancel; switch focus during composition. Check undo,
+   selection replacement and candidate position, including non-BMP characters.
+4. Copy/paste a short value, an empty value and a value larger than one X11 request
+   between nativeForms and another application. Close the peer during transfer.
+5. Drop multiple filenames containing spaces/non-ASCII characters; cancel a drop.
+6. Open/Save and cancel native pickers on X11 and Wayland. Without a portal or IME
+   service, verify the corresponding capability is false and basic input works.
+7. Check macOS Core Text alignment, ligatures, fallback glyphs, caret position and
+   clipping in the same editor/offscreen geometry.
+
+Code was formatted and statically inspected. These runtime checks have **not**
+been performed by the agent, as requested.

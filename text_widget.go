@@ -164,29 +164,42 @@ func (f *TextField) displayRunes() []rune {
 }
 
 func (f *TextField) lines(r []rune, width, fontSize float32) []textLine {
-	var lines []textLine
-	start, at := 0, 0
-	var x float32
-	for at < len(r) {
-		if r[at] == '\n' && f.Multiline {
-			lines = append(lines, textLine{start, at, x})
-			at++
-			start = at
-			x = 0
-			continue
+	var result []textLine
+	for start := 0; ; {
+		end := start
+		for end < len(r) && !(f.Multiline && r[end] == '\n') {
+			end++
 		}
-		end := nextGrapheme(r, at)
-		advance := measureTextLine(string(r[at:end]), fontSize)
-		if f.Multiline && width > 0 && x+advance > width && at > start {
-			lines = append(lines, textLine{start, at, x})
-			start = at
-			x = 0
+		at := start
+		for at < end {
+			limit := end
+			if f.Multiline && width > 0 && measureTextLine(string(r[at:end]), fontSize) > width {
+				lo, hi := at, end
+				for lo < hi {
+					mid := (lo + hi + 1) / 2
+					if measureTextLine(string(r[at:mid]), fontSize) <= width {
+						lo = mid
+					} else {
+						hi = mid - 1
+					}
+				}
+				limit = nearestGrapheme(r, lo)
+				if limit <= at {
+					limit = min(end, nextGrapheme(r, at))
+				}
+			}
+			result = append(result, textLine{at, limit, measureTextLine(string(r[at:limit]), fontSize)})
+			at = limit
 		}
-		x += advance
-		at = end
+		if start == end {
+			result = append(result, textLine{start, end, 0})
+		}
+		if end == len(r) {
+			break
+		}
+		start = end + 1
 	}
-	lines = append(lines, textLine{start, len(r), x})
-	return lines
+	return result
 }
 
 func (f *TextField) Measure(c Constraints) Vec2 {
@@ -223,10 +236,14 @@ func (f *TextField) textGeometry() (Rect, []rune, []textLine, float32) {
 
 func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeight float32) Vec2 {
 	caret := f.editor.Caret
+	if f.editor.Preedit != "" {
+		a, _ := f.editor.selection()
+		caret = a + max(0, f.editor.PreeditCaret)
+	}
 	for i, line := range lines {
 		if caret <= line.end || i == len(lines)-1 {
 			end := min(max(caret, line.start), line.end)
-			return Vec2{X: inner.X + measureTextLine(string(r[line.start:end]), f.Theme().FontSize) - f.scrollX,
+			return Vec2{X: inner.X + TextCaretX(string(r[line.start:line.end]), f.Theme().FontSize, end-line.start) - f.scrollX,
 				Y: inner.Y + float32(i)*lineHeight - f.scrollY}
 		}
 	}
@@ -235,7 +252,7 @@ func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeigh
 
 // CaretRect is in logical window coordinates for IME candidate placement.
 func (f *TextField) CaretRect() Rect {
-	inner, r, lines, h := f.textGeometry()
+	inner, r, lines, h := f.compositionGeometry()
 	p := f.caretPoint(inner, r, lines, h)
 	return Rect{X: p.X, Y: p.Y, W: 1, H: h}
 }
@@ -259,7 +276,7 @@ func (f *TextField) revealCaret(inner Rect, p Vec2, lineHeight float32) {
 }
 
 func (f *TextField) Paint(c *Canvas) {
-	inner, r, lines, lineHeight := f.textGeometry()
+	inner, r, lines, lineHeight := f.compositionGeometry()
 	background, border := c.theme.Control, c.theme.Border
 	if f.Focused() {
 		background, border = c.theme.ControlHover, c.theme.Accent
@@ -277,6 +294,13 @@ func (f *TextField) Paint(c *Canvas) {
 		c.Text(f.Placeholder, inner, c.theme.FontSize, TextLeft, c.theme.MutedText)
 	}
 	a, b := f.editor.selection()
+	composing := f.editor.Preedit != ""
+	preeditStart := a
+	preeditEnd := a + len([]rune(f.editor.Preedit))
+	if composing {
+		a = preeditStart + max(0, min(f.editor.PreeditCaret, f.editor.PreeditAnchor))
+		b = preeditStart + max(0, max(f.editor.PreeditCaret, f.editor.PreeditAnchor))
+	}
 	for i, line := range lines {
 		y := inner.Y + float32(i)*lineHeight - f.scrollY
 		if y+lineHeight < inner.Y || y > inner.Y+inner.H {
@@ -285,21 +309,30 @@ func (f *TextField) Paint(c *Canvas) {
 		x := inner.X - f.scrollX
 		from, to := max(a, line.start), min(b, line.end)
 		if from < to {
-			left := x + measureTextLine(string(r[line.start:from]), c.theme.FontSize)
-			right := x + measureTextLine(string(r[line.start:to]), c.theme.FontSize)
-			c.Rect(Rect{X: left, Y: y, W: right - left, H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
+			left := x + TextCaretX(string(r[line.start:line.end]), c.theme.FontSize, from-line.start)
+			right := x + TextCaretX(string(r[line.start:line.end]), c.theme.FontSize, to-line.start)
+			c.Rect(Rect{X: min(left, right), Y: y, W: absFloat32(right - left), H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
 		}
 		if line.start < line.end {
 			c.Text(string(r[line.start:line.end]), Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
 				c.theme.FontSize, TextLeft, c.theme.Text)
 		}
 	}
-	if f.Focused() && f.editor.Preedit != "" {
-		c.Text(f.editor.Preedit, Rect{X: point.X, Y: point.Y, W: maxFloat32(inner.W, measureTextLine(f.editor.Preedit, c.theme.FontSize)), H: lineHeight},
-			c.theme.FontSize, TextLeft, c.theme.AccentHover)
-		c.Line(Vec2{X: point.X, Y: point.Y + lineHeight - 2}, Vec2{X: point.X + measureTextLine(f.editor.Preedit, c.theme.FontSize), Y: point.Y + lineHeight - 2}, 1, c.theme.Accent)
+	if f.Focused() && composing {
+		for row, line := range lines {
+			from, to := max(preeditStart, line.start), min(preeditEnd, line.end)
+			if from >= to {
+				continue
+			}
+			text := string(r[line.start:line.end])
+			left := inner.X - f.scrollX + TextCaretX(text, c.theme.FontSize, from-line.start)
+			right := inner.X - f.scrollX + TextCaretX(text, c.theme.FontSize, to-line.start)
+			y := inner.Y + float32(row)*lineHeight - f.scrollY + lineHeight - 2
+			c.Line(Vec2{X: left, Y: y}, Vec2{X: right, Y: y}, 1, c.theme.Accent)
+		}
 	}
-	if f.Focused() && f.caretVisible {
+
+	if f.Focused() && f.caretVisible && (!composing || f.editor.PreeditCaret >= 0) {
 		c.Line(Vec2{X: point.X, Y: point.Y + 2}, Vec2{X: point.X, Y: point.Y + lineHeight - 2}, 1, c.theme.AccentHover)
 	}
 }
@@ -309,17 +342,19 @@ func (f *TextField) positionAt(x, y float32) int {
 	row := min(max(int((y-inner.Y+f.scrollY)/h), 0), len(lines)-1)
 	line := lines[row]
 	local := x - inner.X + f.scrollX
-	advance := float32(0)
-	for i := line.start; i < line.end; {
-		end := nextGrapheme(r, i)
-		part := measureTextLine(string(r[i:end]), f.Theme().FontSize)
-		if local < advance+part*0.5 {
-			return i
+	text := string(r[line.start:line.end])
+	positions := textCaretPositions(text, f.Theme().FontSize)
+	best, distance := line.start, float32(1e30)
+	for at := line.start; ; at = nextGrapheme(r, at) {
+		x := positions[at-line.start]
+		if d := absFloat32(local - x); d < distance {
+			best, distance = at, d
 		}
-		advance += part
-		i = end
+		if at >= line.end {
+			break
+		}
 	}
-	return line.end
+	return best
 }
 
 func (f *TextField) Handle(event Event) bool {
@@ -399,7 +434,16 @@ func (f *TextField) Handle(event Event) bool {
 		f.invalidatePaint()
 		return true
 	case CompositionUpdate:
+		if f.ReadOnly {
+			return true
+		}
 		e.Preedit = event.Text
+		e.PreeditCaret = len([]rune(event.Text))
+		e.PreeditAnchor = e.PreeditCaret
+		if event.CompositionSelection {
+			e.PreeditCaret = min(e.PreeditCaret, max(-1, event.CompositionCursor))
+			e.PreeditAnchor = min(len([]rune(event.Text)), max(-1, event.CompositionAnchor))
+		}
 		f.invalidatePaint()
 		return true
 	case CompositionEnd:
@@ -549,3 +593,30 @@ func absFloat32(x float32) float32 {
 
 // BlinkCaret is driven by the host's next-frame timer.
 func (f *TextField) BlinkCaret() { f.caretVisible = !f.caretVisible; f.invalidatePaint() }
+
+// Preedit participates in layout as a virtual replacement. Committed text and
+// undo history remain untouched until the input method commits.
+func (f *TextField) compositionGeometry() (Rect, []rune, []textLine, float32) {
+	inner, r, lines, h := f.textGeometry()
+	if f.editor.Preedit == "" {
+		return inner, r, lines, h
+	}
+	a, b := f.editor.selection()
+	a = min(max(a, 0), len(r))
+	b = min(max(b, a), len(r))
+	preedit := []rune(f.editor.Preedit)
+	if f.Password {
+		for i := range preedit {
+			preedit[i] = '*'
+		}
+	}
+	displayed := make([]rune, 0, len(r)-(b-a)+len(preedit))
+	displayed = append(displayed, r[:a]...)
+	displayed = append(displayed, preedit...)
+	displayed = append(displayed, r[b:]...)
+	width := float32(0)
+	if f.Multiline {
+		width = inner.W
+	}
+	return inner, displayed, f.lines(displayed, width, f.Theme().FontSize), h
+}

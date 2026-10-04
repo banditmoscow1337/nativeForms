@@ -1,6 +1,7 @@
 package nativeforms
 
 import (
+	"image"
 	"math"
 	"strings"
 )
@@ -10,6 +11,7 @@ type CommandKind uint8
 const (
 	CommandQuad CommandKind = iota
 	CommandLine
+	CommandMask
 )
 
 // DrawCommand is an ordered paint operation in logical coordinates.
@@ -23,6 +25,7 @@ type DrawCommand struct {
 	From  Vec2
 	To    Vec2
 	Width float32
+	Mask  *image.Alpha
 }
 
 type Canvas struct {
@@ -140,18 +143,24 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		case TextRight:
 			x += bounds.W - lineWidth
 		}
-		for _, character := range line {
-			glyph := glyphForRune(character)
-			if character != ' ' {
-				cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-				cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-				cell := float32(fontCellSize) / fontAtlasSize
-				canvas.quad(
-					Rect{X: x, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
-					Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-				)
+		if shaped, ok := shapeText(line, size); ok {
+			if mask := shaped.Mask; mask != nil {
+				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()), H: float32(mask.Bounds().Dy())}, tint)
 			}
-			x += glyph.advance * size
+		} else {
+			for _, character := range line {
+				glyph := glyphForRune(character)
+				if character != ' ' {
+					cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
+					cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
+					cell := float32(fontCellSize) / fontAtlasSize
+					canvas.quad(
+						Rect{X: x, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
+						Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
+					)
+				}
+				x += glyph.advance * size
+			}
 		}
 		if lastLine {
 			break
@@ -184,6 +193,10 @@ type Vertex struct {
 func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 	dst = dst[:0]
 	for _, c := range commands {
+		if c.Kind == CommandMask {
+			dst = tessellateMask(c, dst)
+			continue
+		}
 		if c.Kind == CommandQuad {
 			r := intersect(c.Rect, c.Clip)
 			if r.Empty() {
@@ -192,12 +205,12 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 			u0, v0 := c.UV.X, c.UV.Y
 			u1, v1 := c.UV.X+c.UV.W, c.UV.Y+c.UV.H
 			if c.UV.W != 0 {
-				u0 += c.UV.W * (r.X-c.Rect.X) / c.Rect.W
-				u1 -= c.UV.W * (c.Rect.X+c.Rect.W-r.X-r.W) / c.Rect.W
+				u0 += c.UV.W * (r.X - c.Rect.X) / c.Rect.W
+				u1 -= c.UV.W * (c.Rect.X + c.Rect.W - r.X - r.W) / c.Rect.W
 			}
 			if c.UV.H != 0 {
-				v0 += c.UV.H * (r.Y-c.Rect.Y) / c.Rect.H
-				v1 -= c.UV.H * (c.Rect.Y+c.Rect.H-r.Y-r.H) / c.Rect.H
+				v0 += c.UV.H * (r.Y - c.Rect.Y) / c.Rect.H
+				v1 -= c.UV.H * (c.Rect.Y + c.Rect.H - r.Y - r.H) / c.Rect.H
 			}
 			v := func(x, y, u, vv float32) Vertex {
 				return Vertex{X: x, Y: y, U: u, V: vv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
@@ -213,7 +226,7 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 				return Vertex{X: x, Y: y, U: uv, V: uv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
 			}
 			if length < 0.001 {
-				r := intersect(Rect{X: c.From.X-c.Width*0.5, Y: c.From.Y-c.Width*0.5, W: c.Width, H: c.Width}, c.Clip)
+				r := intersect(Rect{X: c.From.X - c.Width*0.5, Y: c.From.Y - c.Width*0.5, W: c.Width, H: c.Width}, c.Clip)
 				if !r.Empty() {
 					dst = append(dst, v(r.X, r.Y), v(r.X+r.W, r.Y), v(r.X, r.Y+r.H),
 						v(r.X, r.Y+r.H), v(r.X+r.W, r.Y), v(r.X+r.W, r.Y+r.H))
@@ -222,10 +235,10 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 			}
 			nx, ny := -dy/length*c.Width*0.5, dx/length*c.Width*0.5
 			polygon := []Vec2{
-				{X: c.From.X+nx, Y: c.From.Y+ny},
-				{X: c.To.X+nx, Y: c.To.Y+ny},
-				{X: c.To.X-nx, Y: c.To.Y-ny},
-				{X: c.From.X-nx, Y: c.From.Y-ny},
+				{X: c.From.X + nx, Y: c.From.Y + ny},
+				{X: c.To.X + nx, Y: c.To.Y + ny},
+				{X: c.To.X - nx, Y: c.To.Y - ny},
+				{X: c.From.X - nx, Y: c.From.Y - ny},
 			}
 			polygon = clipPolygon(polygon, c.Clip)
 			for i := 1; i+1 < len(polygon); i++ {
@@ -239,34 +252,48 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 }
 
 func clipPolygon(points []Vec2, r Rect) []Vec2 {
-	if r.Empty() { return nil }
+	if r.Empty() {
+		return nil
+	}
 	type edge struct {
 		inside func(Vec2) bool
 		at     func(Vec2, Vec2) Vec2
 	}
 	edges := []edge{
 		{func(p Vec2) bool { return p.X >= r.X }, func(a, b Vec2) Vec2 {
-			t := (r.X-a.X)/(b.X-a.X); return Vec2{X: r.X, Y: a.Y+t*(b.Y-a.Y)}
+			t := (r.X - a.X) / (b.X - a.X)
+			return Vec2{X: r.X, Y: a.Y + t*(b.Y-a.Y)}
 		}},
 		{func(p Vec2) bool { return p.X <= r.X+r.W }, func(a, b Vec2) Vec2 {
-			x := r.X+r.W; t := (x-a.X)/(b.X-a.X); return Vec2{X: x, Y: a.Y+t*(b.Y-a.Y)}
+			x := r.X + r.W
+			t := (x - a.X) / (b.X - a.X)
+			return Vec2{X: x, Y: a.Y + t*(b.Y-a.Y)}
 		}},
 		{func(p Vec2) bool { return p.Y >= r.Y }, func(a, b Vec2) Vec2 {
-			t := (r.Y-a.Y)/(b.Y-a.Y); return Vec2{X: a.X+t*(b.X-a.X), Y: r.Y}
+			t := (r.Y - a.Y) / (b.Y - a.Y)
+			return Vec2{X: a.X + t*(b.X-a.X), Y: r.Y}
 		}},
 		{func(p Vec2) bool { return p.Y <= r.Y+r.H }, func(a, b Vec2) Vec2 {
-			y := r.Y+r.H; t := (y-a.Y)/(b.Y-a.Y); return Vec2{X: a.X+t*(b.X-a.X), Y: y}
+			y := r.Y + r.H
+			t := (y - a.Y) / (b.Y - a.Y)
+			return Vec2{X: a.X + t*(b.X-a.X), Y: y}
 		}},
 	}
 	for _, e := range edges {
-		if len(points) == 0 { break }
+		if len(points) == 0 {
+			break
+		}
 		out := make([]Vec2, 0, len(points)+2)
 		previous := points[len(points)-1]
 		wasInside := e.inside(previous)
 		for _, current := range points {
 			isInside := e.inside(current)
-			if isInside != wasInside { out = append(out, e.at(previous, current)) }
-			if isInside { out = append(out, current) }
+			if isInside != wasInside {
+				out = append(out, e.at(previous, current))
+			}
+			if isInside {
+				out = append(out, current)
+			}
 			previous, wasInside = current, isInside
 		}
 		points = out

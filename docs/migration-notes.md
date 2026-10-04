@@ -105,13 +105,14 @@ notification/caret timers; an expose event can reuse its existing DIB.
 ## Deliberate limits
 
 - The CPU renderer supports the current Canvas primitives: solid and
-  atlas-backed rectangles, text, borders, and lines. `RenderScaled` maps
+  atlas-backed rectangles, native alpha masks, text, borders, and lines. `RenderScaled` maps
   logical positions to a physical pixel buffer.
 - The CPU renderer uses nearest atlas sampling and limited stroke
   antialiasing. Renderer visual parity requires further visual review.
 - The grapheme implementation covers common UAX #29 rules but lacks complete
-  Unicode property tables for rare Indic and prepend cases. Complex shaping
-  and other OS window adapters are future work.
+  Unicode property tables for rare Indic and prepend cases. AppKit now uses
+  Core Text for native shaping; the portable atlas retains the limitations above.
+  See [stage 13](stages-12-13.md) for the other adapters and service prerequisites.
 - Public fields in `Panel` and widgets do not automatically invalidate.
 - The Vulkan renderer's host must synchronize resource destruction with
   GPU work, as it did before this separation.

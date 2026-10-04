@@ -11,7 +11,7 @@ import (
 )
 
 func X11Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true, DragDrop: true}
 }
 
 func WaylandCapabilities() platform.Capabilities {

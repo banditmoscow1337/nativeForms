@@ -2,8 +2,9 @@
 
 Status: core/backend separation, offscreen CPU painting, first-party TrueType
 rendering, the Windows software window, editing, form layout, and event-driven
-painting are implemented on the migration branches. Other v1 features below
-remain future work.
+painting are implemented on the migration branches. Stage 13 adds AppKit, X11
+and Wayland integration; see [the capability matrix and runtime prerequisites](stages-12-13.md).
+Platform builds and runtime acceptance remain with the project owner.
 
 ## Goal
 

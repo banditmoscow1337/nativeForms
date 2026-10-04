@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 	"unsafe"
 
 	ui "github.com/banditmoscow1337/nativeForms"
@@ -38,9 +37,10 @@ type rect struct {
 func makeRect(w, h float64) rect { return rect{Size: size{W: w, H: h}} }
 
 type Options struct {
-	Title         string
-	Width, Height int
-	OnReady       func(*Window)
+	Title          string
+	Width, Height  int
+	OnReady        func(*Window)
+	OnFilesDropped func([]string)
 }
 
 type Window struct {
@@ -52,6 +52,12 @@ type Window struct {
 	width, height                             int
 	lastFrame                                 time.Time
 	closing                                   atomic.Bool
+	marked                                    string
+	markedSelection                           nsRange
+	inputIdentity                             *ui.TextField
+	currentKey                                ui.Event
+	inputHandled                              bool
+	wasKey                                    bool
 }
 
 func New(manager *ui.Manager, options Options) *Window {
@@ -59,7 +65,7 @@ func New(manager *ui.Manager, options Options) *Window {
 }
 
 func Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, FileDialog: true}
+	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, FileDialog: true, IME: true, MultipleWindows: true, DragDrop: true}
 }
 
 func (w *Window) Capabilities() platform.Capabilities { return Capabilities() }
@@ -72,23 +78,105 @@ func nsString(value string) objc.ID {
 	return class("NSString").Send(selector("stringWithUTF8String:"), value)
 }
 
-func (w *Window) Run() error {
-	if w == nil || w.manager == nil {
-		return fmt.Errorf("darwin: nil window or manager")
+// Run presents this window. Call it on the main goroutine; lock that goroutine
+// to the startup OS thread in main's init. Use Run(w1,w2) or Open for more windows.
+func (w *Window) Run() error { return Run(w) }
+
+type application struct {
+	app     objc.ID
+	windows map[objc.ID]*Window
+}
+
+var activeApplication *application
+var viewWindows = make(map[objc.ID]*Window)
+var cocoaOnce sync.Once
+var cocoaErr error
+var onMainThread func() int32
+
+func loadAppKit() error {
+	cocoaOnce.Do(func() {
+		var lib uintptr
+		lib, cocoaErr = purego.Dlopen("/System/Library/Frameworks/Cocoa.framework/Cocoa", purego.RTLD_GLOBAL|purego.RTLD_LAZY)
+		if cocoaErr != nil {
+			return
+		}
+		purego.RegisterLibFunc(&onMainThread, lib, "pthread_main_np")
+		cocoaErr = registerView()
+	})
+	return cocoaErr
+}
+
+// Run owns one AppKit event loop for all supplied windows. Managers must be
+// distinct. The loop exits after the last window closes.
+func Run(windows ...*Window) error {
+	if len(windows) == 0 {
+		return fmt.Errorf("darwin: no windows")
 	}
 	if !appMu.TryLock() {
-		return platform.Unsupported("darwin", platform.FeatureMultipleWindows)
+		return fmt.Errorf("darwin: application is already running; use Window.Open on its UI goroutine")
 	}
 	defer appMu.Unlock()
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if _, err := purego.Dlopen("/System/Library/Frameworks/Cocoa.framework/Cocoa", purego.RTLD_GLOBAL|purego.RTLD_LAZY); err != nil {
+	if err := loadAppKit(); err != nil {
+		return err
+	}
+	if onMainThread() == 0 {
+		return fmt.Errorf("darwin: Run must execute on the main OS thread; call runtime.LockOSThread in main's init")
+	}
+	if err := EnableCoreText(); err != nil {
 		return err
 	}
 	pool := class("NSAutoreleasePool").Send(selector("new"))
 	defer pool.Send(selector("drain"))
-	w.app = class("NSApplication").Send(selector("sharedApplication"))
-	w.app.Send(selector("setActivationPolicy:"), 0)
+	app := &application{app: class("NSApplication").Send(selector("sharedApplication")), windows: make(map[objc.ID]*Window)}
+	app.app.Send(selector("setActivationPolicy:"), 0)
+	activeApplication = app
+	defer func() {
+		for _, w := range app.windows {
+			w.destroy()
+		}
+		activeApplication = nil
+	}()
+	for _, w := range windows {
+		if err := w.Open(); err != nil {
+			return err
+		}
+	}
+	app.app.Send(selector("finishLaunching"))
+	app.app.Send(selector("activateIgnoringOtherApps:"), true)
+	mode := nsString("kCFRunLoopDefaultMode")
+	for len(app.windows) > 0 {
+		iteration := class("NSAutoreleasePool").Send(selector("new"))
+		err := app.step(mode)
+		iteration.Send(selector("drain"))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Open adds a window while Run is active. Invoke on its UI goroutine, for
+// example from OnReady or a button callback. Each window owns its Manager.
+func (w *Window) Open() error {
+	if w == nil || w.manager == nil {
+		return fmt.Errorf("darwin: nil window or manager")
+	}
+	app := activeApplication
+	if app == nil || onMainThread() == 0 {
+		return fmt.Errorf("darwin: Open needs the running AppKit UI goroutine")
+	}
+	if w.window != 0 {
+		return fmt.Errorf("darwin: window is already open")
+	}
+	for _, other := range app.windows {
+		if other.manager == w.manager {
+			return fmt.Errorf("darwin: windows must have distinct managers")
+		}
+	}
+	w.closing.Store(false)
+	w.app = app.app
 	width, height := w.options.Width, w.options.Height
 	if width <= 0 {
 		width = 800
@@ -96,83 +184,139 @@ func (w *Window) Run() error {
 	if height <= 0 {
 		height = 600
 	}
-	w.window = class("NSWindow").Send(selector("alloc"))
-	w.window = w.window.Send(selector("initWithContentRect:styleMask:backing:defer:"), makeRect(float64(width), float64(height)), uint64(1|2|4|8), 2, false)
+	if width > 16384 || height > 16384 {
+		return fmt.Errorf("darwin: window dimensions exceed 16384")
+	}
+	w.window = class("NSWindow").Send(selector("alloc")).Send(selector("initWithContentRect:styleMask:backing:defer:"), makeRect(float64(width), float64(height)), uint64(1|2|4|8), 2, false)
 	if w.window == 0 {
 		return fmt.Errorf("darwin: NSWindow initialization failed")
 	}
-	// AppKit otherwise releases the window when its close button is pressed.
-	// We keep an owning reference and inspect isVisible after sendEvent returns.
+	// Keep our owning reference across close-button callbacks. Only destroy
+	// releases it, after the event dispatcher has returned.
 	w.window.Send(selector("setReleasedWhenClosed:"), false)
-	defer func() {
-		if objc.Send[bool](w.window, selector("isVisible")) {
-			w.window.Send(selector("close"))
-		}
-		w.window.Send(selector("release"))
-		w.window = 0
-	}()
+	w.view = objc.ID(nativeViewClass).Send(selector("alloc")).Send(selector("initWithFrame:"), makeRect(float64(width), float64(height)))
+	if w.view == 0 {
+		w.destroy()
+		return fmt.Errorf("darwin: view initialization failed")
+	}
+	viewWindows[w.view] = w
+	app.windows[w.window] = w
 	title := w.options.Title
 	if title == "" {
 		title = "nativeForms"
 	}
 	w.window.Send(selector("setTitle:"), nsString(title))
-	w.view = class("NSImageView").Send(selector("alloc")).Send(selector("initWithFrame:"), makeRect(float64(width), float64(height)))
-	if w.view == 0 {
-		return fmt.Errorf("darwin: NSImageView initialization failed")
-	}
-	defer w.view.Send(selector("release"))
+	w.window.Send(selector("setAcceptsMouseMovedEvents:"), true)
 	w.view.Send(selector("setAutoresizingMask:"), uint64(2|16))
 	w.window.Send(selector("setContentView:"), w.view)
 	w.window.Send(selector("center"))
-	w.app.Send(selector("finishLaunching"))
+	w.window.Send(selector("makeFirstResponder:"), w.view)
+	if w.options.OnFilesDropped != nil {
+		types := class("NSMutableArray").Send(selector("array"))
+		types.Send(selector("addObject:"), nsString("public.file-url"))
+		types.Send(selector("addObject:"), nsString("NSFilenamesPboardType"))
+		w.view.Send(selector("registerForDraggedTypes:"), types)
+	}
 	w.window.Send(selector("makeKeyAndOrderFront:"), objc.ID(0))
-	w.app.Send(selector("activateIgnoringOtherApps:"), true)
 	w.renderer = software.New()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
+	w.manager.InvalidateLayout()
 	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
-	defer func() {
-		w.manager.SetClipboardHandlers(nil, nil)
-		w.manager.SetInteractive(false)
-		if w.representation != 0 {
-			w.representation.Send(selector("release"))
-		}
-		if w.bitmap != 0 {
-			w.bitmap.Send(selector("release"))
-		}
-	}()
 	if w.options.OnReady != nil {
 		w.options.OnReady(w)
 	}
-	mode := nsString("kCFRunLoopDefaultMode")
-	for !w.closing.Load() && objc.Send[bool](w.window, selector("isVisible")) {
-		iterationPool := class("NSAutoreleasePool").Send(selector("new"))
+	return nil
+}
+func (a *application) step(mode objc.ID) error {
+	seconds := 0.05
+	for _, w := range a.windows {
+		if w.closing.Load() || !objc.Send[bool](w.window, selector("isVisible")) {
+			w.destroy()
+			continue
+		}
+		key := objc.Send[bool](w.window, selector("isKeyWindow"))
+		if w.wasKey && !key {
+			w.cancelMarked()
+			w.manager.CancelPointerCapture()
+		}
+		w.wasKey = key
+		w.syncInputFocus()
 		bounds := objc.Send[rect](w.view, selector("bounds"))
-		newWidth, newHeight := int(bounds.Size.W), int(bounds.Size.H)
-		if newWidth > 0 && newHeight > 0 && (w.manager.NeedsFrame() || newWidth != w.width || newHeight != w.height) {
-			if err := w.paint(newWidth, newHeight); err != nil {
-				iterationPool.Send(selector("drain"))
+		width, height := int(bounds.Size.W), int(bounds.Size.H)
+		if width > 0 && height > 0 && (w.manager.NeedsFrame() || width != w.width || height != w.height) {
+			if err := w.paint(width, height); err != nil {
 				return err
 			}
 		}
-		seconds := 0.05
-		if delay := w.manager.NextFrameAfter(); delay > 0 && delay.Seconds() < seconds {
-			seconds = delay.Seconds()
+		if d := w.manager.NextFrameAfter(); d > 0 && d.Seconds() < seconds {
+			seconds = d.Seconds()
 		}
-		date := class("NSDate").Send(selector("dateWithTimeIntervalSinceNow:"), seconds)
-		event := w.app.Send(selector("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), date, mode, true)
-		if event != 0 {
-			eventType := objc.Send[uint64](event, selector("type"))
-			w.event(event, newHeight)
-			// Keyboard input belongs to the nativeForms tree. Forwarding it to
-			// an NSImageView without a text responder makes AppKit beep.
-			if eventType != 10 && eventType != 11 {
-				w.app.Send(selector("sendEvent:"), event)
+	}
+	if len(a.windows) == 0 {
+		return nil
+	}
+	date := class("NSDate").Send(selector("dateWithTimeIntervalSinceNow:"), seconds)
+	event := a.app.Send(selector("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), date, mode, true)
+	if event == 0 {
+		return nil
+	}
+	typ := objc.Send[uint64](event, selector("type"))
+	id := event.Send(selector("window"))
+	w := a.windows[id]
+	if w != nil {
+		if typ == 10 || typ == 11 || typ == 12 {
+			w.event(event, w.height)
+			return nil
+		}
+		// Dispatch only pointer events here. Title-bar presses belong to
+		// AppKit, but releases/drags outside the content must clear capture.
+		switch typ {
+		case 1, 2, 3, 4, 5, 6, 7, 9, 22, 25, 26, 27:
+			p := objc.Send[point](event, selector("locationInWindow"))
+			if p.Y >= 0 && p.Y <= float64(w.height) || typ == 2 || typ == 4 || typ == 6 || typ == 7 || typ == 9 || typ == 26 || typ == 27 {
+				w.event(event, w.height)
 			}
 		}
-		iterationPool.Send(selector("drain"))
+
 	}
+	a.app.Send(selector("sendEvent:"), event)
 	return nil
+}
+func (w *Window) destroy() {
+	if w.window == 0 {
+		return
+	}
+	w.cancelMarked()
+	w.manager.SetClipboardHandlers(nil, nil)
+	w.manager.ClearInteraction()
+	w.manager.SetInteractive(false)
+	if activeApplication != nil {
+		delete(activeApplication.windows, w.window)
+	}
+	delete(viewWindows, w.view)
+	if objc.Send[bool](w.window, selector("isVisible")) {
+		w.window.Send(selector("close"))
+	}
+	if w.view != 0 {
+		w.view.Send(selector("setImage:"), objc.ID(0))
+	}
+	if w.bitmap != 0 {
+		w.bitmap.Send(selector("release"))
+		w.bitmap = 0
+	}
+	if w.representation != 0 {
+		w.representation.Send(selector("release"))
+		w.representation = 0
+	}
+	w.window.Send(selector("release"))
+	w.window = 0
+	if w.view != 0 {
+		w.view.Send(selector("release"))
+		w.view = 0
+	}
+	w.framebuffer = nil
+	w.inputIdentity = nil
 }
 
 func (w *Window) Close() {
@@ -305,6 +449,9 @@ func (w *Window) event(event objc.ID, height int) {
 	}
 	switch typ {
 	case 1, 2, 3, 4, 5, 6, 7, 9, 22, 25, 26, 27:
+		if typ == 1 || typ == 3 || typ == 25 {
+			w.cancelMarked()
+		}
 		position := objc.Send[point](event, selector("locationInWindow"))
 		x, y := float32(position.X), float32(float64(height)-position.Y)
 		kind := ui.PointerMove
@@ -338,21 +485,33 @@ func (w *Window) event(event objc.ID, height int) {
 		if typ == 11 {
 			kind = ui.KeyUp
 		}
-		handled := w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: flags, Repeat: objc.Send[bool](event, selector("isARepeat"))})
-		if typ == 10 && flags&ui.ModSuper != 0 && key == ui.KeyQ && !handled {
-			w.Close()
+		e := ui.Event{Type: kind, Key: key, Mods: flags, Repeat: objc.Send[bool](event, selector("isARepeat"))}
+		if typ == 11 {
+			w.manager.HandleEvent(e)
 			break
 		}
-		if typ == 10 && flags&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
-			value := stringValue(event.Send(selector("characters")))
-			for len(value) > 0 {
-				r, n := utf8.DecodeRuneInString(value)
-				value = value[n:]
-				if r >= 32 {
-					w.manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: r})
+		w.syncInputFocus()
+		if w.manager.TextInputFocused() && flags&ui.ModSuper == 0 {
+			// Input methods and dead keys interpret the event first. Editing
+			// selectors call back through doCommandBySelector exactly once.
+			w.currentKey = e
+			w.inputHandled = false
+			events := class("NSArray").Send(selector("arrayWithObject:"), event)
+			w.view.Send(selector("interpretKeyEvents:"), events)
+		} else {
+			if flags&ui.ModSuper != 0 {
+				w.cancelMarked()
+			}
+			handled := w.manager.HandleEvent(e)
+			if flags&ui.ModSuper != 0 && key == ui.KeyQ && !handled {
+				if activeApplication != nil {
+					for _, other := range activeApplication.windows {
+						other.Close()
+					}
 				}
 			}
 		}
+
 	case 12:
 		// Modifier state is carried by the subsequent key and pointer events.
 	}

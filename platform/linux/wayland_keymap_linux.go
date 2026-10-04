@@ -6,80 +6,217 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 )
 
-// A small first-party reader for the ordinary keycode/symbol records in an
-// XKB text keymap. Unknown symbols do not produce text; no host XKB library
-// is loaded. This is intentionally limited to one symbol per level.
-type waylandSymbols map[uint32][][]rune
+type xkbType struct {
+	mask   uint32
+	levels map[uint32]int
+}
+type xkbGroup struct {
+	symbols   []uint32
+	sequences [][]uint32
+	typ       xkbType
+}
+type xkbKey struct {
+	groups   []xkbGroup
+	repeat   bool
+	clamp    bool
+	redirect int
+}
+type waylandSymbols map[uint32]xkbKey
 
-var (
-	waylandKeycodeRecord = regexp.MustCompile(`<([A-Za-z0-9_]+)>\s*=\s*([0-9]+)\s*;`)
-	waylandSymbolRecord  = regexp.MustCompile(`(?s)\bkey\s*<([A-Za-z0-9_]+)>\s*\{([^}]*)\}`)
-	waylandSymbolGroup   = regexp.MustCompile(`\[([^]]*)\]`)
-)
+var keyNames map[string]uint32
+var keyRunes map[uint32]rune
+var keyNamesOnce sync.Once
 
-func keymapSection(text, name string) string {
-	start := strings.Index(text, name)
-	if start < 0 {
-		return ""
-	}
-	open := strings.IndexByte(text[start:], '{')
-	if open < 0 {
-		return ""
-	}
-	start += open + 1
-	depth := 1
-	for i := start; i < len(text); i++ {
-		switch text[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return text[start:i]
+func initKeyNames() {
+	keyNamesOnce.Do(func() {
+		keyNames = make(map[string]uint32)
+		keyRunes = make(map[uint32]rune)
+		for _, line := range strings.Split(xKeysymData, "\n") {
+			p := strings.Fields(line)
+			if len(p) != 3 {
+				continue
+			}
+			n, _ := strconv.ParseUint(p[1], 16, 32)
+			keyNames[p[0]] = uint32(n)
+			if p[2] != "-" {
+				r, _ := strconv.ParseUint(p[2], 16, 32)
+				keyRunes[uint32(n)] = rune(r)
 			}
 		}
+	})
+}
+func keysym(name string) uint32 {
+	initKeyNames()
+	if n, ok := keyNames[name]; ok {
+		return n
 	}
-	return ""
+	if strings.HasPrefix(name, "U") {
+		if v, e := strconv.ParseUint(name[1:], 16, 32); e == nil && v <= unicode.MaxRune {
+			return uint32(v) | 0x1000000
+		}
+	}
+	if strings.HasPrefix(name, "0x") {
+		v, _ := strconv.ParseUint(name[2:], 16, 32)
+		return uint32(v)
+	}
+	return 0
+}
+func keysymRune(sym uint32) rune {
+	initKeyNames()
+	if sym&0xff000000 == 0x1000000 {
+		r := rune(sym & 0xffffff)
+		if r <= unicode.MaxRune && (r < 0xd800 || r > 0xdfff) {
+			return r
+		}
+		return 0
+	}
+	return keyRunes[sym]
 }
 
+var (
+	xkbCode       = regexp.MustCompile(`<([A-Za-z0-9_]+)>\s*=\s*([0-9]+)\s*;`)
+	xkbAlias      = regexp.MustCompile(`alias\s*<([A-Za-z0-9_]+)>\s*=\s*<([A-Za-z0-9_]+)>`)
+	xkbRecord     = regexp.MustCompile(`\bkey\s*<([A-Za-z0-9_]+)>\s*\{`)
+	xkbActions    = regexp.MustCompile(`(?s)actions\s*\[\s*Group[0-9]+\s*\]\s*=\s*\[[^]]*\]`)
+	xkbTypeRecord = regexp.MustCompile(`(?s)\btype\s*"([^"]+)"\s*\{([^}]+)\}`)
+	xkbMod        = regexp.MustCompile(`modifiers\s*=\s*([^;]+)`)
+	xkbMap        = regexp.MustCompile(`map\[([^]]+)\]\s*=\s*Level([0-9]+)`)
+	xkbVMods      = regexp.MustCompile(`virtual_modifiers\s+([^;]+)`)
+	xkbSymbols    = regexp.MustCompile(`(?:symbols\s*\[\s*Group([0-9]+)\s*\]\s*=\s*)?\[([^\[\]]*)\]`)
+	xkbTypeName   = regexp.MustCompile(`type(?:\s*\[\s*Group([0-9]+)\s*\])?\s*=\s*"([^"]+)"`)
+	xkbRedirect   = regexp.MustCompile(`groupsRedirect\s*=\s*Group([0-9]+)`)
+	xkbNoRepeat   = regexp.MustCompile(`(?i)repeat\s*=\s*(?:No|False)`)
+	xkbComments   = regexp.MustCompile(`(?m)//[^\n]*|(?s:/\*.*?\*/)`)
+)
+
+// Compositors supply a resolved keymap: includes and actions are evaluated by
+// the compositor. We consume its effective modifier mask and group, then
+// apply the key's declared XKB type (including virtual modifiers and levels).
 func parseWaylandKeymap(data []byte) waylandSymbols {
-	text := strings.TrimRight(string(data), "\x00")
-	codes, symbols := keymapSection(text, "xkb_keycodes"), keymapSection(text, "xkb_symbols")
-	if codes == "" || symbols == "" {
-		return nil
-	}
-	byName := make(map[string]uint32)
-	for _, match := range waylandKeycodeRecord.FindAllStringSubmatch(codes, -1) {
-		n, err := strconv.ParseUint(match[2], 10, 32)
-		if err == nil {
-			byName[match[1]] = uint32(n)
+	text := xkbComments.ReplaceAllString(strings.TrimRight(string(data), "\x00"), "")
+	mods := map[string]uint32{"Shift": 1, "Lock": 2, "Control": 4, "Mod1": 8, "Mod2": 16, "Mod3": 32, "Mod4": 64, "Mod5": 128}
+	if match := xkbVMods.FindStringSubmatch(text); len(match) > 0 {
+		for i, s := range strings.Split(match[1], ",") {
+			if i < 24 {
+				mods[strings.TrimSpace(s)] = 1 << uint(i+8)
+			}
 		}
+	}
+	mask := func(s string) uint32 {
+		var m uint32
+		for _, p := range strings.Split(s, "+") {
+			m |= mods[strings.TrimSpace(p)]
+		}
+		return m
+	}
+	types := make(map[string]xkbType)
+	for _, m := range xkbTypeRecord.FindAllStringSubmatch(text, -1) {
+		t := xkbType{levels: map[uint32]int{0: 0}}
+		if a := xkbMod.FindStringSubmatch(m[2]); len(a) > 0 {
+			t.mask = mask(a[1])
+		}
+		for _, a := range xkbMap.FindAllStringSubmatch(m[2], -1) {
+			n, _ := strconv.Atoi(a[2])
+			if n > 0 && n <= 32 {
+				t.levels[mask(a[1])] = n - 1
+			}
+		}
+		types[m[1]] = t
+	}
+	codes := make(map[string]uint32)
+	for _, m := range xkbCode.FindAllStringSubmatch(text, -1) {
+		n, _ := strconv.ParseUint(m[2], 10, 32)
+		codes[m[1]] = uint32(n)
+	}
+	for _, m := range xkbAlias.FindAllStringSubmatch(text, -1) {
+		codes[m[1]] = codes[m[2]]
 	}
 	result := make(waylandSymbols)
-	for _, match := range waylandSymbolRecord.FindAllStringSubmatch(symbols, -1) {
-		code, ok := byName[match[1]]
-		if !ok {
+	for _, loc := range xkbRecord.FindAllStringSubmatchIndex(text, -1) {
+		body := xkbBlock(text, loc[1]-1)
+		m := []string{"", text[loc[2]:loc[3]], xkbActions.ReplaceAllString(body, "")}
+		code := codes[m[1]]
+		if code == 0 {
 			continue
 		}
-		var groups [][]rune
-		for _, group := range waylandSymbolGroup.FindAllStringSubmatch(match[2], -1) {
-			parts := strings.Split(group[1], ",")
-			levels := make([]rune, 0, min(2, len(parts)))
-			for _, part := range parts {
-				if len(levels) == 2 {
-					break
-				}
-				levels = append(levels, waylandKeysymRune(strings.TrimSpace(part)))
-			}
-			if len(levels) != 0 {
-				groups = append(groups, levels)
-			}
+		key := xkbKey{repeat: !xkbNoRepeat.MatchString(m[2]), clamp: strings.Contains(m[2], "groupsClamp"), redirect: -1}
+		if match := xkbRedirect.FindStringSubmatch(m[2]); len(match) > 0 {
+			key.redirect, _ = strconv.Atoi(match[1])
+			key.redirect--
 		}
-		if len(groups) != 0 {
-			result[code] = groups
+		typeNames := map[int]string{}
+		for _, a := range xkbTypeName.FindAllStringSubmatch(m[2], -1) {
+			g := 0
+			if a[1] != "" {
+				g, _ = strconv.Atoi(a[1])
+				g--
+			}
+			typeNames[g] = a[2]
+		}
+		next := 0
+		for _, a := range xkbSymbols.FindAllStringSubmatch(m[2], -1) {
+			if strings.HasPrefix(strings.TrimSpace(a[2]), "Group") {
+				continue
+			}
+			g := next
+			if a[1] != "" {
+				g, _ = strconv.Atoi(a[1])
+				g--
+			}
+			if g < 0 || g > 3 {
+				continue
+			}
+			next = g + 1
+			for len(key.groups) <= g {
+				key.groups = append(key.groups, xkbGroup{})
+			}
+			group := xkbGroup{}
+			group.sequences = xkbLevels(a[2])
+			for _, level := range group.sequences {
+				sym := uint32(0)
+				if len(level) > 0 {
+					sym = level[0]
+				}
+				group.symbols = append(group.symbols, sym)
+			}
+			name := typeNames[g]
+			if name == "" {
+				name = typeNames[0]
+			}
+			if name == "" {
+				name = "ONE_LEVEL"
+				if len(group.symbols) >= 2 {
+					name = "TWO_LEVEL"
+					lo, hi := keysymRune(group.symbols[0]), keysymRune(group.symbols[1])
+					if unicode.IsLower(lo) && unicode.ToUpper(lo) == hi {
+						name = "ALPHABETIC"
+					}
+				}
+				if len(group.symbols) > 2 {
+					name = "FOUR_LEVEL"
+				}
+			}
+			group.typ = types[name]
+			if group.typ.levels == nil {
+				group.typ = xkbType{mask: 1, levels: map[uint32]int{0: 0, 1: 1}}
+				if name == "ALPHABETIC" {
+					group.typ = xkbType{mask: 3, levels: map[uint32]int{0: 0, 1: 1, 2: 1, 3: 0}}
+				}
+			}
+			key.groups[g] = group
+		}
+		if len(key.groups) > 0 {
+			if len(key.groups[0].symbols) > 0 {
+				s := key.groups[0].symbols[0]
+				if s >= 0xffe1 && s <= 0xffee || s == 0xff7f || s == 0xfe03 {
+					key.repeat = false
+				}
+			}
+			result[code] = key
 		}
 	}
 	if len(result) == 0 {
@@ -87,64 +224,96 @@ func parseWaylandKeymap(data []byte) waylandSymbols {
 	}
 	return result
 }
-
-func (symbols waylandSymbols) character(evdevCode, group uint32, shift bool) rune {
-	groups := symbols[evdevCode+8]
-	if len(groups) == 0 {
-		return 0
+func (k waylandSymbols) symbols(code, group, mods uint32) []uint32 {
+	key := k[code+8]
+	if len(key.groups) == 0 {
+		return nil
 	}
-	if int(group) >= len(groups) {
-		group = 0
-	}
-	level := groups[group]
-	if len(level) == 0 {
-		return 0
-	}
-	if shift && len(level) > 1 {
-		return level[1]
-	}
-	return level[0]
-}
-
-var waylandSymbolNames = map[string]rune{
-	"space": ' ', "exclam": '!', "quotedbl": '"', "numbersign": '#', "dollar": '$',
-	"percent": '%', "ampersand": '&', "apostrophe": '\'', "quoteright": '\'',
-	"parenleft": '(', "parenright": ')', "asterisk": '*', "plus": '+', "comma": ',',
-	"minus": '-', "period": '.', "slash": '/', "colon": ':', "semicolon": ';',
-	"less": '<', "equal": '=', "greater": '>', "question": '?', "at": '@',
-	"bracketleft": '[', "backslash": '\\', "bracketright": ']', "asciicircum": '^',
-	"underscore": '_', "grave": '`', "quoteleft": '`', "braceleft": '{',
-	"bar": '|', "braceright": '}', "asciitilde": '~', "nobreakspace": '\u00a0',
-	"EuroSign": '€', "Cyrillic_io": 'ё', "Cyrillic_yu": 'ю', "Cyrillic_ya": 'я',
-	"Cyrillic_ie": 'е', "Cyrillic_i": 'и', "Cyrillic_shorti": 'й',
-	"Cyrillic_ef": 'ф', "Cyrillic_ghe": 'г', "Cyrillic_ha": 'х',
-	"Cyrillic_ka": 'к', "Cyrillic_el": 'л', "Cyrillic_em": 'м',
-	"Cyrillic_en": 'н', "Cyrillic_o": 'о', "Cyrillic_pe": 'п',
-	"Cyrillic_er": 'р', "Cyrillic_es": 'с', "Cyrillic_te": 'т',
-	"Cyrillic_u": 'у', "Cyrillic_zhe": 'ж', "Cyrillic_ve": 'в',
-	"Cyrillic_softsign": 'ь', "Cyrillic_yeru": 'ы', "Cyrillic_ze": 'з',
-	"Cyrillic_sha": 'ш', "Cyrillic_e": 'э', "Cyrillic_shcha": 'щ',
-	"Cyrillic_che": 'ч', "Cyrillic_hardsign": 'ъ', "Cyrillic_be": 'б',
-	"Cyrillic_de": 'д', "Cyrillic_tse": 'ц', "Cyrillic_a": 'а',
-}
-
-func waylandKeysymRune(name string) rune {
-	if len(name) == 1 {
-		return rune(name[0])
-	}
-	if r, ok := waylandSymbolNames[name]; ok {
-		return r
-	}
-	if strings.HasPrefix(name, "Cyrillic_") {
-		lower := "Cyrillic_" + strings.ToLower(strings.TrimPrefix(name, "Cyrillic_"))
-		if r, ok := waylandSymbolNames[lower]; ok {
-			return unicode.ToUpper(r)
+	index := int(group)
+	if index >= len(key.groups) {
+		if key.clamp {
+			index = len(key.groups) - 1
+		} else if key.redirect >= 0 && key.redirect < len(key.groups) {
+			index = key.redirect
+		} else {
+			index %= len(key.groups)
 		}
 	}
-	if len(name) > 1 && name[0] == 'U' {
-		if value, err := strconv.ParseUint(name[1:], 16, 32); err == nil && value <= unicode.MaxRune {
-			return rune(value)
-		}
+	g := key.groups[index]
+	if len(g.symbols) == 0 {
+		return nil
+	}
+	level := g.typ.levels[mods&g.typ.mask]
+	if level >= len(g.symbols) {
+		level = 0
+	}
+	return g.sequences[level]
+}
+func (k waylandSymbols) symbol(code, group, mods uint32) uint32 {
+	syms := k.symbols(code, group, mods)
+	if len(syms) > 0 {
+		return syms[0]
 	}
 	return 0
+}
+func xkbLevels(text string) [][]uint32 {
+	var levels [][]uint32
+	start, depth := 0, 0
+	appendLevel := func(s string) {
+		s = strings.TrimSpace(s)
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "{"), "}"))
+		var symbols []uint32
+		for _, name := range strings.Split(s, ",") {
+			symbols = append(symbols, keysym(strings.TrimSpace(name)))
+		}
+		levels = append(levels, symbols)
+	}
+	for i, c := range text {
+		if c == '{' {
+			depth++
+		}
+		if c == '}' {
+			depth--
+		}
+		if c == ',' && depth == 0 {
+			appendLevel(text[start:i])
+			start = i + 1
+		}
+	}
+	appendLevel(text[start:])
+	return levels
+}
+
+// Match the key's braces rather than stopping at a nested action/level block.
+func xkbBlock(text string, open int) string {
+	depth := 0
+	quoted := false
+	escaped := false
+	for i := open; i < len(text); i++ {
+		c := text[i]
+		if quoted {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				quoted = false
+			}
+			continue
+		}
+		if c == '"' {
+			quoted = true
+			continue
+		}
+		if c == '{' {
+			depth++
+		}
+		if c == '}' {
+			depth--
+			if depth == 0 {
+				return text[open+1 : i]
+			}
+		}
+	}
+	return ""
 }

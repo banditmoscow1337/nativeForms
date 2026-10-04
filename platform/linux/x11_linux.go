@@ -24,9 +24,10 @@ import (
 var le = binary.LittleEndian
 
 type X11Options struct {
-	Title         string
-	Width, Height int
-	OnReady       func(*X11Window)
+	Title          string
+	Width, Height  int
+	OnReady        func(*X11Window)
+	OnFilesDropped func([]string)
 }
 
 // X11Window speaks the core X11 protocol over a Unix socket, without Xlib.
@@ -46,7 +47,21 @@ type X11Window struct {
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
 	keysyms                                                       map[byte][]uint32
-	wmDelete                                                      uint32
+	wmDelete, wmProtocols                                         uint32
+	incrAtom                                                      uint32
+	transfers                                                     map[selectionKey]*selectionTransfer
+	peerRequests                                                  map[uint16]bool
+	pendingReplies                                                map[uint16]bool
+	replies                                                       map[uint16][]byte
+	running                                                       bool
+	readingSelection                                              bool
+	packet                                                        []byte
+	packetHave                                                    int
+	dnd                                                           x11DND
+	modal, portal                                                 bool
+	compose                                                       composeState
+	ime                                                           *linuxIME
+	screenX, screenY                                              int
 	clipboard, utf8Atom, targetsAtom, textAtom, selectionProperty uint32
 	clipboardText                                                 string
 	clipboardOwned                                                bool
@@ -60,7 +75,12 @@ func NewX11(manager *ui.Manager, options X11Options) *X11Window {
 	return &X11Window{manager: manager, options: options}
 }
 
-func (w *X11Window) Capabilities() platform.Capabilities { return X11Capabilities() }
+func (w *X11Window) Capabilities() platform.Capabilities {
+	c := X11Capabilities()
+	c.FileDialog = w.portal
+	c.IME = w.ime != nil
+	return c
+}
 
 func (w *X11Window) Close() {
 	if w == nil {
@@ -250,6 +270,7 @@ func (w *X11Window) send(req []byte) error {
 	}
 	le.PutUint16(req[2:], uint16(len(req)/4))
 	w.sequence++
+	delete(w.peerRequests, w.sequence)
 	for len(req) > 0 {
 		n, err := w.conn.Write(req)
 		if err != nil {
@@ -329,7 +350,7 @@ func (w *X11Window) createWindow() error {
 	le.PutUint16(request[22:], 1)
 	le.PutUint32(request[28:], 1<<11)
 	// Key, button, motion, leave, expose, structure and focus events.
-	le.PutUint32(request[32:], 1|2|4|8|32|64|1<<15|1<<17|1<<21)
+	le.PutUint32(request[32:], 1|2|4|8|32|64|1<<15|1<<17|1<<21|1<<22)
 	if err = w.send(request); err != nil {
 		return err
 	}
@@ -344,6 +365,7 @@ func (w *X11Window) createWindow() error {
 	if err != nil {
 		return err
 	}
+	w.wmProtocols = protocols
 	w.wmDelete, err = w.atom("WM_DELETE_WINDOW")
 	if err != nil {
 		return err
@@ -352,7 +374,7 @@ func (w *X11Window) createWindow() error {
 		name string
 		dst  *uint32
 	}{
-		{"CLIPBOARD", &w.clipboard}, {"UTF8_STRING", &w.utf8Atom},
+		{"INCR", &w.incrAtom}, {"CLIPBOARD", &w.clipboard}, {"UTF8_STRING", &w.utf8Atom},
 		{"TARGETS", &w.targetsAtom}, {"TEXT", &w.textAtom},
 		{"_NATIVEFORMS_CLIPBOARD", &w.selectionProperty},
 	} {
@@ -394,6 +416,9 @@ func (w *X11Window) createWindow() error {
 	if err = w.readKeyboardMapping(); err != nil {
 		return err
 	}
+	if err = w.setupDND(); err != nil {
+		return err
+	}
 	mapWindow := make([]byte, 8)
 	mapWindow[0] = 8
 	le.PutUint32(mapWindow[4:], w.id)
@@ -408,7 +433,13 @@ func (w *X11Window) readKeyboardMapping() error {
 	if err := w.send(request); err != nil {
 		return err
 	}
-	answer, err := w.reply()
+	var answer []byte
+	var err error
+	if w.running {
+		answer, err = w.waitReply(w.sequence, time.Now().Add(2*time.Second))
+	} else {
+		answer, err = w.reply()
+	}
 	if err != nil {
 		return err
 	}
@@ -440,21 +471,29 @@ func (w *X11Window) Run() error {
 	if err != nil {
 		return err
 	}
-	defer w.conn.Close()
+	conn := w.conn
+	defer func() { conn.Close(); w.conn = nil }()
 	if err = w.open(screen, display); err != nil {
 		return err
 	}
 	if err = w.createWindow(); err != nil {
 		return err
 	}
+	w.running = true
+	defer func() { w.running = false }()
+	w.portal = portalAvailable()
+	w.ime = openLinuxIME(w.manager)
+	defer func() {
+		if w.ime != nil {
+			w.ime.close()
+		}
+	}()
 	w.renderer = software.New()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
 	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
 	w.manager.SetWakeHandler(func() {
-		if w.conn != nil {
-			_ = w.conn.SetReadDeadline(time.Now())
-		}
+		_ = conn.SetReadDeadline(time.Now())
 	})
 	defer func() {
 		w.manager.SetWakeHandler(nil)
@@ -466,6 +505,18 @@ func (w *X11Window) Run() error {
 	}
 	paint := true
 	for !w.closeRequested.Load() {
+		if w.ime != nil {
+			w.ime.screenX, w.ime.screenY = w.screenX, w.screenY
+			if err := w.ime.sync(); err != nil {
+				w.ime.close()
+				w.ime = nil
+			}
+		}
+		for k, t := range w.transfers {
+			if time.Now().After(t.expires) {
+				delete(w.transfers, k)
+			}
+		}
 		if paint || w.manager.NeedsFrame() {
 			if err = w.paint(); err != nil {
 				return err
@@ -476,7 +527,7 @@ func (w *X11Window) Run() error {
 		if delay := w.manager.NextFrameAfter(); delay > 0 && delay < 50*time.Millisecond {
 			deadline = time.Now().Add(delay)
 		}
-		message, readErr := w.readEvent(deadline)
+		message, readErr := w.clipboardPacket(deadline)
 		err = readErr
 		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 			continue
@@ -484,17 +535,8 @@ func (w *X11Window) Run() error {
 		if err != nil {
 			return err
 		}
-		if message[0] == 0 {
-			return fmt.Errorf("x11: protocol error %d, request %d", message[1], message[10])
-		}
-		if message[0] == 1 {
-			return fmt.Errorf("x11: unexpected reply")
-		}
-		if w.handle(message) {
-			paint = true
-		}
-		if w.clipboardError != nil {
-			return w.clipboardError
+		if err = w.clipboardDispatch(message); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -648,6 +690,9 @@ func x11Key(sym uint32) ui.Key {
 
 func (w *X11Window) handle(message []byte) bool {
 	typ := message[0] & 0x7f
+	if w.modal && typ >= 2 && typ <= 8 {
+		return false
+	}
 	switch typ {
 	case 2, 3:
 		syms := w.keysyms[message[1]]
@@ -655,26 +700,67 @@ func (w *X11Window) handle(message []byte) bool {
 			return false
 		}
 		state := le.Uint16(message[28:])
-		sym := syms[0]
-		if state&1 != 0 && len(syms) > 1 && syms[1] != 0 {
-			sym = syms[1]
+		group := int((state >> 13) & 3)
+		base := group * 2
+		if state&128 != 0 && len(syms) > 2 {
+			base += 2
 		}
+		if base >= len(syms) || syms[base] == 0 {
+			base = 0
+		}
+		sym := syms[base]
+		upper := uint32(0)
+		if base+1 < len(syms) {
+			upper = syms[base+1]
+		}
+		shift := state&1 != 0
+		if state&2 != 0 && unicode.IsLetter(keysymRune(sym)) {
+			shift = !shift
+		}
+		if state&16 != 0 && upper >= 0xffb0 && upper <= 0xffb9 {
+			shift = !shift
+		}
+		if shift {
+			if upper != 0 {
+				sym = upper
+			} else if r := keysymRune(sym); unicode.IsLetter(r) {
+				sym = uint32(unicode.ToUpper(r)) | 0x1000000
+			}
+		}
+		if w.ime != nil && w.ime.key(sym, uint32(message[1]-8), uint32(state), typ == 2) {
+			return false
+		}
+
 		kind := ui.KeyDown
 		if typ == 3 {
 			kind = ui.KeyUp
 		}
 		mods := x11Mods(state)
-		w.manager.HandleEvent(ui.Event{Type: kind, Key: x11Key(sym), Mods: mods})
-		if typ == 2 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
-			r := rune(sym)
-			if sym&0xff000000 == 0x01000000 {
-				r = rune(sym & 0xffffff)
-			}
-			if r >= 32 && r <= 0x10ffff && unicode.IsPrint(r) {
-				w.manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: r})
+		if typ == 2 && w.compose.node != nil && (sym == 0xff08 || sym == 0xff1b) {
+			w.compose.input(w.manager, sym)
+			return false
+		}
+		if mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) != 0 {
+			w.compose.reset(w.manager)
+		}
+		key := x11Key(sym)
+		if mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) != 0 {
+			key = x11Key(syms[0])
+			if key == ui.KeyUnknown {
+				key, _ = evdevUS(uint32(message[1]-8), false)
 			}
 		}
+		w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods})
+		if typ == 2 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
+			w.compose.input(w.manager, sym)
+		}
+
 	case 4, 5, 6:
+		if typ == 4 {
+			w.compose.reset(w.manager)
+		}
+		w.screenX = int(int16(le.Uint16(message[20:]))) - int(int16(le.Uint16(message[24:])))
+		w.screenY = int(int16(le.Uint16(message[22:]))) - int(int16(le.Uint16(message[26:])))
 		x, y := float32(int16(le.Uint16(message[24:]))), float32(int16(le.Uint16(message[26:])))
 		if typ == 6 {
 			w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: x, Y: y})
@@ -710,8 +796,22 @@ func (w *X11Window) handle(message []byte) bool {
 			kind = ui.PointerUp
 		}
 		w.manager.HandleEvent(ui.Event{Type: kind, Button: mouse, X: x, Y: y, Mods: x11Mods(le.Uint16(message[28:]))})
-	case 8, 10:
+	case 10:
+		w.compose.reset(w.manager)
+		if w.ime != nil {
+			w.ime.focusOut()
+		}
 		w.manager.ClearInteraction()
+	case 34:
+		if message[4] == 1 {
+			if err := w.readKeyboardMapping(); err != nil {
+				w.clipboardError = err
+			}
+		}
+	case 28:
+		if err := w.selectionProgress(message); err != nil {
+			w.clipboardError = err
+		}
 	case 29: // SelectionClear
 		if le.Uint32(message[12:]) == w.clipboard {
 			w.clipboardOwned = false
@@ -724,6 +824,10 @@ func (w *X11Window) handle(message []byte) bool {
 	case 12:
 		return true
 	case 22:
+		if message[0]&128 != 0 {
+			w.screenX = int(int16(le.Uint16(message[16:])))
+			w.screenY = int(int16(le.Uint16(message[18:])))
+		}
 		width, height := int(le.Uint16(message[20:])), int(le.Uint16(message[22:]))
 		if width != w.width || height != w.height {
 			w.width, w.height = width, height
@@ -731,8 +835,10 @@ func (w *X11Window) handle(message []byte) bool {
 			return true
 		}
 	case 33:
-		if le.Uint32(message[12:]) == w.wmDelete {
+		if message[1] == 32 && le.Uint32(message[8:]) == w.wmProtocols && le.Uint32(message[12:]) == w.wmDelete {
 			w.Close()
+		} else {
+			w.handleDND(message)
 		}
 	}
 	return false

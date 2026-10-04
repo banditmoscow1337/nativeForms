@@ -34,14 +34,20 @@ var atlasReady bool
 // The bytes are copied so callers can release their buffer immediately.
 func SetFontData(data []byte) error {
 	face, err := ParseTrueType(data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	fontMu.Lock()
 	defer fontMu.Unlock()
-	if atlasReady { return fmt.Errorf("font atlas has already been initialized") }
+	if atlasReady {
+		return fmt.Errorf("font atlas has already been initialized")
+	}
 	face.data = append([]byte(nil), data...)
 	// Table slices must reference the copied bytes, not the caller's buffer.
 	face, err = ParseTrueType(face.data)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	selectedFace = face
 	return nil
 }
@@ -52,7 +58,9 @@ func FontAtlas() image.Image {
 	atlasOnce.Do(func() {
 		fontMu.Lock()
 		face := selectedFace
-		if face == nil { face = defaultSystemFace() }
+		if face == nil {
+			face = defaultSystemFace()
+		}
 		atlasImage = buildFontAtlas(face)
 		atlasReady = true
 		fontMu.Unlock()
@@ -65,8 +73,10 @@ func defaultSystemFace() *TrueTypeFace {
 	switch runtime.GOOS {
 	case "windows":
 		windir := os.Getenv("WINDIR")
-		if windir == "" { windir = "C:\\Windows" }
-		paths = []string{windir+"\\Fonts\\segoeui.ttf", windir+"\\Fonts\\arial.ttf"}
+		if windir == "" {
+			windir = "C:\\Windows"
+		}
+		paths = []string{windir + "\\Fonts\\segoeui.ttf", windir + "\\Fonts\\arial.ttf"}
 	case "darwin":
 		paths = []string{"/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"}
 	default:
@@ -75,9 +85,13 @@ func defaultSystemFace() *TrueTypeFace {
 	}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		face, err := ParseTrueType(data)
-		if err == nil { return face }
+		if err == nil {
+			return face
+		}
 	}
 	return nil
 }
@@ -177,12 +191,18 @@ func buildFontAtlas(face *TrueTypeFace) image.Image {
 		advance := float32(0.75)
 		if face != nil {
 			id := face.glyphIndex(character)
-			if id == 0 && character != ' ' { continue }
+			if id == 0 && character != ' ' {
+				continue
+			}
 			advance = face.advance(id)
-			if err := face.drawGlyph(atlas, id, x*fontCellSize, y*fontCellSize); err != nil { continue }
+			if err := face.drawGlyph(atlas, id, x*fontCellSize, y*fontCellSize); err != nil {
+				continue
+			}
 		} else {
 			key := unicode.ToUpper(character)
-			if key > 127 && character != ' ' { continue }
+			if key > 127 && character != ' ' {
+				continue
+			}
 			drawBitmapGlyph(atlas, glyphRows[byte(key)], x*fontCellSize, y*fontCellSize)
 		}
 		scalableGlyphs[character] = glyphInfo{cellX: x, cellY: y, advance: advance}
@@ -192,12 +212,14 @@ func buildFontAtlas(face *TrueTypeFace) image.Image {
 
 func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 	for row, bits := range rows {
-		for col:=0; col<5; col++ {
-			if bits&(1<<uint(4-col))==0 { continue }
-			for yy:=0; yy<6; yy++ {
-				for xx:=0; xx<6; xx++ {
-					atlas.SetNRGBA(x+10+col*6+xx,y+10+row*6+yy,
-						color.NRGBA{R:255,G:255,B:255,A:255})
+		for col := 0; col < 5; col++ {
+			if bits&(1<<uint(4-col)) == 0 {
+				continue
+			}
+			for yy := 0; yy < 6; yy++ {
+				for xx := 0; xx < 6; xx++ {
+					atlas.SetNRGBA(x+10+col*6+xx, y+10+row*6+yy,
+						color.NRGBA{R: 255, G: 255, B: 255, A: 255})
 				}
 			}
 		}
@@ -231,6 +253,9 @@ func MeasureText(text string, size float32) Vec2 {
 }
 
 func measureTextLine(text string, size float32) float32 {
+	if shaped, ok := shapeText(text, size); ok {
+		return shaped.Advance
+	}
 	width := float32(0)
 	for _, character := range text {
 		width += glyphForRune(character).advance * size

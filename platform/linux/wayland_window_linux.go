@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
@@ -186,6 +185,14 @@ type WaylandWindow struct {
 	globals                                                              map[uint32]string
 	keymap                                                               waylandSymbols
 	keyGroup                                                             uint32
+	keyMods                                                              uint32
+	compose                                                              composeState
+	repeatCode                                                           uint32
+	repeatAt                                                             time.Time
+	repeatRate, repeatDelay                                              int
+	modal, portal                                                        bool
+	textManager, textInput                                               uint32
+	input                                                                wlTextInput
 	dataManager, dataDevice, ownSource, serial, dragOffer                uint32
 	dataOffers                                                           map[uint32]map[string]bool
 	dataSources                                                          map[uint32]string
@@ -198,7 +205,14 @@ func NewWayland(manager *ui.Manager, options WaylandOptions) *WaylandWindow {
 	return &WaylandWindow{Manager: manager, Options: options}
 }
 
-func (w *WaylandWindow) Capabilities() platform.Capabilities { return WaylandCapabilities() }
+func (w *WaylandWindow) Capabilities() platform.Capabilities {
+	c := WaylandCapabilities()
+	c.Clipboard = w.dataDevice != 0
+	c.DragDrop = w.dataDevice != 0
+	c.IME = w.textInput != 0
+	c.FileDialog = w.portal
+	return c
+}
 
 func (w *WaylandWindow) Close() {
 	if w == nil {
@@ -233,10 +247,13 @@ func (w *WaylandWindow) Run() error {
 			_ = syscall.Close(fd)
 		}
 		_ = unix.Close()
+		w.wire = nil
 	}()
 	if err = w.setup(); err != nil {
 		return err
 	}
+	w.portal = portalAvailable()
+	w.repeatRate, w.repeatDelay = 25, 600
 	w.renderer = software.New()
 	w.buffers = make(map[uint32]*wlBuffer)
 	w.pressed = make(map[uint32]bool)
@@ -257,6 +274,13 @@ func (w *WaylandWindow) Run() error {
 		w.Options.OnReady(w)
 	}
 	for !w.closing.Load() {
+		if err = w.syncTextInput(false); err != nil {
+			return err
+		}
+		if !w.modal && w.repeatCode != 0 && !w.repeatAt.IsZero() && !time.Now().Before(w.repeatAt) {
+			w.dispatchKey(w.repeatCode, true, true)
+			w.repeatAt = time.Now().Add(time.Second / time.Duration(max(1, w.repeatRate)))
+		}
 		if w.ready && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
 			if err = w.paint(); err != nil {
 				return err
@@ -265,6 +289,9 @@ func (w *WaylandWindow) Run() error {
 		deadline := time.Now().Add(50 * time.Millisecond)
 		if d := w.Manager.NextFrameAfter(); d > 0 && d < 50*time.Millisecond {
 			deadline = time.Now().Add(d)
+		}
+		if w.repeatCode != 0 && !w.repeatAt.IsZero() {
+			deadline = minTime(deadline, w.repeatAt)
 		}
 		object, opcode, payload, readErr := w.wire.read(deadline)
 		if timeout, ok := readErr.(net.Error); ok && timeout.Timeout() {
@@ -339,8 +366,14 @@ func (w *WaylandWindow) setup() error {
 			if w.seat != 0 {
 				continue
 			}
-			id, err = w.wire.bind(global, 1)
+			id, err = w.wire.bind(global, 4)
 			w.seat = id
+		case "zwp_text_input_manager_v3":
+			if w.textManager != 0 {
+				continue
+			}
+			id, err = w.wire.bind(global, 1)
+			w.textManager = id
 		case "wl_data_device_manager":
 			if w.dataManager != 0 {
 				continue
@@ -364,6 +397,12 @@ func (w *WaylandWindow) setup() error {
 	if w.dataManager != 0 && w.seat != 0 {
 		w.dataDevice = w.wire.id()
 		if err := w.wire.send(w.dataManager, 1, append(wlWord(w.dataDevice), wlWord(w.seat)...)); err != nil {
+			return err
+		}
+	}
+	if w.textManager != 0 && w.seat != 0 {
+		w.textInput = w.wire.id()
+		if err := w.wire.send(w.textManager, 1, append(wlWord(w.textInput), wlWord(w.seat)...)); err != nil {
 			return err
 		}
 	}
@@ -565,6 +604,12 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 	case w.seat:
 		if opcode == 0 && len(payload) >= 4 {
 			capabilities := u32(0)
+			if capabilities&2 == 0 {
+				w.repeatCode = 0
+				w.pressed = make(map[uint32]bool)
+				w.compose.reset(w.Manager)
+				w.Manager.ClearInteraction()
+			}
 			if capabilities&1 != 0 && w.pointer == 0 {
 				w.pointer = w.wire.id()
 				if err := w.wire.send(w.seat, 0, wlWord(w.pointer)); err != nil {
@@ -582,12 +627,17 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 		if opcode == 3 && len(payload) >= 4 {
 			w.serial = u32(0)
 		}
-		return w.pointerEvent(opcode, payload)
+		if !w.modal {
+			return w.pointerEvent(opcode, payload)
+		}
+		return nil
 	case w.keyboard:
-		if (opcode == 2 || opcode == 3) && len(payload) >= 4 {
+		if (opcode == 1 || opcode == 3) && len(payload) >= 4 {
 			w.serial = u32(0)
 		}
 		return w.keyboardEvent(opcode, payload)
+	case w.textInput:
+		return w.textInputEvent(opcode, payload)
 	case w.dataDevice:
 		return w.dataDeviceEvent(opcode, payload)
 	default:
@@ -687,52 +737,58 @@ func (w *WaylandWindow) keyboardEvent(opcode uint16, p []byte) error {
 			return fmt.Errorf("wayland: read keymap: %w", err)
 		}
 		w.keymap = parseWaylandKeymap(data)
-	case 2:
+	case 1: // enter: keys already held do not generate text or repeat.
 		w.pressed = make(map[uint32]bool)
-		w.Manager.ClearInteraction()
+		w.repeatCode = 0
 		if len(p) >= 12 {
-			size := int(u(8))
-			if size <= len(p)-12 {
-				for i := 12; i+4 <= 12+size; i += 4 {
-					w.pressed[binary.LittleEndian.Uint32(p[i:])] = true
+			n := int(u(8))
+			if n <= len(p)-12 {
+				for i := 12; i+4 <= 12+n; i += 4 {
+					w.pressed[le.Uint32(p[i:])] = true
 				}
 			}
 		}
+	case 2:
+		w.pressed = make(map[uint32]bool)
+		w.repeatCode = 0
+		w.compose.reset(w.Manager)
+		w.Manager.ClearInteraction()
 	case 3:
 		if len(p) < 16 {
 			return fmt.Errorf("wayland: short keyboard key")
 		}
 		code, down := u(8), u(12) != 0
 		w.pressed[code] = down
-		mods := 0
-		if w.pressed[42] || w.pressed[54] {
-			mods |= ui.ModShift
+		if !w.modal {
+			w.dispatchKey(code, down, false)
 		}
-		if w.pressed[29] || w.pressed[97] {
-			mods |= ui.ModControl
+		if !down && code == w.repeatCode {
+			w.repeatCode = 0
 		}
-		if w.pressed[56] || w.pressed[100] {
-			mods |= ui.ModAlt
-		}
-		if w.pressed[125] || w.pressed[126] {
-			mods |= ui.ModSuper
-		}
-		key, character := evdevUS(code, mods&ui.ModShift != 0)
-		if w.keymap != nil {
-			character = w.keymap.character(code, w.keyGroup, mods&ui.ModShift != 0)
-		}
-		kind := ui.KeyDown
-		if !down {
-			kind = ui.KeyUp
-		}
-		w.Manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods})
-		if down && character >= 32 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 && unicode.IsPrint(character) {
-			w.Manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: character})
+		if down && !w.modal && w.repeatRate > 0 {
+			repeat := code != 42 && code != 54 && code != 29 && code != 97 && code != 56 && code != 100 && code != 125 && code != 126 && code != 58 && code != 69
+			if w.keymap != nil {
+				repeat = w.keymap[code+8].repeat
+			}
+			if repeat {
+				w.repeatCode = code
+				w.repeatAt = time.Now().Add(time.Duration(w.repeatDelay) * time.Millisecond)
+			}
 		}
 	case 4:
 		if len(p) >= 20 {
+			w.keyMods = u(4) | u(8) | u(12)
 			w.keyGroup = u(16)
 		}
+	case 5:
+		if len(p) >= 8 {
+			w.repeatRate = max(0, min(1000, int(int32(u(0)))))
+			w.repeatDelay = max(0, int(int32(u(4))))
+			if w.repeatRate == 0 {
+				w.repeatCode = 0
+			}
+		}
+
 	}
 	return nil
 }
@@ -821,4 +877,39 @@ var waylandUSPunctuation = map[uint32][2]rune{
 	7: {'6', '^'}, 8: {'7', '&'}, 9: {'8', '*'}, 10: {'9', '('}, 11: {'0', ')'},
 	12: {'-', '_'}, 13: {'=', '+'}, 26: {'[', '{'}, 27: {']', '}'}, 39: {';', ':'},
 	40: {'\'', '"'}, 41: {'`', '~'}, 43: {'\\', '|'}, 51: {',', '<'}, 52: {'.', '>'}, 53: {'/', '?'},
+}
+
+func (w *WaylandWindow) dispatchKey(code uint32, down, repeat bool) {
+	mods := x11Mods(uint16(w.keyMods))
+	if w.pressed[42] || w.pressed[54] {
+		mods |= ui.ModShift
+	}
+	key, r := evdevUS(code, mods&ui.ModShift != 0)
+	sym := uint32(r) | 0x1000000
+	if w.keymap != nil {
+		sym = w.keymap.symbol(code, w.keyGroup, w.keyMods)
+	}
+	kind := ui.KeyDown
+	if !down {
+		kind = ui.KeyUp
+	}
+	if down && w.compose.node != nil && (sym == 0xff08 || sym == 0xff1b) {
+		w.compose.input(w.Manager, sym)
+		return
+	}
+	if mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) != 0 {
+		w.compose.reset(w.Manager)
+	}
+	w.Manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods, Repeat: repeat})
+	// A compositor's input method consumes intercepted keys itself. Keys still
+	// delivered on wl_keyboard need normal text translation even when enabled.
+	if down && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
+		if w.keymap != nil {
+			for _, s := range w.keymap.symbols(code, w.keyGroup, w.keyMods) {
+				w.compose.input(w.Manager, s)
+			}
+		} else {
+			w.compose.input(w.Manager, sym)
+		}
+	}
 }
