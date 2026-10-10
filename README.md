@@ -23,6 +23,8 @@ For an offscreen example that writes `frame.png`, see
 [`examples/offscreen`](examples/offscreen/main.go). The caller creates a
 `nativeforms.Manager`, calls `BeginFrame`, then passes `Frame()` and an
 `image.RGBA` to `software.Renderer.Render`.
+The [image and software paint contract](docs/paint-software.md) covers image
+resource lifetime, clipping, alpha, filtering, scaling and current GPU limits.
 
 For the Windows example, run `go run ./examples/windows` on Windows amd64 or
 arm64. The [example](examples/windows/main_windows.go) creates a manager and

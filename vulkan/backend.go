@@ -224,6 +224,11 @@ func (backend *Backend) initDescriptor() error {
 
 func (backend *Backend) Render(commandBuffer uintptr, frame nativeforms.Frame) error {
 	if frame.Width <= 0 || frame.Height <= 0 || len(frame.Commands) == 0 { return nil }
+	for _, command := range frame.Commands {
+		if command.Kind == nativeforms.CommandImage || command.Kind == nativeforms.CommandRoundedRect {
+			return fmt.Errorf("Vulkan UI backend does not support paint command %d yet; use software rendering for images and rounded rectangles", command.Kind)
+		}
+	}
 	if err := backend.ensurePipeline(); err != nil { return err }
 	if backend.mapped == nil || !backend.renderer.TextureReady(backend.atlasTextureID) {
 		return fmt.Errorf("Vulkan UI resources are unavailable")

@@ -11,7 +11,8 @@ import (
 // Renderer rasterizes nativeForms paint commands into a premultiplied RGBA
 // image. It does not create or present an OS window.
 type Renderer struct {
-	atlas *image.NRGBA
+	atlas  *image.NRGBA
+	scaled []ui.DrawCommand
 }
 
 func New() *Renderer { return &Renderer{atlas: ui.FontAtlas().(*image.NRGBA)} }
@@ -22,21 +23,32 @@ func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || frame.Width <= 0 || frame.Height <= 0 {
 		return fmt.Errorf("invalid scaled UI target")
 	}
+	if dst.Bounds().Dx() == frame.Width && dst.Bounds().Dy() == frame.Height {
+		return renderer.Render(frame, dst)
+	}
 	sx := float32(dst.Bounds().Dx()) / float32(frame.Width)
 	sy := float32(dst.Bounds().Dy()) / float32(frame.Height)
 	scaleRect := func(r ui.Rect) ui.Rect {
 		return ui.Rect{X: r.X * sx, Y: r.Y * sy, W: r.W * sx, H: r.H * sy}
 	}
-	commands := make([]ui.DrawCommand, len(frame.Commands))
+	if cap(renderer.scaled) < len(frame.Commands) {
+		renderer.scaled = make([]ui.DrawCommand, len(frame.Commands))
+	} else {
+		renderer.scaled = renderer.scaled[:len(frame.Commands)]
+	}
 	for i, c := range frame.Commands {
 		c.Rect, c.Clip = scaleRect(c.Rect), scaleRect(c.Clip)
 		c.From = ui.Vec2{X: c.From.X * sx, Y: c.From.Y * sy}
 		c.To = ui.Vec2{X: c.To.X * sx, Y: c.To.Y * sy}
 		c.Width *= min(sx, sy)
-		commands[i] = c
+		c.Radius *= min(sx, sy)
+		renderer.scaled[i] = c
 	}
-	return renderer.Render(ui.Frame{Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
-		Commands: commands}, dst)
+	err := renderer.Render(ui.Frame{Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
+		Commands: renderer.scaled}, dst)
+	// Keep the backing storage, but do not pin images from a completed frame.
+	clear(renderer.scaled)
+	return err
 }
 
 // Render clears dst and paints a frame. dst must have the frame's dimensions.
@@ -58,6 +70,13 @@ func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
 			renderer.quad(dst, command)
 		case ui.CommandLine:
 			renderer.line(dst, command)
+		case ui.CommandImage:
+			if command.Filter > ui.FilterBilinear {
+				return fmt.Errorf("unsupported image filter: %d", command.Filter)
+			}
+			renderer.image(dst, command)
+		case ui.CommandRoundedRect:
+			renderer.roundedRect(dst, command)
 		default:
 			return fmt.Errorf("unsupported paint command: %d", command.Kind)
 		}
@@ -72,6 +91,14 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 	}
 	left, top, right, bottom := pixels(dst, visible)
 	atlasBounds := renderer.atlas.Bounds()
+	if c.UV.W == 0 && c.UV.H == 0 {
+		tx := atlasBounds.Min.X + int(math.Floor(float64(c.UV.X*float32(atlasBounds.Dx()))))
+		ty := atlasBounds.Min.Y + int(math.Floor(float64(c.UV.Y*float32(atlasBounds.Dy()))))
+		if tx >= atlasBounds.Min.X && tx < atlasBounds.Max.X && ty >= atlasBounds.Min.Y && ty < atlasBounds.Max.Y {
+			renderer.solid(dst, visible, c.Tint, float32(renderer.atlas.Pix[renderer.atlas.PixOffset(tx, ty)+3])/255)
+		}
+		return
+	}
 	for y := top; y < bottom; y++ {
 		py := float32(y) + 0.5
 		cy := clamp(py, c.Rect.Y, c.Rect.Y+c.Rect.H)
@@ -100,6 +127,144 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 			blend(dst, x, y, c.Tint, coverage*float32(alpha)/255)
 		}
 	}
+}
+
+func (renderer *Renderer) solid(dst *image.RGBA, visible ui.Rect, tint ui.Color, mask float32) {
+	left, top, right, bottom := pixels(dst, visible)
+	if tint.A >= 1 && mask >= 1 && float32(left) >= visible.X && float32(top) >= visible.Y &&
+		float32(right) <= visible.X+visible.W && float32(bottom) <= visible.Y+visible.H {
+		r, g, b := byte255(clamp(tint.R, 0, 1)*255), byte255(clamp(tint.G, 0, 1)*255), byte255(clamp(tint.B, 0, 1)*255)
+		for y := top; y < bottom; y++ {
+			for x := left; x < right; x++ {
+				i := dst.PixOffset(x, y)
+				dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3] = r, g, b, 255
+			}
+		}
+		return
+	}
+	for y := top; y < bottom; y++ {
+		for x := left; x < right; x++ {
+			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) *
+				overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
+			blend(dst, x, y, tint, mask*coverage)
+		}
+	}
+}
+
+func (renderer *Renderer) roundedRect(dst *image.RGBA, c ui.DrawCommand) {
+	visible := intersection(c.Rect, c.Clip)
+	if visible.W <= 0 || visible.H <= 0 || c.Tint.A <= 0 {
+		return
+	}
+	radius := min(max(c.Radius, float32(0)), min(c.Rect.W, c.Rect.H)*0.5)
+	if radius <= 0 {
+		renderer.solid(dst, visible, c.Tint, 1)
+		return
+	}
+	left, top, right, bottom := pixels(dst, visible)
+	for y := top; y < bottom; y++ {
+		for x := left; x < right; x++ {
+			coverage := float32(0)
+			for subY := 0; subY < 4; subY++ {
+				py := float32(y) + (float32(subY)+0.5)*0.25
+				if py < visible.Y || py >= visible.Y+visible.H {
+					continue
+				}
+				for subX := 0; subX < 4; subX++ {
+					px := float32(x) + (float32(subX)+0.5)*0.25
+					if px < visible.X || px >= visible.X+visible.W {
+						continue
+					}
+					cx := clamp(px, c.Rect.X+radius, c.Rect.X+c.Rect.W-radius)
+					cy := clamp(py, c.Rect.Y+radius, c.Rect.Y+c.Rect.H-radius)
+					dx, dy := px-cx, py-cy
+					if dx*dx+dy*dy <= radius*radius {
+						coverage += 1.0 / 16
+					}
+				}
+			}
+			if coverage > 0 {
+				blend(dst, x, y, c.Tint, coverage)
+			}
+		}
+	}
+}
+
+type imageSample struct {
+	r, g, b, a float32
+}
+
+func (renderer *Renderer) image(dst *image.RGBA, c ui.DrawCommand) {
+	if c.Image == nil || c.Rect.Empty() || c.Tint.A <= 0 {
+		return
+	}
+	source := c.Source
+	if source == (ui.Rect{}) {
+		bounds := c.Image.Bounds()
+		source = ui.Rect{W: float32(bounds.Dx()), H: float32(bounds.Dy())}
+	}
+	if source.Empty() {
+		return
+	}
+	visible := intersection(c.Rect, c.Clip)
+	if visible.Empty() {
+		return
+	}
+	left, top, right, bottom := pixels(dst, visible)
+	bounds := c.Image.Bounds()
+	minX := max(0, int(math.Floor(float64(source.X))))
+	minY := max(0, int(math.Floor(float64(source.Y))))
+	maxX := min(bounds.Dx()-1, int(math.Ceil(float64(source.X+source.W)))-1)
+	maxY := min(bounds.Dy()-1, int(math.Ceil(float64(source.Y+source.H)))-1)
+	if maxX < minX || maxY < minY {
+		return
+	}
+	read := func(x, y int) imageSample {
+		pixel := c.Image.RGBAAt(clampInt(x, minX, maxX), clampInt(y, minY, maxY))
+		return imageSample{float32(pixel.R), float32(pixel.G), float32(pixel.B), float32(pixel.A)}
+	}
+	for y := top; y < bottom; y++ {
+		py := float32(y) + 0.5
+		sy := source.Y + (py-c.Rect.Y)*source.H/c.Rect.H - 0.5
+		for x := left; x < right; x++ {
+			px := float32(x) + 0.5
+			sx := source.X + (px-c.Rect.X)*source.W/c.Rect.W - 0.5
+			var pixel imageSample
+			if c.Filter == ui.FilterBilinear {
+				x0, y0 := int(math.Floor(float64(sx))), int(math.Floor(float64(sy)))
+				fx, fy := sx-float32(x0), sy-float32(y0)
+				a, b, cc, d := read(x0, y0), read(x0+1, y0), read(x0, y0+1), read(x0+1, y0+1)
+				pixel = imageSample{
+					r: (a.r*(1-fx)+b.r*fx)*(1-fy) + (cc.r*(1-fx)+d.r*fx)*fy,
+					g: (a.g*(1-fx)+b.g*fx)*(1-fy) + (cc.g*(1-fx)+d.g*fx)*fy,
+					b: (a.b*(1-fx)+b.b*fx)*(1-fy) + (cc.b*(1-fx)+d.b*fx)*fy,
+					a: (a.a*(1-fx)+b.a*fx)*(1-fy) + (cc.a*(1-fx)+d.a*fx)*fy,
+				}
+			} else {
+				pixel = read(int(math.Floor(float64(sx+0.5))), int(math.Floor(float64(sy+0.5))))
+			}
+			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) *
+				overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
+			blendImage(dst, x, y, pixel, c.Tint, coverage)
+		}
+	}
+}
+
+func clampInt(value, low, high int) int { return min(max(value, low), high) }
+
+// Source pixels and the destination are both premultiplied sRGB RGBA.
+func blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, coverage float32) {
+	factor := clamp(tint.A, 0, 1) * clamp(coverage, 0, 1)
+	alpha := source.a * factor / 255
+	if alpha <= 0 {
+		return
+	}
+	inverse := 1 - alpha
+	i := dst.PixOffset(x, y)
+	dst.Pix[i+0] = byte255(source.r*clamp(tint.R, 0, 1)*factor + float32(dst.Pix[i+0])*inverse)
+	dst.Pix[i+1] = byte255(source.g*clamp(tint.G, 0, 1)*factor + float32(dst.Pix[i+1])*inverse)
+	dst.Pix[i+2] = byte255(source.b*clamp(tint.B, 0, 1)*factor + float32(dst.Pix[i+2])*inverse)
+	dst.Pix[i+3] = byte255(source.a*factor + float32(dst.Pix[i+3])*inverse)
 }
 
 func (renderer *Renderer) line(dst *image.RGBA, c ui.DrawCommand) {

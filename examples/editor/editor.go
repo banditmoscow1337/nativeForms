@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/examples/paintdemo"
 )
 
 type object struct{ id, name, kind string }
@@ -90,6 +91,7 @@ func New(manager *ui.Manager) ui.Component {
 	properties.Background = ui.DefaultTheme().PanelAlt
 	properties.SetMinimumSize(ui.Vec2{X: 170})
 	properties.Add(ui.NewLabel("Свойства"), selected)
+	properties.Add(paintdemo.New())
 	properties.Add(nameField)
 	properties.Add(ui.NewCheckbox("Виден", true, nil))
 	properties.Add(ui.NewRadioGroup([]ui.RadioOption{{ID: "local", Label: "Local"}, {ID: "world", Label: "World"}}, "local", nil))
