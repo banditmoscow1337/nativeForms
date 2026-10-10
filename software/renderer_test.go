@@ -139,8 +139,7 @@ func TestGoldenRoundedRectAndShapedGlyphMask(t *testing.T) {
 }
 
 func TestGoldenOpaqueRectFastPathAndFractionalClip(t *testing.T) {
-	atlas := ui.FontAtlas().Bounds()
-	whiteUV := ui.Rect{X: 0.5 / float32(atlas.Dx()), Y: 0.5 / float32(atlas.Dy())}
+	whiteUV := ui.Rect{X: 0.5 / 2048, Y: 0.5 / 2048}
 	frame := ui.Frame{Width: 2, Height: 1, Commands: []ui.DrawCommand{{
 		Kind: ui.CommandQuad, Rect: ui.Rect{W: 2, H: 1}, UV: whiteUV,
 		Clip: ui.Rect{W: 2, H: 1}, Tint: ui.RGBA(200, 40, 20, 255),
@@ -150,6 +149,9 @@ func TestGoldenOpaqueRectFastPathAndFractionalClip(t *testing.T) {
 	if err := renderer.Render(frame, dst); err != nil {
 		t.Fatal(err)
 	}
+	if renderer.atlas != nil {
+		t.Fatal("solid rect eagerly allocated the font atlas")
+	}
 	full := color.RGBA{R: 200, G: 40, B: 20, A: 255}
 	assertPixels(t, dst, full, full)
 	frame.Commands[0].Clip = ui.Rect{X: 0.5, W: 1, H: 1}
@@ -158,6 +160,16 @@ func TestGoldenOpaqueRectFastPathAndFractionalClip(t *testing.T) {
 	}
 	assertPixels(t, dst, color.RGBA{R: 100, G: 20, B: 10, A: 128},
 		color.RGBA{R: 100, G: 20, B: 10, A: 128})
+	if renderer.atlas != nil {
+		t.Fatal("clipped solid rect allocated the font atlas")
+	}
+	frame.Commands[0].UV.W = 1.0 / 2048
+	if err := renderer.Render(frame, dst); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.atlas == nil {
+		t.Fatal("textured quad did not load the font atlas")
+	}
 }
 
 func TestEmptyAndInvalidImageCommands(t *testing.T) {

@@ -309,6 +309,7 @@ func (w *Window) destroy() {
 		w.window.Send(selector("close"))
 	}
 	if w.representation != 0 {
+		w.framebuffer = nil // Its pixels are owned by the bitmap representation.
 		w.representation.Send(selector("release"))
 		w.representation = 0
 	}
@@ -333,18 +334,17 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 		return fmt.Errorf("darwin: framebuffer exceeds 64 megapixels")
 	}
 	if w.framebuffer == nil || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight {
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
-		w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
+		w.framebuffer = nil
 		if w.representation != 0 {
 			w.representation.Send(selector("release"))
 			w.representation = 0
 		}
-		w.representation = class("NSBitmapImageRep").Send(selector("alloc"))
-		w.representation = w.representation.Send(selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
-			uintptr(0), pixelWidth, pixelHeight, 8, 4, true, false, nsString("NSDeviceRGBColorSpace"), pixelWidth*4, 32)
-		if w.representation == 0 {
-			return fmt.Errorf("darwin: bitmap representation failed")
+		representation, framebuffer, err := newBitmapFramebuffer(pixelWidth, pixelHeight)
+		if err != nil {
+			return err
 		}
+		w.representation, w.framebuffer = representation, framebuffer
+		w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
 	}
 	if width != w.width || height != w.height {
 		w.width, w.height = width, height
@@ -357,14 +357,33 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale); err != nil {
 		return err
 	}
-	pointer := objc.Send[uintptr](w.representation, selector("bitmapData"))
-	if pointer == 0 {
-		return fmt.Errorf("darwin: bitmapData is nil")
-	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), len(w.framebuffer.Pix))
-	copy(dst, w.framebuffer.Pix)
 	w.view.Send(selector("setNeedsDisplay:"), true)
 	return nil
+}
+
+// The representation owns the backing bytes for as long as framebuffer is in
+// use. Rendering directly into those bytes avoids a second HiDPI-sized RGBA
+// allocation and a full-frame copy on every paint.
+func newBitmapFramebuffer(width, height int) (objc.ID, *image.RGBA, error) {
+	if width <= 0 || height <= 0 || width > 16384 || height > 16384 || int64(width)*int64(height) > 64*1024*1024 {
+		return 0, nil, fmt.Errorf("darwin: invalid bitmap dimensions")
+	}
+	rep := class("NSBitmapImageRep").Send(selector("alloc"))
+	rep = rep.Send(selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
+		uintptr(0), width, height, 8, 4, true, false, nsString("NSDeviceRGBColorSpace"), width*4, 32)
+	if rep == 0 {
+		return 0, nil, fmt.Errorf("darwin: bitmap representation failed")
+	}
+	pointer := objc.Send[uintptr](rep, selector("bitmapData"))
+	rowBytes := objc.Send[uintptr](rep, selector("bytesPerRow"))
+	if pointer == 0 || rowBytes < uintptr(width*4) || rowBytes > uintptr((256<<20)/height) {
+		rep.Send(selector("release"))
+		return 0, nil, fmt.Errorf("darwin: invalid bitmap backing")
+	}
+	stride := int(rowBytes)
+	framebuffer := &image.RGBA{Pix: unsafe.Slice((*byte)(unsafe.Pointer(pointer)), stride*height),
+		Stride: stride, Rect: image.Rect(0, 0, width, height)}
+	return rep, framebuffer, nil
 }
 
 func (w *Window) ClipboardText() (string, error) {
