@@ -23,7 +23,9 @@ func NewLabel(text string) *Label {
 }
 
 func (label *Label) SetText(text string) {
-	if label.Text == text { return }
+	if label.Text == text {
+		return
+	}
 	label.Text = text
 	label.invalidateLayout()
 }
@@ -37,22 +39,32 @@ func (label *Label) currentText() string {
 
 func (label *Label) Measure(constraints Constraints) Vec2 {
 	spec := label.fontSpec()
-	text:=label.currentText()
-	if label.Wrap && constraints.HasMaxX() { text=label.wrapText(text,maxFloat32(0,constraints.Max.X),spec) }
-	if label.Ellipsis && !label.Wrap && constraints.HasMaxX() { text=label.ellipsizeText(text,maxFloat32(0,constraints.Max.X),spec) }
+	text := label.currentText()
+	if label.Wrap && constraints.HasMaxX() {
+		text = label.wrapText(text, maxFloat32(0, constraints.Max.X), spec)
+	}
+	if label.Ellipsis && !label.Wrap && constraints.HasMaxX() {
+		text = label.ellipsizeText(text, maxFloat32(0, constraints.Max.X), spec)
+	}
 	return measureWithState(&label.State, label.measureText(text, spec), constraints)
 }
 
 func (label *Label) fontSpec() FontSpec {
 	spec := label.Font
-	if label.FontSize > 0 { spec.Size = label.FontSize }
-	if spec.Size <= 0 { spec.Size = label.Theme().FontSize }
+	if label.FontSize > 0 {
+		spec.Size = label.FontSize
+	}
+	if spec.Size <= 0 {
+		spec.Size = label.Theme().FontSize
+	}
 	return spec
 }
 
 func (label *Label) Baseline() float32 {
-	if fonts := label.fontContext(); fonts != nil { return fonts.Layout("", label.fontSpec()).Ascent }
-	return label.fontSpec().Size*0.85
+	if fonts := label.fontContext(); fonts != nil {
+		return fonts.Layout("", label.fontSpec()).Ascent
+	}
+	return label.fontSpec().Size * 0.85
 }
 
 func (label *Label) Paint(canvas *Canvas) {
@@ -64,9 +76,13 @@ func (label *Label) Paint(canvas *Canvas) {
 	if !label.Enabled() {
 		color = canvas.theme.Disabled
 	}
-	text:=label.currentText()
-	if label.Wrap { text=label.wrapText(text,label.rect.W,spec) }
-	if label.Ellipsis && !label.Wrap { text=label.ellipsizeText(text,label.rect.W,spec) }
+	text := label.currentText()
+	if label.Wrap {
+		text = label.wrapText(text, label.rect.W, spec)
+	}
+	if label.Ellipsis && !label.Wrap {
+		text = label.ellipsizeText(text, label.rect.W, spec)
+	}
 	canvas.TextStyled(text, label.rect, spec, label.Align, color)
 }
 
@@ -87,7 +103,9 @@ func NewButton(text string, onClick func()) *Button {
 }
 
 func (button *Button) SetText(text string) {
-	if button.Text == text { return }
+	if button.Text == text {
+		return
+	}
 	button.Text = text
 	button.invalidateLayout()
 }
@@ -102,8 +120,12 @@ func (button *Button) Measure(constraints Constraints) Vec2 {
 
 func (button *Button) fontSpec() FontSpec {
 	spec := button.Font
-	if button.FontSize > 0 { spec.Size = button.FontSize }
-	if spec.Size <= 0 { spec.Size = button.Theme().FontSize }
+	if button.FontSize > 0 {
+		spec.Size = button.FontSize
+	}
+	if spec.Size <= 0 {
+		spec.Size = button.Theme().FontSize
+	}
 	return spec
 }
 
@@ -169,10 +191,14 @@ func NewToggle(text string, value bool, onChange func(bool)) *Toggle {
 }
 
 func (toggle *Toggle) SetValue(value bool) {
-	if toggle.Value == value { return }
+	if toggle.Value == value {
+		return
+	}
 	toggle.Value = value
 	toggle.invalidatePaint()
-	if toggle.OnChange != nil { toggle.OnChange(value) }
+	if toggle.OnChange != nil {
+		toggle.OnChange(value)
+	}
 }
 
 func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
@@ -360,7 +386,9 @@ func NewProgressBar(value float32) *ProgressBar {
 }
 
 func (bar *ProgressBar) SetValue(value float32) {
-	if bar.Value == value { return }
+	if bar.Value == value {
+		return
+	}
 	bar.Value = value
 	bar.invalidatePaint()
 }

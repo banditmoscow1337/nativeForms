@@ -45,37 +45,51 @@ type State struct {
 func (state *State) UIState() *State { return state }
 
 func (state *State) fontContext() *FontContext {
-	if state.manager == nil { return nil }
+	if state.manager == nil {
+		return nil
+	}
 	return state.manager.FontContext()
 }
 
 func (state *State) textWidth(text string, spec FontSpec) float32 {
-	if fonts := state.fontContext(); fonts != nil { return fonts.Layout(text, spec).Advance }
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.Layout(text, spec).Advance
+	}
 	return measureTextLine(text, spec.Size)
 }
 
 func (state *State) measureText(text string, spec FontSpec) Vec2 {
-	if fonts := state.fontContext(); fonts != nil { return fonts.Measure(text, spec) }
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.Measure(text, spec)
+	}
 	return MeasureText(text, spec.Size)
 }
 
 func (state *State) caretX(text string, spec FontSpec, index int) float32 {
-	if fonts := state.fontContext(); fonts != nil { return fonts.CaretX(text, spec, index) }
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.CaretX(text, spec, index)
+	}
 	return TextCaretX(text, spec.Size, index)
 }
 
 func (state *State) caretPositions(text string, spec FontSpec) []float32 {
-	if fonts := state.fontContext(); fonts != nil { return fonts.Layout(text, spec).Carets }
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.Layout(text, spec).Carets
+	}
 	return textCaretPositions(text, spec.Size)
 }
 
 func (state *State) wrapText(text string, width float32, spec FontSpec) string {
-	if state.fontContext() != nil { return wrapTextWith(text, width, spec.Size, func(s string, _ float32) float32 { return state.textWidth(s, spec) }) }
+	if state.fontContext() != nil {
+		return wrapTextWith(text, width, spec.Size, func(s string, _ float32) float32 { return state.textWidth(s, spec) })
+	}
 	return WrapText(text, width, spec.Size)
 }
 
 func (state *State) ellipsizeText(text string, width float32, spec FontSpec) string {
-	if fonts := state.fontContext(); fonts != nil { return fonts.Ellipsize(text, width, spec) }
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.Ellipsize(text, width, spec)
+	}
 	return ellipsizeTextWith(text, width, func(s string) float32 { return measureTextLine(s, spec.Size) }, "…")
 }
 

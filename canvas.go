@@ -52,7 +52,9 @@ func (canvas *Canvas) Theme() *Theme { return canvas.theme }
 
 // MeasureText uses the same context and specification as TextStyled.
 func (canvas *Canvas) MeasureText(text string, spec FontSpec) Vec2 {
-	if canvas.fonts != nil { return canvas.fonts.Measure(text, spec) }
+	if canvas.fonts != nil {
+		return canvas.fonts.Measure(text, spec)
+	}
 	return MeasureText(text, spec.Size)
 }
 
@@ -63,7 +65,9 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		canvas.Text(text, bounds, spec.Size, align, tint)
 		return
 	}
-	if bounds.Empty() || tint.A <= 0 { return }
+	if bounds.Empty() || tint.A <= 0 {
+		return
+	}
 	spec = normalFontSpec(spec)
 	text = normalizeTextBreaks(text)
 	lines := strings.Split(text, "\n")
@@ -77,12 +81,14 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	for _, line := range layouts {
 		x := bounds.X
 		switch align {
-		case TextCenter: x += (bounds.W-line.Advance)*0.5
-		case TextRight: x += bounds.W-line.Advance
+		case TextCenter:
+			x += (bounds.W - line.Advance) * 0.5
+		case TextRight:
+			x += bounds.W - line.Advance
 		}
 		for _, glyph := range line.Glyphs {
 			mask := glyph.Mask
-			canvas.mask(mask, Rect{X: x+glyph.X, Y: y+glyph.Y, W: float32(mask.Bounds().Dx())/glyph.Scale, H: float32(mask.Bounds().Dy())/glyph.Scale}, tint)
+			canvas.mask(mask, Rect{X: x + glyph.X, Y: y + glyph.Y, W: float32(mask.Bounds().Dx()) / glyph.Scale, H: float32(mask.Bounds().Dy()) / glyph.Scale}, tint)
 		}
 		y += line.Height()
 	}
@@ -148,8 +154,8 @@ func (canvas *Canvas) Image(resource *ImageResource, dest, source Rect, tint Col
 	dest = Rect{
 		X: fullDest.X + (visibleSource.X-source.X)*fullDest.W/source.W,
 		Y: fullDest.Y + (visibleSource.Y-source.Y)*fullDest.H/source.H,
-		W: visibleSource.W*fullDest.W/source.W,
-		H: visibleSource.H*fullDest.H/source.H,
+		W: visibleSource.W * fullDest.W / source.W,
+		H: visibleSource.H * fullDest.H / source.H,
 	}
 	clip := canvas.clips[len(canvas.clips)-1]
 	if intersect(dest, clip).Empty() {

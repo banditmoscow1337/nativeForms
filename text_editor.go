@@ -136,7 +136,9 @@ func (e *TextEditor) record() {
 }
 
 func (e *TextEditor) trimHistory(history *[]editSnapshot, limit int) {
-	for len(*history) > limit { dropOldestSnapshot(history) }
+	for len(*history) > limit {
+		dropOldestSnapshot(history)
+	}
 }
 
 func dropOldestSnapshot(history *[]editSnapshot) {
@@ -147,10 +149,16 @@ func dropOldestSnapshot(history *[]editSnapshot) {
 
 func (e *TextEditor) trimByteBudget() {
 	byteLimit := e.UndoByteLimit
-	if byteLimit <= 0 { byteLimit = 8 << 20 }
+	if byteLimit <= 0 {
+		byteLimit = 8 << 20
+	}
 	used := 0
-	for _, snapshot := range e.undo { used += len(snapshot.text) }
-	for _, snapshot := range e.redo { used += len(snapshot.text) }
+	for _, snapshot := range e.undo {
+		used += len(snapshot.text)
+	}
+	for _, snapshot := range e.redo {
+		used += len(snapshot.text)
+	}
 	for used > byteLimit {
 		if len(e.redo) > 0 {
 			used -= len(e.redo[0].text)
@@ -158,7 +166,9 @@ func (e *TextEditor) trimByteBudget() {
 		} else if len(e.undo) > 0 {
 			used -= len(e.undo[0].text)
 			dropOldestSnapshot(&e.undo)
-		} else { break }
+		} else {
+			break
+		}
 	}
 }
 
@@ -170,7 +180,9 @@ func (e *TextEditor) restore(from, to *[]editSnapshot) bool {
 	}
 	*to = append(*to, editSnapshot{e.Text, e.Caret, e.Anchor})
 	limit := e.Limit
-	if limit <= 0 { limit = 128 }
+	if limit <= 0 {
+		limit = 128
+	}
 	last := len(*from) - 1
 	s := (*from)[last]
 	(*from)[last] = editSnapshot{}

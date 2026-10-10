@@ -49,11 +49,11 @@ func (widget *Image) Paint(canvas *Canvas) {
 	case ImageContain:
 		scale := minFloat32(dest.W/source.W, dest.H/source.H)
 		width, height := source.W*scale, source.H*scale
-		dest = Rect{X: dest.X+(dest.W-width)*0.5, Y: dest.Y+(dest.H-height)*0.5, W: width, H: height}
+		dest = Rect{X: dest.X + (dest.W-width)*0.5, Y: dest.Y + (dest.H-height)*0.5, W: width, H: height}
 	case ImageCover:
 		scale := maxFloat32(dest.W/source.W, dest.H/source.H)
 		width, height := dest.W/scale, dest.H/scale
-		source = Rect{X: (source.W-width)*0.5, Y: (source.H-height)*0.5, W: width, H: height}
+		source = Rect{X: (source.W - width) * 0.5, Y: (source.H - height) * 0.5, W: width, H: height}
 	case ImageStretch:
 		// The entire source fills the layout rectangle.
 	default:

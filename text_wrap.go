@@ -140,17 +140,27 @@ func WrapText(text string, width, size float32) string {
 }
 
 func ellipsizeTextWith(text string, width float32, measure func(string) float32, ellipsis string) string {
-	if width <= 0 { return "" }
+	if width <= 0 {
+		return ""
+	}
 	text = strings.ReplaceAll(normalizeTextBreaks(text), "\n", " ")
-	if measure(text) <= width { return text }
-	if measure(ellipsis) > width { return "" }
+	if measure(text) <= width {
+		return text
+	}
+	if measure(ellipsis) > width {
+		return ""
+	}
 	r := []rune(text)
 	best := ellipsis
 	for end := nextGrapheme(r, 0); end <= len(r); end = nextGrapheme(r, end) {
 		candidate := strings.TrimRightFunc(string(r[:end]), unicode.IsSpace) + ellipsis
-		if measure(candidate) > width { break }
+		if measure(candidate) > width {
+			break
+		}
 		best = candidate
-		if end == len(r) { break }
+		if end == len(r) {
+			break
+		}
 	}
 	return best
 }

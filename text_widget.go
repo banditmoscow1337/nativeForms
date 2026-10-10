@@ -165,27 +165,40 @@ func (f *TextField) displayRunes() []rune {
 
 func maskPasswordRunes(r []rune, preserveClusters bool) {
 	if !preserveClusters {
-		for i := range r { if hardTextBreak(r, i) == 0 { r[i] = '*' } }
+		for i := range r {
+			if hardTextBreak(r, i) == 0 {
+				r[i] = '*'
+			}
+		}
 		return
 	}
 	for i := 0; i < len(r); {
-		if count := hardTextBreak(r, i); count != 0 { i += count; continue }
+		if count := hardTextBreak(r, i); count != 0 {
+			i += count
+			continue
+		}
 		end := nextGrapheme(r, i)
 		r[i] = '*'
 		// Invisible combining grapheme joiners preserve original rune offsets.
-		for j := i+1; j < end; j++ { r[j] = '\u034f' }
+		for j := i + 1; j < end; j++ {
+			r[j] = '\u034f'
+		}
 		i = end
 	}
 }
 
 func (f *TextField) fontSpec() FontSpec {
 	spec := f.Font
-	if spec.Size <= 0 { spec.Size = f.Theme().FontSize }
+	if spec.Size <= 0 {
+		spec.Size = f.Theme().FontSize
+	}
 	return spec
 }
 
 func (f *TextField) lineHeight(spec FontSpec) float32 {
-	if fonts := f.fontContext(); fonts != nil { return fonts.Layout("", spec).Height() }
+	if fonts := f.fontContext(); fonts != nil {
+		return fonts.Layout("", spec).Height()
+	}
 	return spec.Size * 1.2
 }
 
@@ -272,7 +285,9 @@ func (f *TextField) CaretRect() Rect {
 	return Rect{X: p.X, Y: p.Y, W: 1, H: h}
 }
 func (f *TextField) Baseline() float32 {
-	if fonts := f.fontContext(); fonts != nil { return fonts.Layout("", f.fontSpec()).Ascent + 4 }
+	if fonts := f.fontContext(); fonts != nil {
+		return fonts.Layout("", f.fontSpec()).Ascent + 4
+	}
 	return f.fontSpec().Size*0.85 + 4
 }
 

@@ -30,7 +30,11 @@ func main() {
 		panic(err)
 	}
 	file, err := os.Create("frame.png")
-	if err != nil { panic(err) }
+	if err != nil {
+		panic(err)
+	}
 	defer file.Close()
-	if err := png.Encode(file, dst); err != nil { panic(err) }
+	if err := png.Encode(file, dst); err != nil {
+		panic(err)
+	}
 }

@@ -102,11 +102,17 @@ func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alph
 						if (edge.a.y <= py && edge.b.y > py) || (edge.b.y <= py && edge.a.y > py) {
 							intersection := edge.a.x + (py-edge.a.y)*(edge.b.x-edge.a.x)/(edge.b.y-edge.a.y)
 							if intersection > px {
-								if edge.b.y > edge.a.y { winding++ } else { winding-- }
+								if edge.b.y > edge.a.y {
+									winding++
+								} else {
+									winding--
+								}
 							}
 						}
 					}
-					if winding != 0 { hits++ }
+					if winding != 0 {
+						hits++
+					}
 				}
 			}
 			mask.Pix[y*mask.Stride+x] = uint8(hits * 255 / 4)
@@ -118,8 +124,10 @@ func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alph
 			for x := 0; x < width; x++ {
 				alpha := mask.Pix[y*mask.Stride+x]
 				for shift := 0; shift <= bold; shift++ {
-					at := y*thick.Stride+x+shift
-					if thick.Pix[at] < alpha { thick.Pix[at] = alpha }
+					at := y*thick.Stride + x + shift
+					if thick.Pix[at] < alpha {
+						thick.Pix[at] = alpha
+					}
 				}
 			}
 		}

@@ -34,18 +34,18 @@ type Renderer interface {
 	DescriptorPool() uint64
 }
 
-type ShaderPaths struct { Vertex, Fragment string }
+type ShaderPaths struct{ Vertex, Fragment string }
 
 type Backend struct {
-	renderer Renderer
-	shaders ShaderPaths
-	device uintptr
+	renderer                                        Renderer
+	shaders                                         ShaderPaths
+	device                                          uintptr
 	pipeline, pipelineLayout, descriptorSet, buffer uint64
-	pipelineFormat uint32
-	mapped unsafe.Pointer
-	frameStride uint64
-	atlasTextureID uint32
-	vertices []nativeforms.Vertex
+	pipelineFormat                                  uint32
+	mapped                                          unsafe.Pointer
+	frameStride                                     uint64
+	atlasTextureID                                  uint32
+	vertices                                        []nativeforms.Vertex
 }
 
 // New uses shader files supplied by the game. The caller owns synchronization
@@ -87,8 +87,12 @@ func (backend *Backend) initSurface() error {
 		return fmt.Errorf("failed to create UI font atlas")
 	}
 	backend.atlasTextureID = uint32(atlasID)
-	if err := backend.initPipeline(); err != nil { return err }
-	if err := backend.initDescriptor(); err != nil { return err }
+	if err := backend.initPipeline(); err != nil {
+		return err
+	}
+	if err := backend.initDescriptor(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -223,18 +227,24 @@ func (backend *Backend) initDescriptor() error {
 }
 
 func (backend *Backend) Render(commandBuffer uintptr, frame nativeforms.Frame) error {
-	if frame.Width <= 0 || frame.Height <= 0 || len(frame.Commands) == 0 { return nil }
+	if frame.Width <= 0 || frame.Height <= 0 || len(frame.Commands) == 0 {
+		return nil
+	}
 	for _, command := range frame.Commands {
 		if command.Kind == nativeforms.CommandImage || command.Kind == nativeforms.CommandRoundedRect {
 			return fmt.Errorf("Vulkan UI backend does not support paint command %d yet; use software rendering for images and rounded rectangles", command.Kind)
 		}
 	}
-	if err := backend.ensurePipeline(); err != nil { return err }
+	if err := backend.ensurePipeline(); err != nil {
+		return err
+	}
 	if backend.mapped == nil || !backend.renderer.TextureReady(backend.atlasTextureID) {
 		return fmt.Errorf("Vulkan UI resources are unavailable")
 	}
 	backend.vertices = nativeforms.Tessellate(frame.Commands, backend.vertices)
-	if len(backend.vertices) == 0 { return nil }
+	if len(backend.vertices) == 0 {
+		return nil
+	}
 	if len(backend.vertices) > maxVertices {
 		return fmt.Errorf("UI frame requires %d vertices; Vulkan capacity is %d", len(backend.vertices), maxVertices)
 	}
