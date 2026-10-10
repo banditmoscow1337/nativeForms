@@ -185,8 +185,8 @@ func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32)
 
 func coreTextMask(pixels []byte, width, height int) *image.Alpha {
 	mask := image.NewAlpha(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		copy(mask.Pix[y*mask.Stride:y*mask.Stride+width], pixels[(height-1-y)*width:(height-y)*width])
-	}
+	// CGBitmapContextCreate writes rows in the same top-to-bottom order that
+	// image.Alpha and the software renderer use. Reversing them flips glyphs.
+	copy(mask.Pix, pixels)
 	return mask
 }
