@@ -76,7 +76,7 @@ func TestMenuHoverWithoutPressedButtonAndCapturedDrag(t *testing.T) {
 	manager.HandleEvent(Event{Type: PointerDown, Button: MouseLeft, X: 30, Y: 10 + 4 + 2*h + 10})
 	manager.HandleEvent(Event{Type: PointerUp, Button: MouseLeft, X: 30, Y: 10 + 4 + 2*h + 10})
 	if selected != "three" || len(manager.popups) != 0 || manager.ClosePopup(id) {
-		t.Fatal("hovered item did not activate and close its popup")
+		t.Fatalf("hovered item did not activate and close its popup: selected=%q, remaining=%d", selected, len(manager.popups))
 	}
 }
 

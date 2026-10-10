@@ -14,7 +14,8 @@ type popupEntry struct {
 
 // OpenPopup displays content above the ordinary tree. A modal popup confines
 // focus and pointer input to itself until it is closed. A zero width or height
-// uses the content's measured size.
+// uses the content's measured size. Menus opened this way close themselves
+// when an item is selected.
 func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) PopupID {
 	if content == nil {
 		return 0
@@ -33,6 +34,9 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	applyTheme(content, manager.theme)
 	manager.popups = append(manager.popups, popupEntry{id: id, content: content, bounds: bounds,
 		modal: modal, previous: manager.focused})
+	if menu, ok := content.(*Menu); ok {
+		menu.popup = id
+	}
 	var focusables []Component
 	collectFocusable(content, &focusables)
 	if len(focusables) > 0 {

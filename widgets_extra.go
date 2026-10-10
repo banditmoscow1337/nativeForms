@@ -298,9 +298,7 @@ func (m *Menu) Handle(e Event) bool {
 
 func (manager *Manager) OpenMenu(items []MenuItem, bounds Rect) PopupID {
 	m := NewMenu(items, nil)
-	id := manager.OpenPopup(m, bounds, false)
-	m.popup = id
-	return id
+	return manager.OpenPopup(m, bounds, false)
 }
 
 func (manager *Manager) OpenContextMenu(items []MenuItem, x, y float32) PopupID {
@@ -376,7 +374,7 @@ func (c *ComboBox) open() bool {
 			break
 		}
 	}
-	m.popup = c.manager.OpenPopup(m, Rect{X: c.rect.X, Y: c.rect.Y + c.rect.H, W: c.rect.W}, false)
+	c.manager.OpenPopup(m, Rect{X: c.rect.X, Y: c.rect.Y + c.rect.H, W: c.rect.W}, false)
 	return true
 }
 
