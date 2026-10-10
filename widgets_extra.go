@@ -3,6 +3,7 @@ package nativeforms
 type Checkbox struct {
 	State
 	Text     string
+	Icon     *ImageResource
 	Checked  bool
 	OnChange func(bool)
 }
@@ -24,9 +25,16 @@ func (c *Checkbox) SetChecked(value bool) {
 	}
 }
 
+func (c *Checkbox) SetIcon(icon *ImageResource) {
+	if c.Icon != icon {
+		c.Icon = icon
+		c.invalidateLayout()
+	}
+}
+
 func (c *Checkbox) Measure(limits Constraints) Vec2 {
 	size := c.measureText(c.Text, FontSpec{Size: c.Theme().FontSize})
-	return measureWithState(&c.State, Vec2{X: size.X + 34, Y: maxFloat32(size.Y+12, c.Theme().ControlHeight)}, limits)
+	return measureWithState(&c.State, Vec2{X: size.X + 34 + iconWidth(c.Icon), Y: maxFloat32(size.Y+12, c.Theme().ControlHeight)}, limits)
 }
 
 func (c *Checkbox) Paint(canvas *Canvas) {
@@ -39,7 +47,11 @@ func (c *Checkbox) Paint(canvas *Canvas) {
 	if c.Focused() {
 		canvas.Border(c.rect, 1, canvas.theme.Accent)
 	}
-	canvas.Text(c.Text, Rect{X: r.X + 26, Y: c.rect.Y, W: maxFloat32(0, c.rect.W-34), H: c.rect.H}, canvas.theme.FontSize, TextLeft, canvas.theme.Text)
+	opacity := float32(1)
+	if !c.Enabled() {
+		opacity = 0.5
+	}
+	paintIconLabel(canvas, c.Icon, c.Text, Rect{X: r.X + 26, Y: c.rect.Y, W: maxFloat32(0, c.rect.W-34), H: c.rect.H}, c.Icon != nil, canvas.theme.Text, opacity)
 }
 
 func (c *Checkbox) Handle(e Event) bool {
@@ -57,7 +69,10 @@ func (c *Checkbox) Handle(e Event) bool {
 	return c.State.Handle(e)
 }
 
-type RadioOption struct{ ID, Label string }
+type RadioOption struct {
+	ID, Label string
+	Icon      *ImageResource
+}
 
 type RadioGroup struct {
 	State
@@ -89,14 +104,26 @@ func (r *RadioGroup) SetSelected(id string) {
 
 func (r *RadioGroup) Measure(c Constraints) Vec2 {
 	w := float32(90)
+	icons := false
 	for _, option := range r.Options {
-		w = maxFloat32(w, r.measureText(option.Label, FontSpec{Size: r.Theme().FontSize}).X+38)
+		icons = icons || option.Icon != nil
+	}
+	iconSpace := float32(0)
+	if icons {
+		iconSpace = iconSize + iconGap
+	}
+	for _, option := range r.Options {
+		w = maxFloat32(w, r.measureText(option.Label, FontSpec{Size: r.Theme().FontSize}).X+38+iconSpace)
 	}
 	return measureWithState(&r.State, Vec2{X: w, Y: float32(len(r.Options)) * r.Theme().ControlHeight}, c)
 }
 
 func (r *RadioGroup) Paint(c *Canvas) {
 	h := r.Theme().ControlHeight
+	icons := false
+	for _, option := range r.Options {
+		icons = icons || option.Icon != nil
+	}
 	for i, option := range r.Options {
 		y := r.rect.Y + float32(i)*h
 		if y >= r.rect.Y+r.rect.H {
@@ -107,7 +134,7 @@ func (r *RadioGroup) Paint(c *Canvas) {
 		if option.ID == r.SelectedID {
 			c.Rect(box.Inset(All(5)), c.theme.Accent)
 		}
-		c.Text(option.Label, Rect{X: box.X + 27, Y: y, W: r.rect.W - 37, H: h}, c.theme.FontSize, TextLeft, c.theme.Text)
+		paintIconLabel(c, option.Icon, option.Label, Rect{X: box.X + 27, Y: y, W: maxFloat32(0, r.rect.W-37), H: h}, icons, c.theme.Text, 1)
 	}
 	if r.Focused() {
 		c.Border(r.rect, 1, c.theme.Accent)
@@ -149,6 +176,7 @@ func (r *RadioGroup) Handle(e Event) bool {
 
 type MenuItem struct {
 	ID, Label string
+	Icon     *ImageResource
 	Disabled  bool
 	Action    func()
 }
@@ -175,8 +203,15 @@ func NewMenu(items []MenuItem, onSelect func(string)) *Menu {
 
 func (m *Menu) Measure(c Constraints) Vec2 {
 	w := float32(140)
+	iconSpace := float32(0)
 	for _, item := range m.Items {
-		w = maxFloat32(w, m.measureText(item.Label, FontSpec{Size: m.Theme().FontSize}).X+32)
+		if item.Icon != nil {
+			iconSpace = iconSize + iconGap
+			break
+		}
+	}
+	for _, item := range m.Items {
+		w = maxFloat32(w, m.measureText(item.Label, FontSpec{Size: m.Theme().FontSize}).X+32+iconSpace)
 	}
 	return measureWithState(&m.State, Vec2{X: w, Y: float32(len(m.Items))*m.Theme().ControlHeight + 8}, c)
 }
@@ -184,6 +219,10 @@ func (m *Menu) Measure(c Constraints) Vec2 {
 func (m *Menu) Paint(c *Canvas) {
 	c.Rect(m.rect, c.theme.PanelAlt)
 	c.Border(m.rect, 1, c.theme.Border)
+	icons := false
+	for _, item := range m.Items {
+		icons = icons || item.Icon != nil
+	}
 	h := c.theme.ControlHeight
 	for i, item := range m.Items {
 		r := Rect{X: m.rect.X + 4, Y: m.rect.Y + 4 + float32(i)*h, W: m.rect.W - 8, H: h}
@@ -197,7 +236,11 @@ func (m *Menu) Paint(c *Canvas) {
 		if item.Disabled {
 			color = c.theme.Disabled
 		}
-		c.Text(item.Label, r.Inset(Symmetric(10, 0)), c.theme.FontSize, TextLeft, color)
+		opacity := float32(1)
+		if item.Disabled {
+			opacity = 0.5
+		}
+		paintIconLabel(c, item.Icon, item.Label, r.Inset(Symmetric(10, 0)), icons, color, opacity)
 	}
 }
 
@@ -332,8 +375,15 @@ func (c *ComboBox) SetSelected(id string) {
 
 func (c *ComboBox) Measure(limits Constraints) Vec2 {
 	w := float32(140)
+	iconSpace := float32(0)
 	for _, option := range c.Options {
-		w = maxFloat32(w, c.measureText(option.Label, FontSpec{Size: c.Theme().FontSize}).X+40)
+		if option.Icon != nil {
+			iconSpace = iconSize + iconGap
+			break
+		}
+	}
+	for _, option := range c.Options {
+		w = maxFloat32(w, c.measureText(option.Label, FontSpec{Size: c.Theme().FontSize}).X+40+iconSpace)
 	}
 	return measureWithState(&c.State, Vec2{X: w, Y: c.Theme().ControlHeight}, limits)
 }
@@ -346,13 +396,16 @@ func (c *ComboBox) Paint(canvas *Canvas) {
 	}
 	canvas.Border(c.rect, 1, border)
 	label := ""
+	var icon *ImageResource
+	icons := false
 	for _, option := range c.Options {
+		icons = icons || option.Icon != nil
 		if option.ID == c.SelectedID {
 			label = option.Label
-			break
+			icon = option.Icon
 		}
 	}
-	canvas.Text(label, Rect{X: c.rect.X + 10, Y: c.rect.Y, W: maxFloat32(0, c.rect.W-38), H: c.rect.H}, canvas.theme.FontSize, TextLeft, canvas.theme.Text)
+	paintIconLabel(canvas, icon, label, Rect{X: c.rect.X + 10, Y: c.rect.Y, W: maxFloat32(0, c.rect.W-38), H: c.rect.H}, icons, canvas.theme.Text, 1)
 	paintChevron(canvas, Rect{X: c.rect.X + c.rect.W - 26, Y: c.rect.Y, W: 18, H: c.rect.H}, true, canvas.theme.Text)
 }
 
@@ -362,7 +415,7 @@ func (c *ComboBox) open() bool {
 	}
 	items := make([]MenuItem, 0, len(c.Options))
 	for _, option := range c.Options {
-		items = append(items, MenuItem{ID: option.ID, Label: option.Label})
+		items = append(items, MenuItem{ID: option.ID, Label: option.Label, Icon: option.Icon})
 	}
 	m := NewMenu(items, c.SetSelected)
 	for i, option := range c.Options {
@@ -391,6 +444,7 @@ func (c *ComboBox) Handle(e Event) bool {
 
 type Tab struct {
 	ID, Title string
+	Icon      *ImageResource
 	Content   Component
 }
 
@@ -442,15 +496,22 @@ func (t *Tabs) selectTab(id string, notify bool) {
 
 func (t *Tabs) Select(id string) { t.selectTab(id, true) }
 
+func (t *Tabs) tabWidth(tab Tab) float32 {
+	return maxFloat32(80, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+24+iconWidth(tab.Icon))
+}
+
 func (t *Tabs) Measure(c Constraints) Vec2 {
 	size := Vec2{X: 120, Y: t.headerHeight}
+	stripWidth := float32(0)
 	for _, tab := range t.Tabs {
+		stripWidth += t.tabWidth(tab)
 		if tab.ID == t.SelectedID && tab.Content != nil {
 			child := tab.Content.Measure(c)
 			size.X = maxFloat32(size.X, child.X)
 			size.Y += child.Y
 		}
 	}
+	size.X = maxFloat32(size.X, stripWidth)
 	return measureWithState(&t.State, size, c)
 }
 
@@ -467,13 +528,26 @@ func (t *Tabs) Paint(c *Canvas) {
 	c.Rect(Rect{X: t.rect.X, Y: t.rect.Y, W: t.rect.W, H: t.headerHeight}, c.theme.Header)
 	x := t.rect.X
 	for _, tab := range t.Tabs {
-		width := maxFloat32(80, c.MeasureText(tab.Title, FontSpec{Size: c.theme.FontSize}).X+24)
+		width := t.tabWidth(tab)
 		r := Rect{X: x, Y: t.rect.Y, W: width, H: t.headerHeight}
 		if tab.ID == t.SelectedID {
 			c.Rect(r, c.theme.ControlHover)
 			c.Rect(Rect{X: x, Y: r.Y + r.H - 3, W: width, H: 3}, c.theme.Accent)
 		}
-		c.Text(tab.Title, r, c.theme.FontSize, TextCenter, c.theme.Text)
+		if tab.Icon == nil {
+			c.Text(tab.Title, r, c.theme.FontSize, TextCenter, c.theme.Text)
+		} else {
+			gap := float32(0)
+			if tab.Title != "" {
+				gap = iconGap
+			}
+			labelWidth := t.measureText(tab.Title, FontSpec{Size: c.theme.FontSize}).X
+			left := r.X + maxFloat32(0, (r.W-iconSize-gap-labelWidth)*0.5)
+			paintIcon(c, tab.Icon, Rect{X: left, Y: r.Y + (r.H-iconSize)*0.5, W: iconSize, H: iconSize}, 1)
+			if tab.Title != "" {
+				c.Text(tab.Title, Rect{X: left + iconSize + gap, Y: r.Y, W: maxFloat32(0, r.X+r.W-left-iconSize-gap), H: r.H}, c.theme.FontSize, TextLeft, c.theme.Text)
+			}
+		}
 		x += width
 	}
 }
@@ -485,7 +559,7 @@ func (t *Tabs) Handle(e Event) bool {
 	if e.Type == PointerUp && e.Button == MouseLeft && e.Y < t.rect.Y+t.headerHeight {
 		x := t.rect.X
 		for _, tab := range t.Tabs {
-			w := maxFloat32(80, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+24)
+			w := t.tabWidth(tab)
 			if e.X >= x && e.X < x+w {
 				t.Select(tab.ID)
 				return true

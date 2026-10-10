@@ -5,10 +5,27 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"sync/atomic"
 )
 
 var nextImageID atomic.Uint64
+
+// DecodeImageResource reads a PNG, JPEG or GIF image into an immutable RGBA
+// snapshot. For animated GIFs it uses the first frame.
+func DecodeImageResource(reader io.Reader) (*ImageResource, error) {
+	if reader == nil {
+		return nil, fmt.Errorf("image reader is nil")
+	}
+	source, _, err := image.Decode(reader)
+	if err != nil {
+		return nil, err
+	}
+	return NewImageResource(source)
+}
 
 type ImageResource struct {
 	id, version   uint64

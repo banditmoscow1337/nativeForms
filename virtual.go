@@ -1,9 +1,21 @@
 package nativeforms
 
+import "math"
+
+func visibleRowEnd(count int, bottom, height float32) int {
+	return min(count, int(math.Ceil(float64(bottom/height))))
+}
+
 type ListModel interface {
 	Len() int
 	ID(index int) string
 	Label(index int) string
+}
+
+// ListIconModel is optional. Implement it to provide row icons; nil icons keep
+// their space so labels in the same list stay aligned.
+type ListIconModel interface {
+	Icon(index int) *ImageResource
 }
 
 type VirtualList struct {
@@ -46,15 +58,20 @@ func (v *VirtualList) Arrange(r Rect) {
 
 func (v *VirtualList) Paint(c *Canvas) {
 	c.Rect(v.rect, c.theme.Panel)
+	icons, hasIcons := v.Model.(ListIconModel)
 	h := v.rowHeight()
 	start := max(0, int(v.Offset/h))
-	end := min(v.count(), int((v.Offset+v.rect.H)/h)+2)
+	end := visibleRowEnd(v.count(), v.Offset+v.rect.H, h)
 	for i := start; i < end; i++ {
 		r := Rect{X: v.rect.X, Y: v.rect.Y + float32(i)*h - v.Offset, W: v.rect.W, H: h}
 		if v.Model.ID(i) == v.SelectedID {
 			c.Rect(r, c.theme.Selection)
 		}
-		c.Text(v.Model.Label(i), r.Inset(Symmetric(9, 0)), c.theme.FontSize, TextLeft, c.theme.Text)
+		var icon *ImageResource
+		if hasIcons {
+			icon = icons.Icon(i)
+		}
+		paintIconLabel(c, icon, v.Model.Label(i), r.Inset(Symmetric(9, 0)), hasIcons, c.theme.Text, 1)
 	}
 	if v.Focused() {
 		c.Border(v.rect, 1, c.theme.Accent)
@@ -148,6 +165,12 @@ type TableModel interface {
 	Cell(row, column int) string
 }
 
+// TableIconModel optionally supplies an icon for each cell. Every cell keeps
+// the same icon column when this interface is implemented.
+type TableIconModel interface {
+	CellIcon(row, column int) *ImageResource
+}
+
 type VirtualTable struct {
 	State
 	Model                                TableModel
@@ -197,10 +220,11 @@ func (v *VirtualTable) Arrange(r Rect) {
 func (v *VirtualTable) Paint(c *Canvas) {
 	rows, cols, h, header, w := v.dimensions()
 	c.Rect(v.rect, c.theme.Panel)
+	icons, hasIcons := v.Model.(TableIconModel)
 	firstCol := max(0, int(v.OffsetX/w))
 	lastCol := min(cols, int((v.OffsetX+v.rect.W)/w)+2)
 	start := max(0, int(v.Offset/h))
-	end := min(rows, int((v.Offset+maxFloat32(0, v.rect.H-header))/h)+2)
+	end := visibleRowEnd(rows, v.Offset+maxFloat32(0, v.rect.H-header), h)
 	for i := start; i < end; i++ {
 		r := Rect{X: v.rect.X, Y: v.rect.Y + header + float32(i)*h - v.Offset, W: v.rect.W, H: h}
 		if v.Model.ID(i) == v.SelectedID {
@@ -208,7 +232,11 @@ func (v *VirtualTable) Paint(c *Canvas) {
 		}
 		for col := firstCol; col < lastCol; col++ {
 			cell := Rect{X: v.rect.X + float32(col)*w - v.OffsetX, Y: r.Y, W: w, H: h}
-			c.Text(v.Model.Cell(i, col), cell.Inset(Symmetric(8, 0)), c.theme.FontSize, TextLeft, c.theme.Text)
+			var icon *ImageResource
+			if hasIcons {
+				icon = icons.CellIcon(i, col)
+			}
+			paintIconLabel(c, icon, v.Model.Cell(i, col), cell.Inset(Symmetric(8, 0)), hasIcons, c.theme.Text, 1)
 		}
 	}
 	c.Rect(Rect{X: v.rect.X, Y: v.rect.Y, W: v.rect.W, H: header}, c.theme.Header)
@@ -296,6 +324,11 @@ type TreeModel interface {
 	Child(id string, index int) string
 }
 
+// TreeIconModel optionally supplies an icon for a visible tree node.
+type TreeIconModel interface {
+	Icon(id string) *ImageResource
+}
+
 type treeRow struct {
 	id       string
 	depth    int
@@ -364,12 +397,13 @@ func (v *VirtualTree) Arrange(r Rect) {
 
 func (v *VirtualTree) Paint(c *Canvas) {
 	c.Rect(v.rect, c.theme.Panel)
+	icons, hasIcons := v.Model.(TreeIconModel)
 	h := v.RowHeight
 	if h <= 0 {
 		h = 32
 	}
 	start := max(0, int(v.Offset/h))
-	end := min(len(v.rows), int((v.Offset+v.rect.H)/h)+2)
+	end := visibleRowEnd(len(v.rows), v.Offset+v.rect.H, h)
 	for i := start; i < end; i++ {
 		row := v.rows[i]
 		r := Rect{X: v.rect.X, Y: v.rect.Y + float32(i)*h - v.Offset, W: v.rect.W, H: h}
@@ -380,7 +414,11 @@ func (v *VirtualTree) Paint(c *Canvas) {
 		if row.children {
 			paintChevron(c, Rect{X: r.X + indent + 5, Y: r.Y, W: 18, H: r.H}, v.Expanded[row.id], c.theme.Text)
 		}
-		c.Text(v.Model.Label(row.id), Rect{X: r.X + indent + 26, Y: r.Y, W: maxFloat32(0, r.W-indent-30), H: r.H}, c.theme.FontSize, TextLeft, c.theme.Text)
+		var icon *ImageResource
+		if hasIcons {
+			icon = icons.Icon(row.id)
+		}
+		paintIconLabel(c, icon, v.Model.Label(row.id), Rect{X: r.X + indent + 26, Y: r.Y, W: maxFloat32(0, r.W-indent-30), H: r.H}, hasIcons, c.theme.Text, 1)
 	}
 	if v.Focused() {
 		c.Border(v.rect, 1, c.theme.Accent)

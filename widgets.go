@@ -89,6 +89,7 @@ func (label *Label) Paint(canvas *Canvas) {
 type Button struct {
 	State
 	Text     string
+	Icon     *ImageResource
 	FontSize float32
 	Font     FontSpec
 	OnClick  func()
@@ -110,11 +111,26 @@ func (button *Button) SetText(text string) {
 	button.invalidateLayout()
 }
 
+func (button *Button) SetIcon(icon *ImageResource) {
+	if button.Icon == icon {
+		return
+	}
+	button.Icon = icon
+	button.invalidateLayout()
+}
+
 func (button *Button) Measure(constraints Constraints) Vec2 {
 	theme := button.State.Theme()
 	spec := button.fontSpec()
 	text := button.measureText(button.Text, spec)
-	desired := Vec2{X: text.X + 36, Y: maxFloat32(text.Y+16, theme.ControlHeight)}
+	iconSpace := iconWidth(button.Icon)
+	if button.Text == "" && button.Icon != nil {
+		iconSpace -= iconGap
+	}
+	desired := Vec2{X: text.X + 36 + iconSpace, Y: maxFloat32(text.Y+16, theme.ControlHeight)}
+	if button.Icon != nil {
+		desired.Y = maxFloat32(desired.Y, iconSize+12)
+	}
 	return measureWithState(&button.State, desired, constraints)
 }
 
@@ -147,7 +163,29 @@ func (button *Button) Paint(canvas *Canvas) {
 	if !button.Enabled() {
 		color = canvas.theme.MutedText
 	}
-	canvas.TextStyled(button.Text, button.rect.Inset(Symmetric(12, 4)), spec, TextCenter, color)
+	inner := button.rect.Inset(Symmetric(12, 4))
+	if button.Icon == nil {
+		canvas.TextStyled(button.Text, inner, spec, TextCenter, color)
+		return
+	}
+	canvas.PushClip(inner)
+	textWidth := button.measureText(button.Text, spec).X
+	gap := float32(0)
+	if button.Text != "" {
+		gap = iconGap
+	}
+	groupWidth := iconSize + gap + textWidth
+	start := inner.X + maxFloat32(0, (inner.W-groupWidth)*0.5)
+	opacity := float32(1)
+	if !button.Enabled() {
+		opacity = 0.5
+	}
+	paintIcon(canvas, button.Icon, Rect{X: start, Y: inner.Y + (inner.H-iconSize)*0.5, W: iconSize, H: iconSize}, opacity)
+	if button.Text != "" {
+		bounds := Rect{X: start + iconSize + gap, Y: inner.Y, W: maxFloat32(0, inner.X+inner.W-start-iconSize-gap), H: inner.H}
+		canvas.TextStyled(button.Text, bounds, spec, TextLeft, color)
+	}
+	canvas.PopClip()
 }
 
 func (button *Button) Handle(event Event) bool {
@@ -178,6 +216,7 @@ func (button *Button) Handle(event Event) bool {
 type Toggle struct {
 	State
 	Text     string
+	Icon     *ImageResource
 	Value    bool
 	OnChange func(bool)
 }
@@ -201,11 +240,18 @@ func (toggle *Toggle) SetValue(value bool) {
 	}
 }
 
+func (toggle *Toggle) SetIcon(icon *ImageResource) {
+	if toggle.Icon != icon {
+		toggle.Icon = icon
+		toggle.invalidateLayout()
+	}
+}
+
 func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
 	theme := toggle.State.Theme()
 	text := toggle.measureText(toggle.Text, FontSpec{Size: theme.FontSize})
 	height := maxFloat32(text.Y+16, theme.ControlHeight)
-	return measureWithState(&toggle.State, Vec2{X: text.X + 110, Y: height}, constraints)
+	return measureWithState(&toggle.State, Vec2{X: text.X + 110 + iconWidth(toggle.Icon), Y: height}, constraints)
 }
 
 func (toggle *Toggle) Paint(canvas *Canvas) {
@@ -222,7 +268,13 @@ func (toggle *Toggle) Paint(canvas *Canvas) {
 	canvas.Rect(toggle.rect, background)
 	canvas.Border(toggle.rect, 1, border)
 	inner := toggle.rect.Inset(Symmetric(14, 4))
-	canvas.Text(toggle.Text, inner, canvas.theme.FontSize, TextLeft, canvas.theme.Text)
+	label := inner
+	label.W = maxFloat32(0, label.W-55)
+	opacity := float32(1)
+	if !toggle.Enabled() {
+		opacity = 0.5
+	}
+	paintIconLabel(canvas, toggle.Icon, toggle.Text, label, toggle.Icon != nil, canvas.theme.Text, opacity)
 	value := "OFF"
 	valueColor := canvas.theme.MutedText
 	if toggle.Value {
