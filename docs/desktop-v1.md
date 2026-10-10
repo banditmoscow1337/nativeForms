@@ -1,5 +1,9 @@
 # Desktop v1: scope and architecture
 
+This document records the original Windows-first architecture. The current
+six-target scope and pending verification status are in
+[desktop-baseline.md](desktop-baseline.md).
+
 Status: core/backend separation, offscreen CPU painting, first-party TrueType
 rendering, the Windows software window, editing, form layout, and event-driven
 painting are implemented on the migration branches. Stage 13 adds AppKit, X11

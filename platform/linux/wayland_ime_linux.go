@@ -109,7 +109,7 @@ func surroundingText(s ui.TextInputState, limit int) (string, int, int, bool) {
 	}
 	return s.Text[start:end], s.Cursor - start, s.Anchor - start, true
 }
-func wlReadString(p []byte) (string, int, error) {
+func wlReadTextInputString(p []byte) (string, int, error) {
 	if len(p) < 4 {
 		return "", 0, fmt.Errorf("wayland: short string")
 	}
@@ -144,7 +144,7 @@ func (w *WaylandWindow) textInputEvent(op uint16, p []byte) error {
 		i.preedit, i.commit = "", ""
 		i.before, i.after = 0, 0
 	case 2, 3:
-		text, n, err := wlReadString(p)
+		text, n, err := wlReadTextInputString(p)
 		if err != nil {
 			return err
 		}

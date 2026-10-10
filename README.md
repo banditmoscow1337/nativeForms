@@ -1,5 +1,11 @@
 # nativeForms
 
+The current desktop target is Windows, Linux and macOS on amd64 and arm64.
+See the [desktop baseline and owner-run verification](docs/desktop-baseline.md)
+for the six-target matrix, required Go version and manual checks. The matrix
+records implementation targets; builds and native behavior are still pending
+verification by the project owner.
+
 nativeForms is a Go UI toolkit with a component tree, layout, input dispatch,
 themes, and basic widgets. The core now records backend-independent paint
 commands. An offscreen software renderer and an optional Vulkan backend consume
