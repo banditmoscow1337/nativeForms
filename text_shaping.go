@@ -15,6 +15,13 @@ type TextShaper interface {
 	Shape(text string, size float32) (ShapedText, bool)
 }
 
+// ScaledTextShaper optionally rasterizes glyph masks at a display's pixel
+// scale. Advance, caret positions and offsets remain in logical coordinates.
+type ScaledTextShaper interface {
+	TextShaper
+	ShapeAtScale(text string, size, scale float32) (ShapedText, bool)
+}
+
 var textShaping struct {
 	sync.RWMutex
 	engine TextShaper
@@ -33,6 +40,21 @@ func shapeText(text string, size float32) (ShapedText, bool) {
 		return ShapedText{}, false
 	}
 	return engine.Shape(text, size)
+}
+
+func shapeTextRaster(text string, size, scale float32) (ShapedText, float32, bool) {
+	textShaping.RLock()
+	engine := textShaping.engine
+	textShaping.RUnlock()
+	if engine == nil {
+		return ShapedText{}, 1, false
+	}
+	if scaled, ok := engine.(ScaledTextShaper); ok && scale > 0 {
+		result, success := scaled.ShapeAtScale(text, size, scale)
+		return result, scale, success
+	}
+	result, success := engine.Shape(text, size)
+	return result, 1, success
 }
 
 func TextCaretX(text string, size float32, runeIndex int) float32 {
