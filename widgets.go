@@ -10,8 +10,10 @@ type Label struct {
 	TextFunc func() string
 	Color    Color
 	FontSize float32
+	Font     FontSpec
 	Align    TextAlign
 	Wrap     bool
+	Ellipsis bool
 }
 
 func NewLabel(text string) *Label {
@@ -34,25 +36,27 @@ func (label *Label) currentText() string {
 }
 
 func (label *Label) Measure(constraints Constraints) Vec2 {
-	fontSize := label.FontSize
-	if fontSize <= 0 {
-		fontSize = label.State.Theme().FontSize
-	}
+	spec := label.fontSpec()
 	text:=label.currentText()
-	if label.Wrap && constraints.HasMaxX() { text=WrapText(text,maxFloat32(0,constraints.Max.X),fontSize) }
-	return measureWithState(&label.State, MeasureText(text, fontSize), constraints)
+	if label.Wrap && constraints.HasMaxX() { text=label.wrapText(text,maxFloat32(0,constraints.Max.X),spec) }
+	if label.Ellipsis && !label.Wrap && constraints.HasMaxX() { text=label.ellipsizeText(text,maxFloat32(0,constraints.Max.X),spec) }
+	return measureWithState(&label.State, label.measureText(text, spec), constraints)
+}
+
+func (label *Label) fontSpec() FontSpec {
+	spec := label.Font
+	if label.FontSize > 0 { spec.Size = label.FontSize }
+	if spec.Size <= 0 { spec.Size = label.Theme().FontSize }
+	return spec
 }
 
 func (label *Label) Baseline() float32 {
-	size:=label.FontSize;if size<=0 { size=label.Theme().FontSize }
-	return size*0.85
+	if fonts := label.fontContext(); fonts != nil { return fonts.Layout("", label.fontSpec()).Ascent }
+	return label.fontSpec().Size*0.85
 }
 
 func (label *Label) Paint(canvas *Canvas) {
-	fontSize := label.FontSize
-	if fontSize <= 0 {
-		fontSize = canvas.theme.FontSize
-	}
+	spec := label.fontSpec()
 	color := label.Color
 	if color.A <= 0 {
 		color = canvas.theme.Text
@@ -61,14 +65,16 @@ func (label *Label) Paint(canvas *Canvas) {
 		color = canvas.theme.Disabled
 	}
 	text:=label.currentText()
-	if label.Wrap { text=WrapText(text,label.rect.W,fontSize) }
-	canvas.Text(text, label.rect, fontSize, label.Align, color)
+	if label.Wrap { text=label.wrapText(text,label.rect.W,spec) }
+	if label.Ellipsis && !label.Wrap { text=label.ellipsizeText(text,label.rect.W,spec) }
+	canvas.TextStyled(text, label.rect, spec, label.Align, color)
 }
 
 type Button struct {
 	State
 	Text     string
 	FontSize float32
+	Font     FontSpec
 	OnClick  func()
 }
 
@@ -88,13 +94,17 @@ func (button *Button) SetText(text string) {
 
 func (button *Button) Measure(constraints Constraints) Vec2 {
 	theme := button.State.Theme()
-	fontSize := button.FontSize
-	if fontSize <= 0 {
-		fontSize = theme.FontSize
-	}
-	text := MeasureText(button.Text, fontSize)
+	spec := button.fontSpec()
+	text := button.measureText(button.Text, spec)
 	desired := Vec2{X: text.X + 36, Y: maxFloat32(text.Y+16, theme.ControlHeight)}
 	return measureWithState(&button.State, desired, constraints)
+}
+
+func (button *Button) fontSpec() FontSpec {
+	spec := button.Font
+	if button.FontSize > 0 { spec.Size = button.FontSize }
+	if spec.Size <= 0 { spec.Size = button.Theme().FontSize }
+	return spec
 }
 
 func (button *Button) Paint(canvas *Canvas) {
@@ -110,15 +120,12 @@ func (button *Button) Paint(canvas *Canvas) {
 	}
 	canvas.Rect(button.rect, background)
 	canvas.Border(button.rect, 1, border)
-	fontSize := button.FontSize
-	if fontSize <= 0 {
-		fontSize = canvas.theme.FontSize
-	}
+	spec := button.fontSpec()
 	color := canvas.theme.Text
 	if !button.Enabled() {
 		color = canvas.theme.MutedText
 	}
-	canvas.Text(button.Text, button.rect.Inset(Symmetric(12, 4)), fontSize, TextCenter, color)
+	canvas.TextStyled(button.Text, button.rect.Inset(Symmetric(12, 4)), spec, TextCenter, color)
 }
 
 func (button *Button) Handle(event Event) bool {
@@ -170,7 +177,7 @@ func (toggle *Toggle) SetValue(value bool) {
 
 func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
 	theme := toggle.State.Theme()
-	text := MeasureText(toggle.Text, theme.FontSize)
+	text := toggle.measureText(toggle.Text, FontSpec{Size: theme.FontSize})
 	height := maxFloat32(text.Y+16, theme.ControlHeight)
 	return measureWithState(&toggle.State, Vec2{X: text.X + 110, Y: height}, constraints)
 }

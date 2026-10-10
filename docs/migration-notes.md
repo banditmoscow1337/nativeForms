@@ -81,6 +81,11 @@ Tab and Shift+Tab remain available by default.
 
 ## Fonts and Windows
 
+Stage 5 introduces an opt-in `FontContext` with per-manager font selection,
+physical-size glyph masks, a bounded LRU cache and shared text/caret metrics.
+See [font context and text layout](font-context.md) for registration, widgets,
+scaling and limitations. The global APIs below remain the compatibility path.
+
 `SetFontData(ttfBytes)` installs a TrueType font before the first text
 measurement or frame. `SetFallbackFontData(ttfBytes, ...)` adds an ordered
 fallback chain; with no configured fonts, nativeForms tries its known system

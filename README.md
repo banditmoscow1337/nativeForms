@@ -25,6 +25,8 @@ For an offscreen example that writes `frame.png`, see
 `image.RGBA` to `software.Renderer.Render`.
 The [image and software paint contract](docs/paint-software.md) covers image
 resource lifetime, clipping, alpha, filtering, scaling and current GPU limits.
+The [font context and text layout](docs/font-context.md) explains dynamic
+glyph masks, font fallback, styles and the opt-in manager API.
 
 For the Windows example, run `go run ./examples/windows` on Windows amd64 or
 arm64. The [example](examples/windows/main_windows.go) creates a manager and
@@ -35,6 +37,9 @@ measurement or frame. Otherwise the toolkit loads a local system TrueType font
 and falls back to its embedded ASCII bitmap glyphs if none is available.
 `SetFallbackFontData(ttfBytes, ...)` configures an ordered portable fallback
 chain. Supply a font with Cyrillic coverage for predictable Russian text.
+New applications can use `NewFontContext` and `manager.SetFontContext` to
+register multiple sizes and styles without the global atlas initialization
+restriction; see the [font context guide](docs/font-context.md).
 
 The shared editor demo runs with `go run ./examples/editor_windows`,
 `go run ./examples/editor_darwin`, or `go run ./examples/editor_linux` on their

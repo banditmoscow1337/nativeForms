@@ -25,6 +25,7 @@ type Manager struct {
 	interactive      bool
 	unhandled        func(Event) bool
 	theme            Theme
+	fonts            *FontContext
 	focused          Component
 	hovered          Component
 	captured         Component
@@ -166,6 +167,21 @@ func (manager *Manager) Theme() Theme {
 	return manager.theme
 }
 
+// SetFontContext selects managed TrueType shaping and dynamic glyph masks for
+// this manager. Passing nil restores the legacy global atlas/native shaper.
+func (manager *Manager) SetFontContext(ctx *FontContext) {
+	manager.mu.Lock()
+	manager.fonts = ctx
+	manager.mu.Unlock()
+	manager.InvalidateLayout()
+}
+
+func (manager *Manager) FontContext() *FontContext {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.fonts
+}
+
 func (manager *Manager) Notify(text string, duration ...time.Duration) {
 	if text == "" {
 		return
@@ -245,6 +261,7 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	root := manager.root
 	visible := manager.visible
 	theme := manager.theme
+	fonts := manager.fonts
 	layoutNeeded := manager.dirtyLayout || width != manager.layoutWidth || height != manager.layoutHeight
 	manager.dirtyLayout, manager.dirtyPaint = false, false
 	manager.mu.Unlock()
@@ -263,6 +280,7 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 		commands: &manager.frame.Commands,
 		clips:    manager.clips,
 		theme:    &theme,
+		fonts:    fonts,
 	}
 	if root != nil && root.UIState().Visible() {
 		if layoutNeeded {
@@ -428,7 +446,7 @@ func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, now ti
 
 	y := float32(32)
 	for _, item := range items[:count] {
-		textSize := MeasureText(item.text, canvas.theme.FontSize)
+		textSize := canvas.MeasureText(item.text, FontSpec{Size: canvas.theme.FontSize})
 		width := minFloat32(viewport.W-32, maxFloat32(220, textSize.X+36))
 		rect := Rect{X: (viewport.W - width) * 0.5, Y: y, W: width, H: maxFloat32(42, textSize.Y+14)}
 		canvas.Rect(rect, canvas.theme.PanelAlt)
