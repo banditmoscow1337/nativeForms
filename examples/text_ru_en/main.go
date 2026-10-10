@@ -27,12 +27,13 @@ func main() {
 }
 
 func run(primaryPath, fallbackPath, output, semantics string) error {
+	fonts := ui.NewFontContext()
 	if primaryPath != "" {
 		data, err := os.ReadFile(primaryPath)
 		if err != nil {
 			return err
 		}
-		if err = ui.SetFontData(data); err != nil {
+		if err = fonts.AddFont("application", 400, false, data); err != nil {
 			return err
 		}
 	}
@@ -41,10 +42,11 @@ func run(primaryPath, fallbackPath, output, semantics string) error {
 		if err != nil {
 			return err
 		}
-		if err = ui.SetFallbackFontData(data); err != nil {
+		if err = fonts.AddFont("fallback", 400, false, data); err != nil {
 			return err
 		}
 	}
+	fonts.AddSystemFallbacks()
 	root := ui.NewStack(ui.Vertical, 12)
 	root.Padding = ui.All(20)
 	root.Background = ui.DefaultTheme().Panel
@@ -77,6 +79,7 @@ func run(primaryPath, fallbackPath, output, semantics string) error {
 	root.Add(notes)
 
 	manager := ui.New()
+	manager.SetFontContext(fonts)
 	manager.SetInteractive(true)
 	manager.SetRoot(root)
 	manager.BeginFrame(840, 700, 0)

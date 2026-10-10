@@ -12,6 +12,7 @@ type TextEditor struct {
 	PreeditCaret, PreeditAnchor int
 	undo, redo                  []editSnapshot
 	Limit                       int // maximum undo snapshots; zero uses 128
+	UndoByteLimit               int // combined snapshot text budget; zero uses 8 MiB
 }
 
 type editSnapshot struct {
@@ -129,11 +130,36 @@ func (e *TextEditor) record() {
 		limit = 128
 	}
 	e.undo = append(e.undo, editSnapshot{e.Text, e.Caret, e.Anchor})
-	if len(e.undo) > limit {
-		copy(e.undo, e.undo[len(e.undo)-limit:])
-		e.undo = e.undo[:limit]
-	}
+	e.trimHistory(&e.undo, limit)
 	e.redo = nil
+	e.trimByteBudget()
+}
+
+func (e *TextEditor) trimHistory(history *[]editSnapshot, limit int) {
+	for len(*history) > limit { dropOldestSnapshot(history) }
+}
+
+func dropOldestSnapshot(history *[]editSnapshot) {
+	copy((*history)[0:], (*history)[1:])
+	(*history)[len(*history)-1] = editSnapshot{}
+	*history = (*history)[:len(*history)-1]
+}
+
+func (e *TextEditor) trimByteBudget() {
+	byteLimit := e.UndoByteLimit
+	if byteLimit <= 0 { byteLimit = 8 << 20 }
+	used := 0
+	for _, snapshot := range e.undo { used += len(snapshot.text) }
+	for _, snapshot := range e.redo { used += len(snapshot.text) }
+	for used > byteLimit {
+		if len(e.redo) > 0 {
+			used -= len(e.redo[0].text)
+			dropOldestSnapshot(&e.redo)
+		} else if len(e.undo) > 0 {
+			used -= len(e.undo[0].text)
+			dropOldestSnapshot(&e.undo)
+		} else { break }
+	}
 }
 
 func (e *TextEditor) Undo() bool { return e.restore(&e.undo, &e.redo) }
@@ -143,9 +169,14 @@ func (e *TextEditor) restore(from, to *[]editSnapshot) bool {
 		return false
 	}
 	*to = append(*to, editSnapshot{e.Text, e.Caret, e.Anchor})
+	limit := e.Limit
+	if limit <= 0 { limit = 128 }
 	last := len(*from) - 1
 	s := (*from)[last]
+	(*from)[last] = editSnapshot{}
 	*from = (*from)[:last]
+	e.trimHistory(to, limit)
+	e.trimByteBudget()
 	e.Text, e.Caret, e.Anchor = s.text, s.caret, s.anchor
 	e.Preedit = ""
 	return true

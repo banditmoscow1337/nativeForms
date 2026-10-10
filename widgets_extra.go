@@ -26,7 +26,7 @@ func (c *Checkbox) SetChecked(value bool) {
 }
 
 func (c *Checkbox) Measure(limits Constraints) Vec2 {
-	size := MeasureText(c.Text, c.Theme().FontSize)
+	size := c.measureText(c.Text, FontSpec{Size: c.Theme().FontSize})
 	return measureWithState(&c.State, Vec2{X: size.X + 34, Y: maxFloat32(size.Y+12, c.Theme().ControlHeight)}, limits)
 }
 
@@ -92,7 +92,7 @@ func (r *RadioGroup) SetSelected(id string) {
 func (r *RadioGroup) Measure(c Constraints) Vec2 {
 	w := float32(90)
 	for _, option := range r.Options {
-		w = maxFloat32(w, MeasureText(option.Label, r.Theme().FontSize).X+38)
+		w = maxFloat32(w, r.measureText(option.Label, FontSpec{Size: r.Theme().FontSize}).X+38)
 	}
 	return measureWithState(&r.State, Vec2{X: w, Y: float32(len(r.Options)) * r.Theme().ControlHeight}, c)
 }
@@ -179,7 +179,7 @@ func NewMenu(items []MenuItem, onSelect func(string)) *Menu {
 func (m *Menu) Measure(c Constraints) Vec2 {
 	w := float32(140)
 	for _, item := range m.Items {
-		w = maxFloat32(w, MeasureText(item.Label, m.Theme().FontSize).X+32)
+		w = maxFloat32(w, m.measureText(item.Label, FontSpec{Size: m.Theme().FontSize}).X+32)
 	}
 	return measureWithState(&m.State, Vec2{X: w, Y: float32(len(m.Items))*m.Theme().ControlHeight + 8}, c)
 }
@@ -336,7 +336,7 @@ func (c *ComboBox) SetSelected(id string) {
 func (c *ComboBox) Measure(limits Constraints) Vec2 {
 	w := float32(140)
 	for _, option := range c.Options {
-		w = maxFloat32(w, MeasureText(option.Label, c.Theme().FontSize).X+40)
+		w = maxFloat32(w, c.measureText(option.Label, FontSpec{Size: c.Theme().FontSize}).X+40)
 	}
 	return measureWithState(&c.State, Vec2{X: w, Y: c.Theme().ControlHeight}, limits)
 }
@@ -470,7 +470,7 @@ func (t *Tabs) Paint(c *Canvas) {
 	c.Rect(Rect{X: t.rect.X, Y: t.rect.Y, W: t.rect.W, H: t.headerHeight}, c.theme.Header)
 	x := t.rect.X
 	for _, tab := range t.Tabs {
-		width := maxFloat32(80, MeasureText(tab.Title, c.theme.FontSize).X+24)
+		width := maxFloat32(80, c.MeasureText(tab.Title, FontSpec{Size: c.theme.FontSize}).X+24)
 		r := Rect{X: x, Y: t.rect.Y, W: width, H: t.headerHeight}
 		if tab.ID == t.SelectedID {
 			c.Rect(r, c.theme.ControlHover)
@@ -488,7 +488,7 @@ func (t *Tabs) Handle(e Event) bool {
 	if e.Type == PointerUp && e.Button == MouseLeft && e.Y < t.rect.Y+t.headerHeight {
 		x := t.rect.X
 		for _, tab := range t.Tabs {
-			w := maxFloat32(80, MeasureText(tab.Title, t.Theme().FontSize).X+24)
+			w := maxFloat32(80, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+24)
 			if e.X >= x && e.X < x+w {
 				t.Select(tab.ID)
 				return true

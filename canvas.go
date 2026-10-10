@@ -45,9 +45,48 @@ type Canvas struct {
 	commands *[]DrawCommand
 	clips    []Rect
 	theme    *Theme
+	fonts    *FontContext
 }
 
 func (canvas *Canvas) Theme() *Theme { return canvas.theme }
+
+// MeasureText uses the same context and specification as TextStyled.
+func (canvas *Canvas) MeasureText(text string, spec FontSpec) Vec2 {
+	if canvas.fonts != nil { return canvas.fonts.Measure(text, spec) }
+	return MeasureText(text, spec.Size)
+}
+
+// TextStyled draws text with a context's face, style and physical scale.
+// Without a context it retains the existing global text path.
+func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align TextAlign, tint Color) {
+	if canvas.fonts == nil {
+		canvas.Text(text, bounds, spec.Size, align, tint)
+		return
+	}
+	if bounds.Empty() || tint.A <= 0 { return }
+	spec = normalFontSpec(spec)
+	text = normalizeTextBreaks(text)
+	lines := strings.Split(text, "\n")
+	layouts := make([]TextLayout, len(lines))
+	height := float32(0)
+	for i, line := range lines {
+		layouts[i] = canvas.fonts.Layout(line, spec)
+		height += layouts[i].Height()
+	}
+	y := bounds.Y + (bounds.H-height)*0.5
+	for _, line := range layouts {
+		x := bounds.X
+		switch align {
+		case TextCenter: x += (bounds.W-line.Advance)*0.5
+		case TextRight: x += bounds.W-line.Advance
+		}
+		for _, glyph := range line.Glyphs {
+			mask := glyph.Mask
+			canvas.mask(mask, Rect{X: x+glyph.X, Y: y+glyph.Y, W: float32(mask.Bounds().Dx())/glyph.Scale, H: float32(mask.Bounds().Dy())/glyph.Scale}, tint)
+		}
+		y += line.Height()
+	}
+}
 
 func (canvas *Canvas) PushClip(rect Rect) {
 	if len(canvas.clips) > 0 {
@@ -190,6 +229,10 @@ func clipLine(from, to Vec2, bounds Rect) (Vec2, Vec2, bool) {
 
 func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAlign, tint Color) {
 	if size <= 0 || bounds.Empty() || tint.A <= 0 {
+		return
+	}
+	if canvas.fonts != nil {
+		canvas.TextStyled(text, bounds, FontSpec{Size: size}, align, tint)
 		return
 	}
 	text = normalizeTextBreaks(text)
