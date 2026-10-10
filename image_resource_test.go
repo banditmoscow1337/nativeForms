@@ -1,10 +1,50 @@
 package nativeforms
 
 import (
+	"bytes"
 	"image"
 	"image/color"
+	"image/png"
 	"testing"
 )
+
+func TestDecodeImageResourceAndImageSetters(t *testing.T) {
+	source := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	source.SetNRGBA(1, 0, color.NRGBA{G: 255, A: 255})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	resource, err := DecodeImageResource(&encoded)
+	if err != nil || resource.Bounds() != image.Rect(0, 0, 2, 1) || resource.RGBAAt(1, 0).G != 255 {
+		t.Fatalf("decoded PNG: resource=%v error=%v", resource, err)
+	}
+	if _, err := DecodeImageResource(nil); err == nil {
+		t.Fatal("nil reader was accepted")
+	}
+	widget := NewImage(resource)
+	if widget.Filter != FilterBilinear {
+		t.Fatal("scaled images should use smooth filtering by default")
+	}
+	manager := New()
+	manager.SetRoot(widget)
+	manager.BeginFrame(20, 20, 0)
+	widget.SetFit(ImageCover)
+	if !manager.NeedsFrame() {
+		t.Fatal("changing fit did not request a new frame")
+	}
+	manager.BeginFrame(20, 20, 0)
+	widget.SetFilter(FilterNearest)
+	widget.SetTint(RGBA(255, 0, 0, 128))
+	if !manager.NeedsFrame() || len(manager.Frame().Commands) != 1 {
+		t.Fatal("changing image rendering settings did not invalidate the frame")
+	}
+	manager.BeginFrame(20, 20, 0)
+	command := manager.Frame().Commands[0]
+	if command.Kind != CommandImage || command.Filter != FilterNearest || command.Tint != widget.Tint {
+		t.Fatalf("image settings were not applied: %+v", command)
+	}
+}
 
 func TestImageResourceSnapshotsAndVersion(t *testing.T) {
 	source := image.NewNRGBA(image.Rect(5, 7, 7, 8))

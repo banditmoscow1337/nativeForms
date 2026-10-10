@@ -17,9 +17,30 @@ type Image struct {
 }
 
 func NewImage(source *ImageResource) *Image {
-	widget := &Image{Source: source, Tint: RGBA(255, 255, 255, 255)}
+	widget := &Image{Source: source, Filter: FilterBilinear, Tint: RGBA(255, 255, 255, 255)}
 	widget.owner = widget
 	return widget
+}
+
+func (widget *Image) SetFit(fit ImageFit) {
+	if widget.Fit != fit {
+		widget.Fit = fit
+		widget.invalidatePaint()
+	}
+}
+
+func (widget *Image) SetFilter(filter ImageFilter) {
+	if widget.Filter != filter {
+		widget.Filter = filter
+		widget.invalidatePaint()
+	}
+}
+
+func (widget *Image) SetTint(tint Color) {
+	if widget.Tint != tint {
+		widget.Tint = tint
+		widget.invalidatePaint()
+	}
 }
 
 func (widget *Image) SetImage(source *ImageResource) {
