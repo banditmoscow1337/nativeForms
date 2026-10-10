@@ -505,6 +505,7 @@ func (w *X11Window) Run() error {
 	}
 	paint := true
 	for !w.closeRequested.Load() {
+		w.manager.ProcessPending()
 		if w.ime != nil {
 			w.ime.screenX, w.ime.screenY = w.screenX, w.screenY
 			if err := w.ime.sync(); err != nil {
@@ -524,8 +525,13 @@ func (w *X11Window) Run() error {
 			paint = false
 		}
 		deadline := time.Now().Add(50 * time.Millisecond)
-		if delay := w.manager.NextFrameAfter(); delay > 0 && delay < 50*time.Millisecond {
-			deadline = time.Now().Add(delay)
+		if next, scheduled := w.manager.NextFrameDeadline(); w.width > 0 && w.height > 0 && scheduled && next.Before(deadline) {
+			deadline = next
+		}
+		// A callback may have queued work before the socket read begins.
+		w.manager.ProcessPending()
+		if w.width > 0 && w.height > 0 && w.manager.NeedsFrame() {
+			continue
 		}
 		message, readErr := w.clipboardPacket(deadline)
 		err = readErr

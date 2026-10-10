@@ -17,15 +17,17 @@ the code and dependencies and repeating the matrix.
 
 | GOOS | GOARCH | Desktop adapter | GitHub runner | Build | Native runtime |
 | --- | --- | --- | --- | --- | --- |
-| windows | amd64 | Win32 | `windows-2025` | Pending owner run | Pending owner run |
-| windows | arm64 | Win32 | `windows-11-arm` | Pending owner run | Pending owner run |
-| linux | amd64 | X11 and Wayland | `ubuntu-24.04` | Pending owner run | Pending owner run on both sessions |
-| linux | arm64 | X11 and Wayland | `ubuntu-24.04-arm` | Pending owner run | Pending owner run on both sessions |
-| darwin | amd64 | AppKit | `macos-15-intel` | Pending owner run | Pending owner run |
-| darwin | arm64 | AppKit | `macos-15` | Pending owner run | Pending owner run |
+| windows | amd64 | Win32 | `windows-2025` | Passed, baseline PR #8 | Pending owner run |
+| windows | arm64 | Win32 | `windows-11-arm` | Passed, baseline PR #8 | Pending owner run |
+| linux | amd64 | X11 and Wayland | `ubuntu-24.04` | Passed, baseline PR #8 | Pending owner run on both sessions |
+| linux | arm64 | X11 and Wayland | `ubuntu-24.04-arm` | Passed, baseline PR #8 | Pending owner run on both sessions |
+| darwin | amd64 | AppKit | `macos-15-intel` | Passed, baseline PR #8 | Pending owner run |
+| darwin | arm64 | AppKit | `macos-15` | Passed, baseline PR #8 | Pending owner run |
 
 The runner labels are current examples for native builds, not minimum OS
 versions promised to application users. No OS-version floor has been validated.
+The owner reported all six baseline checks passing before merging PR #8;
+these results do not validate native runtime interaction or this scheduler PR.
 The Windows adapter documents Windows 10 with `GetDpiForWindow`; macOS and Linux
 version floors should be recorded only after runtime checks on the intended
 systems. On Linux, actual capabilities also depend on the display server,
@@ -48,6 +50,31 @@ exercise a native desktop session or an external game's renderer.
 Please record each result in the matrix above after your run. A failed job is
 evidence for that target, not a reason to mark the other targets as working.
 Keep compiler output and the exact commit with the report.
+
+## Scheduler and idle behavior
+
+`Manager.NextFrameDeadline()` returns an absolute deadline and a separate
+presence flag. An idle UI has no deadline; a deadline in the past is due and
+requests a frame through `NeedsFrame()`. Window loops must check `NeedsFrame()`
+after their wait returns. On Wayland a frame also needs an available buffer;
+when both buffers are busy the loop waits for a release instead of retrying
+the expired deadline. `NextFrameAfter()` remains available for older hosts but
+its zero value cannot distinguish no timer from an elapsed deadline.
+
+Notifications and caret blinking use Go's monotonic wall time. `BeginFrame`'s
+`deltaSeconds` argument remains for API compatibility and does not consume a
+new notification's lifetime. Suspension saves remaining notification time and
+starts it again on restore. A hidden manager does not schedule timer frames;
+expired notifications are removed when it becomes visible again. A game can
+continue to call `BeginFrame` on its own schedule.
+
+The headless `scheduler_test.go` covers idle, caret, delayed first notification
+frame, staggered expirations, refresh, suspension, hidden UI and queued work.
+For native acceptance, leave a static window idle for 10 seconds and observe
+no new UI frames; then focus a text field to observe caret blinking, and show
+a short notification after a long idle period to observe its full lifetime.
+Repeat on Windows, macOS, X11 and Wayland; also hide/restore the window and
+check the Wayland path when both buffers are busy.
 
 ## Local checks to run on each target
 
@@ -90,6 +117,6 @@ shaders, framebuffer contract or GPU resource lifetime.
 Record for every run: commit, GOOS/GOARCH, `go version`, OS version, display
 server or compositor, device/DPI and font choice. Mark build, example,
 desktop interaction and Vulkan host separately as pass, fail or not run, with
-a short note and any relevant log. Leave the matrix above pending until these
-results exist.
+a short note and any relevant log. Leave native runtime entries pending until
+those results exist.
 

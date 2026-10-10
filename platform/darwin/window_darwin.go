@@ -235,6 +235,7 @@ func (a *application) step(mode objc.ID) error {
 			w.destroy()
 			continue
 		}
+		w.manager.ProcessPending()
 		key := objc.Send[bool](w.window, selector("isKeyWindow"))
 		if w.wasKey && !key {
 			w.cancelMarked()
@@ -249,12 +250,21 @@ func (a *application) step(mode objc.ID) error {
 				return err
 			}
 		}
-		if d := w.manager.NextFrameAfter(); d > 0 && d.Seconds() < seconds {
-			seconds = d.Seconds()
+		if next, scheduled := w.manager.NextFrameDeadline(); width > 0 && height > 0 && scheduled {
+			if delay := time.Until(next).Seconds(); delay < seconds {
+				seconds = max(0.001, delay)
+			}
 		}
 	}
 	if len(a.windows) == 0 {
 		return nil
+	}
+	for _, w := range a.windows {
+		w.manager.ProcessPending()
+		bounds := objc.Send[rect](w.view, selector("bounds"))
+		if bounds.Size.W > 0 && bounds.Size.H > 0 && w.manager.NeedsFrame() {
+			return nil
+		}
 	}
 	date := class("NSDate").Send(selector("dateWithTimeIntervalSinceNow:"), seconds)
 	event := a.app.Send(selector("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), date, mode, true)

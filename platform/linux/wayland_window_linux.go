@@ -275,6 +275,7 @@ func (w *WaylandWindow) Run() error {
 		w.Options.OnReady(w)
 	}
 	for !w.closing.Load() {
+		w.Manager.ProcessPending()
 		if err = w.syncTextInput(false); err != nil {
 			return err
 		}
@@ -282,23 +283,26 @@ func (w *WaylandWindow) Run() error {
 			w.dispatchKey(w.repeatCode, true, true)
 			w.repeatAt = time.Now().Add(time.Second / time.Duration(max(1, w.repeatRate)))
 		}
-		if w.ready && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
+		if w.paintAvailable() && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
 			if err = w.paint(); err != nil {
 				return err
 			}
 		}
 		deadline := time.Now().Add(50 * time.Millisecond)
-		if d := w.Manager.NextFrameAfter(); d > 0 && d < 50*time.Millisecond {
-			deadline = time.Now().Add(d)
+		if w.paintAvailable() {
+			if next, scheduled := w.Manager.NextFrameDeadline(); scheduled && next.Before(deadline) {
+				deadline = next
+			}
 		}
 		if w.repeatCode != 0 && !w.repeatAt.IsZero() {
 			deadline = minTime(deadline, w.repeatAt)
 		}
+		w.Manager.ProcessPending()
+		if w.paintAvailable() && w.Manager.NeedsFrame() {
+			continue
+		}
 		object, opcode, payload, readErr := w.wire.read(deadline)
 		if timeout, ok := readErr.(net.Error); ok && timeout.Timeout() {
-			if w.ready && w.Manager.NextFrameAfter() <= time.Millisecond {
-				w.Manager.InvalidatePaint()
-			}
 			continue
 		}
 		if readErr != nil {
@@ -500,6 +504,18 @@ func (w *WaylandWindow) destroyBuffer(buffer *wlBuffer) {
 	_ = w.wire.send(buffer.id, 0, nil)
 	_ = syscall.Munmap(buffer.pixels)
 	delete(w.buffers, buffer.id)
+}
+
+func (w *WaylandWindow) paintAvailable() bool {
+	if !w.ready || w.width < 1 || w.height < 1 {
+		return false
+	}
+	for _, buffer := range w.current {
+		if buffer == nil || !buffer.busy {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *WaylandWindow) paint() error {

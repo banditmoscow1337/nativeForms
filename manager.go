@@ -7,8 +7,8 @@ import (
 )
 
 type notification struct {
-	text      string
-	remaining float64
+	text     string
+	deadline time.Time
 }
 
 // Frame is valid until the next BeginFrame call. Consumers must not modify
@@ -37,6 +37,7 @@ type Manager struct {
 	wake             func()
 	clipboardRead    func() (string, error)
 	clipboardWrite   func(string) error
+	clock            func() time.Time
 	caretDue         time.Time
 	popups           []popupEntry
 	nextPopup        PopupID
@@ -60,9 +61,17 @@ func New() *Manager {
 	return &Manager{
 		visible: true, theme: DefaultTheme(),
 		dirtyLayout: true, dirtyPaint: true,
+		clock: time.Now,
 		frame: Frame{Commands: make([]DrawCommand, 0, 1024)},
 		clips: make([]Rect, 0, 16),
 	}
+}
+
+func (manager *Manager) now() time.Time {
+	if manager.clock != nil {
+		return manager.clock()
+	}
+	return time.Now()
 }
 
 func (manager *Manager) SetRoot(root Component) {
@@ -161,21 +170,22 @@ func (manager *Manager) Notify(text string, duration ...time.Duration) {
 	if text == "" {
 		return
 	}
-	seconds := 2.5
+	lifetime := 2500 * time.Millisecond
 	if len(duration) > 0 {
-		seconds = duration[0].Seconds()
+		lifetime = duration[0]
 	}
-	if seconds <= 0 {
+	if lifetime <= 0 {
 		return
 	}
+	deadline := manager.now().Add(lifetime)
 	manager.notificationMu.Lock()
 	if count := len(manager.notifications); count > 0 && manager.notifications[count-1].text == text {
-		manager.notifications[count-1].remaining = seconds
+		manager.notifications[count-1].deadline = deadline
 		manager.notificationMu.Unlock()
 		manager.InvalidatePaint()
 		return
 	}
-	manager.notifications = append(manager.notifications, notification{text: text, remaining: seconds})
+	manager.notifications = append(manager.notifications, notification{text: text, deadline: deadline})
 	if len(manager.notifications) > 4 {
 		manager.notifications = manager.notifications[len(manager.notifications)-4:]
 	}
@@ -217,12 +227,15 @@ func (manager *Manager) ClearNotifications() {
 	manager.InvalidatePaint()
 }
 
+// BeginFrame records the current UI frame. deltaSeconds is retained for game
+// integrations; caret and notification deadlines follow monotonic wall time.
 func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.ProcessPending()
-	if !manager.caretDue.IsZero() && !time.Now().Before(manager.caretDue) {
+	now := manager.now()
+	if !manager.caretDue.IsZero() && !now.Before(manager.caretDue) {
 		if field, ok := manager.focused.(*TextField); ok {
 			field.BlinkCaret()
-			manager.caretDue = time.Now().Add(500 * time.Millisecond)
+			manager.caretDue = now.Add(500 * time.Millisecond)
 		} else {
 			manager.caretDue = time.Time{}
 		}
@@ -262,7 +275,7 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 		}
 		paintComponent(entry.content, &canvas)
 	}
-	manager.paintNotifications(&canvas, viewport, deltaSeconds)
+	manager.paintNotifications(&canvas, viewport, now)
 	manager.clips = canvas.clips
 	manager.layoutWidth, manager.layoutHeight = width, height
 }
@@ -294,34 +307,48 @@ func (manager *Manager) NeedsFrame() bool {
 	manager.mu.RLock()
 	dirty := manager.dirtyLayout || manager.dirtyPaint
 	manager.mu.RUnlock()
-	return dirty
+	if dirty {
+		return true
+	}
+	deadline, scheduled := manager.NextFrameDeadline()
+	return scheduled && !manager.now().Before(deadline)
 }
 
-// NextFrameAfter reports the next notification or caret deadline. A host can
-// use it with its event loop timer; zero means no scheduled frame is pending.
-func (manager *Manager) NextFrameAfter() time.Duration {
+// NextFrameDeadline reports the earliest scheduled UI frame. The bool is false
+// when no timer is active (no notifications and no focused editor).
+// Hosts should also call NeedsFrame after a wait, even when it timed out.
+func (manager *Manager) NextFrameDeadline() (time.Time, bool) {
+	manager.mu.RLock()
+	visible := manager.visible
+	manager.mu.RUnlock()
+	if !visible {
+		return time.Time{}, false
+	}
 	manager.notificationMu.Lock()
 	defer manager.notificationMu.Unlock()
-	var delay time.Duration
+	var deadline time.Time
 	if len(manager.notifications) > 0 {
-		remaining := manager.notifications[0].remaining
+		deadline = manager.notifications[0].deadline
 		for _, item := range manager.notifications[1:] {
-			if item.remaining < remaining {
-				remaining = item.remaining
+			if item.deadline.Before(deadline) {
+				deadline = item.deadline
 			}
 		}
-		delay = time.Duration(remaining * float64(time.Second))
 	}
-	if !manager.caretDue.IsZero() {
-		caret := time.Until(manager.caretDue)
-		if caret <= 0 {
-			caret = time.Millisecond
-		}
-		if delay <= 0 || caret < delay {
-			delay = caret
-		}
+	if !manager.caretDue.IsZero() && (deadline.IsZero() || manager.caretDue.Before(deadline)) {
+		deadline = manager.caretDue
 	}
-	return delay
+	return deadline, !deadline.IsZero()
+}
+
+// NextFrameAfter is kept for existing hosts. Use NextFrameDeadline to
+// distinguish an elapsed deadline from the absence of a timer.
+func (manager *Manager) NextFrameAfter() time.Duration {
+	deadline, scheduled := manager.NextFrameDeadline()
+	if !scheduled {
+		return 0
+	}
+	return max(time.Duration(0), deadline.Sub(manager.now()))
 }
 
 // SetWakeHandler installs a thread-safe signal to wake the host event loop.
@@ -383,15 +410,11 @@ func paintComponent(component Component, canvas *Canvas) {
 	}
 }
 
-func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, deltaSeconds float64) {
-	if deltaSeconds < 0 {
-		deltaSeconds = 0
-	}
+func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, now time.Time) {
 	manager.notificationMu.Lock()
 	active := manager.notifications[:0]
 	for _, item := range manager.notifications {
-		item.remaining -= deltaSeconds
-		if item.remaining > 0 {
+		if now.Before(item.deadline) {
 			active = append(active, item)
 		}
 	}
@@ -656,7 +679,7 @@ func (manager *Manager) setFocus(component Component) {
 	manager.caretDue = time.Time{}
 	if field, ok := component.(*TextField); ok {
 		field.caretVisible = true
-		manager.caretDue = time.Now().Add(500 * time.Millisecond)
+		manager.caretDue = manager.now().Add(500 * time.Millisecond)
 	}
 	manager.InvalidatePaint()
 }

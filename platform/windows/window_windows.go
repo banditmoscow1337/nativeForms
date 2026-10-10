@@ -231,8 +231,11 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		return 0
 	case wmTimer:
 		call(win.killTimer, hwnd, 1)
-		w.manager.InvalidatePaint()
-		w.invalidate()
+		if w.manager.NeedsFrame() {
+			w.invalidate()
+		} else {
+			w.armFrameTimer(hwnd)
+		}
 		return 0
 	case wmMouseMove, wmLeftDown, wmLeftUp, wmRightDown, wmRightUp, wmMiddleDown, wmMiddleUp, wmMouseWheel, wmMouseHWheel:
 		w.mouse(hwnd, msg, wp, lp)
@@ -347,16 +350,24 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		return fmt.Errorf("windows: StretchDIBits failed")
 	}
 	if rendered {
-		call(win.killTimer, hwnd, 1)
-		if delay := w.manager.NextFrameAfter(); delay > 0 {
-			ms := uint64((delay + time.Millisecond - 1) / time.Millisecond)
-			if ms > 0xffffffff {
-				ms = 0xffffffff
-			}
-			call(win.setTimer, hwnd, 1, uintptr(max(uint64(1), ms)), 0)
-		}
+		w.armFrameTimer(hwnd)
 	}
 	return nil
+}
+
+func (w *Window) armFrameTimer(hwnd uintptr) {
+	call(win.killTimer, hwnd, 1)
+	if next, scheduled := w.manager.NextFrameDeadline(); scheduled {
+		delay := max(time.Duration(0), time.Until(next))
+		ms := uint64(delay / time.Millisecond)
+		if delay%time.Millisecond != 0 {
+			ms++
+		}
+		if ms > 0xffffffff {
+			ms = 0xffffffff
+		}
+		call(win.setTimer, hwnd, 1, uintptr(max(uint64(1), ms)), 0)
+	}
 }
 
 func (w *Window) invalidate() {
