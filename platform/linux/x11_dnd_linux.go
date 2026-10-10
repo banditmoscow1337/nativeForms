@@ -95,7 +95,7 @@ func (w *X11Window) handleDND(event []byte) {
 		if d.accepted {
 			data, err := w.convertSelection(d.selection, d.uris, le.Uint32(event[20:]))
 			if err == nil {
-				if files, err := waylandDroppedFiles(string(data)); err == nil && len(files) > 0 {
+				if files := waylandDroppedFiles(data); len(files) > 0 {
 					w.options.OnFilesDropped(files)
 					success = 1
 				}

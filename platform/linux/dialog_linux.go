@@ -94,10 +94,7 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 			if !ok {
 				return "", fmt.Errorf("portal: invalid URI")
 			}
-			files, err := waylandDroppedFiles(uri)
-			if err != nil {
-				return "", err
-			}
+			files := waylandDroppedFiles([]byte(uri))
 			if len(files) != 1 {
 				return "", fmt.Errorf("portal: selected URI is not a local file")
 			}
