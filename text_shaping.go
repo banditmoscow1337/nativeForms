@@ -45,10 +45,15 @@ func shapeText(text string, size float32) (ShapedText, bool) {
 func TextCaretX(text string, size float32, runeIndex int) float32 {
 	r := []rune(text)
 	runeIndex = min(max(0, runeIndex), len(r))
-	if line, ok := shapeText(text, size); ok && len(line.Carets) == len(r)+1 {
-		return line.Carets[runeIndex]
+	if line, ok := shapeText(text, size); ok {
+		if len(line.Carets) == len(r)+1 {
+			return line.Carets[runeIndex]
+		}
+		return measureTextLine(string(r[:runeIndex]), size)
 	}
-	return measureTextLine(string(r[:runeIndex]), size)
+	positions := make([]float32, len(r)+1)
+	walkAtlasText(text, size, positions, nil)
+	return positions[runeIndex]
 }
 func (canvas *Canvas) mask(mask *image.Alpha, rect Rect, tint Color) {
 	if mask == nil || mask.Bounds().Empty() || rect.Empty() || len(canvas.clips) == 0 {
@@ -100,14 +105,18 @@ func tessellateMask(c DrawCommand, dst []Vertex) []Vertex {
 
 func textCaretPositions(text string, size float32) []float32 {
 	count := len([]rune(text))
-	if shaped, ok := shapeText(text, size); ok && len(shaped.Carets) == count+1 {
-		return shaped.Carets
+	if shaped, ok := shapeText(text, size); ok {
+		if len(shaped.Carets) == count+1 {
+			return shaped.Carets
+		}
+		runes := []rune(text)
+		positions := make([]float32, count+1)
+		for i := 1; i <= count; i++ {
+			positions[i] = measureTextLine(string(runes[:i]), size)
+		}
+		return positions
 	}
-	positions := make([]float32, 0, count+1)
-	x := float32(0)
-	for _, r := range text {
-		positions = append(positions, x)
-		x += glyphForRune(r).advance * size
-	}
-	return append(positions, x)
+	positions := make([]float32, count+1)
+	walkAtlasText(text, size, positions, nil)
+	return positions
 }

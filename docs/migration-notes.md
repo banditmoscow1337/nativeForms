@@ -82,13 +82,19 @@ Tab and Shift+Tab remain available by default.
 ## Fonts and Windows
 
 `SetFontData(ttfBytes)` installs a TrueType font before the first text
-measurement or frame. Without it, nativeForms tries an OS-installed font and
-then an embedded ASCII fallback. The shared 2048² atlas is generated in Go;
-no font asset is redistributed. Unicode cmap 4/12 and quadratic glyph outlines
+measurement or frame. `SetFallbackFontData(ttfBytes, ...)` adds an ordered
+fallback chain; with no configured fonts, nativeForms tries its known system
+font candidates, then an embedded ASCII fallback. Missing Cyrillic still
+requires a suitable installed or supplied TTF. The shared 2048² atlas is
+generated in Go; no font asset is redistributed. Unicode cmap 4/12 and quadratic glyph outlines
 cover basic Latin, Greek, and Cyrillic in a suitable font. Complex shaping,
 variable outlines, CFF, advanced composite placement, and glyphs outside the
 fixed atlas repertoire require further work. Rasterization does not apply
 hinting, and the renderer samples the atlas with nearest pixels.
+Stage 14.1 adds horizontal `kern` format 0, shared glyph/caret positioning,
+common RU/EN wraps and the semantic accessibility core. See
+[its contracts and remaining work](stage-14.md); native screen-reader bridges
+are not connected yet.
 
 The Windows package is available on Windows amd64/arm64 and expects Windows 10
 with GetDpiForWindow. Run the [example](../examples/windows/main_windows.go)

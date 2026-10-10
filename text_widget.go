@@ -155,7 +155,7 @@ func (f *TextField) displayRunes() []rune {
 	r := []rune(f.editor.Text)
 	if f.Password {
 		for i := range r {
-			if r[i] != '\n' {
+			if hardTextBreak(r, i) == 0 {
 				r[i] = '*'
 			}
 		}
@@ -167,26 +167,14 @@ func (f *TextField) lines(r []rune, width, fontSize float32) []textLine {
 	var result []textLine
 	for start := 0; ; {
 		end := start
-		for end < len(r) && !(f.Multiline && r[end] == '\n') {
+		for end < len(r) && !(f.Multiline && hardTextBreak(r, end) != 0) {
 			end++
 		}
 		at := start
 		for at < end {
 			limit := end
-			if f.Multiline && width > 0 && measureTextLine(string(r[at:end]), fontSize) > width {
-				lo, hi := at, end
-				for lo < hi {
-					mid := (lo + hi + 1) / 2
-					if measureTextLine(string(r[at:mid]), fontSize) <= width {
-						lo = mid
-					} else {
-						hi = mid - 1
-					}
-				}
-				limit = nearestGrapheme(r, lo)
-				if limit <= at {
-					limit = min(end, nextGrapheme(r, at))
-				}
+			if f.Multiline {
+				limit = wrappedLineEnd(r, at, end, width, fontSize)
 			}
 			result = append(result, textLine{at, limit, measureTextLine(string(r[at:limit]), fontSize)})
 			at = limit
@@ -197,7 +185,7 @@ func (f *TextField) lines(r []rune, width, fontSize float32) []textLine {
 		if end == len(r) {
 			break
 		}
-		start = end + 1
+		start = end + hardTextBreak(r, end)
 	}
 	return result
 }
@@ -557,14 +545,19 @@ func (f *TextField) Handle(event Event) bool {
 
 func lineBoundaries(r []rune, pos int) (int, int) {
 	pos = min(max(pos, 0), len(r))
-	start, end := pos, pos
-	for start > 0 && r[start-1] != '\n' {
-		start--
+	start := 0
+	for at := 0; at < len(r); {
+		if count := hardTextBreak(r, at); count > 0 {
+			if pos < at+count {
+				return start, at
+			}
+			at += count
+			start = at
+		} else {
+			at++
+		}
 	}
-	for end < len(r) && r[end] != '\n' {
-		end++
-	}
-	return start, end
+	return start, len(r)
 }
 func selectedWord(r []rune, pos int) (int, int) {
 	if len(r) == 0 {
@@ -576,10 +569,10 @@ func selectedWord(r []rune, pos int) (int, int) {
 	}
 	kind := wordRune(r[pos])
 	start, end := pos, pos+1
-	for start > 0 && wordRune(r[start-1]) == kind && r[start-1] != '\n' {
+	for start > 0 && wordRune(r[start-1]) == kind && hardTextBreak(r, start-1) == 0 {
 		start--
 	}
-	for end < len(r) && wordRune(r[end]) == kind && r[end] != '\n' {
+	for end < len(r) && wordRune(r[end]) == kind && hardTextBreak(r, end) == 0 {
 		end++
 	}
 	return nearestGrapheme(r, start), nextGrapheme(r, end-1)

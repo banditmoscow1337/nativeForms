@@ -9,6 +9,9 @@ The [desktop v1 scope and architecture](docs/desktop-v1.md) records the target.
 The [migration notes](docs/migration-notes.md) describe the API changes and
 current limitations. [Stages 12–13](docs/stages-12-13.md) describe popup
 widgets, virtual models, desktop examples and platform feature availability.
+[Stage 14.1](docs/stage-14.md) starts Russian/English text improvements and
+the platform-independent accessibility tree; native screen-reader bridges
+remain future work.
 
 For an offscreen example that writes `frame.png`, see
 [`examples/offscreen`](examples/offscreen/main.go). The caller creates a
@@ -22,6 +25,8 @@ UI thread; use `manager.Post` for updates from other goroutines. Set an
 application font with `nativeforms.SetFontData(ttfBytes)` before the first
 measurement or frame. Otherwise the toolkit loads a local system TrueType font
 and falls back to its embedded ASCII bitmap glyphs if none is available.
+`SetFallbackFontData(ttfBytes, ...)` configures an ordered portable fallback
+chain. Supply a font with Cyrillic coverage for predictable Russian text.
 
 The shared editor demo runs with `go run ./examples/editor_windows`,
 `go run ./examples/editor_darwin`, or `go run ./examples/editor_linux` on their
@@ -58,3 +63,7 @@ cover longer forms; [stages 9–11](docs/stages-9-11.md) document their contract
 The first-party font parser supports quadratic TrueType outlines and
 Unicode cmap format 4/12; it does not support CFF, variable fonts, hinting,
 or GSUB/GPOS shaping.
+The portable path supports horizontal `kern` format 0, shared glyph/caret
+positions, and common Russian/English wrapping rules. See
+[`examples/text_ru_en`](examples/text_ru_en/main.go) for a PNG and semantic
+snapshot specimen you can run locally.
