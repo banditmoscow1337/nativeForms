@@ -5,6 +5,7 @@ package darwin
 import (
 	"fmt"
 	"image"
+	"math"
 	"runtime"
 	"structs"
 	"sync"
@@ -43,20 +44,21 @@ type Options struct {
 }
 
 type Window struct {
-	manager                                   *ui.Manager
-	options                                   Options
+	manager                           *ui.Manager
+	options                           Options
 	app, window, view, representation objc.ID
-	framebuffer                               *image.RGBA
-	renderer                                  *software.Renderer
-	width, height                             int
-	lastFrame                                 time.Time
-	closing                                   atomic.Bool
-	marked                                    string
-	markedSelection                           nsRange
-	inputIdentity                             *ui.TextField
-	currentKey                                ui.Event
-	inputHandled                              bool
-	wasKey                                    bool
+	framebuffer                       *image.RGBA
+	renderer                          *software.Renderer
+	width, height                     int
+	pixelWidth, pixelHeight           int
+	lastFrame                         time.Time
+	closing                           atomic.Bool
+	marked                            string
+	markedSelection                   nsRange
+	inputIdentity                     *ui.TextField
+	currentKey                        ui.Event
+	inputHandled                      bool
+	wasKey                            bool
 }
 
 func New(manager *ui.Manager, options Options) *Window {
@@ -236,9 +238,17 @@ func (a *application) step(mode objc.ID) error {
 		w.wasKey = key
 		w.syncInputFocus()
 		bounds := objc.Send[rect](w.view, selector("bounds"))
-		width, height := int(bounds.Size.W), int(bounds.Size.H)
-		if width > 0 && height > 0 && (w.manager.NeedsFrame() || width != w.width || height != w.height) {
-			if err := w.paint(width, height); err != nil {
+		backing := objc.Send[rect](w.view, selector("convertRectToBacking:"), bounds)
+		width, height := int(math.Ceil(bounds.Size.W)), int(math.Ceil(bounds.Size.H))
+		pixelWidth, pixelHeight := int(math.Round(backing.Size.W)), int(math.Round(backing.Size.H))
+		scale := float32(objc.Send[float64](w.window, selector("backingScaleFactor")))
+		if !(scale > 0 && scale <= 8) {
+			scale = 1
+		}
+		w.manager.SetDisplayScale(scale)
+		if width > 0 && height > 0 && pixelWidth > 0 && pixelHeight > 0 &&
+			(w.manager.NeedsFrame() || width != w.width || height != w.height || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight) {
+			if err := w.paint(width, height, pixelWidth, pixelHeight, scale); err != nil {
 				return err
 			}
 		}
@@ -318,29 +328,33 @@ func (w *Window) Close() {
 	}
 }
 
-func (w *Window) paint(width, height int) error {
-	if width > 16384 || height > 16384 || int64(width)*int64(height) > 64*1024*1024 {
+func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32) error {
+	if pixelWidth > 16384 || pixelHeight > 16384 || int64(pixelWidth)*int64(pixelHeight) > 64*1024*1024 {
 		return fmt.Errorf("darwin: framebuffer exceeds 64 megapixels")
 	}
-	if w.framebuffer == nil || width != w.width || height != w.height {
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, width, height))
-		w.width, w.height = width, height
-		w.manager.InvalidateLayout()
+	if w.framebuffer == nil || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight {
+		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+		w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
 		if w.representation != 0 {
 			w.representation.Send(selector("release"))
 			w.representation = 0
 		}
 		w.representation = class("NSBitmapImageRep").Send(selector("alloc"))
 		w.representation = w.representation.Send(selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
-			uintptr(0), width, height, 8, 4, true, false, nsString("NSDeviceRGBColorSpace"), width*4, 32)
+			uintptr(0), pixelWidth, pixelHeight, 8, 4, true, false, nsString("NSDeviceRGBColorSpace"), pixelWidth*4, 32)
 		if w.representation == 0 {
 			return fmt.Errorf("darwin: bitmap representation failed")
 		}
 	}
+	if width != w.width || height != w.height {
+		w.width, w.height = width, height
+		w.manager.InvalidateLayout()
+	}
+	w.representation.Send(selector("setSize:"), objc.Send[rect](w.view, selector("bounds")).Size)
 	now := time.Now()
 	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.Render(w.manager.Frame(), w.framebuffer); err != nil {
+	if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale); err != nil {
 		return err
 	}
 	pointer := objc.Send[uintptr](w.representation, selector("bitmapData"))

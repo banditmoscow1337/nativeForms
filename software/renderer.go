@@ -24,6 +24,23 @@ func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	}
 	sx := float32(dst.Bounds().Dx()) / float32(frame.Width)
 	sy := float32(dst.Bounds().Dy()) / float32(frame.Height)
+	return renderer.renderScaled(frame, dst, sx, sy)
+}
+
+// RenderAtScale rasterizes a logical UI frame at the display's pixel scale.
+// The target may be one pixel narrower than the scaled logical viewport when
+// its physical dimensions are not divisible by the display scale.
+func (renderer *Renderer) RenderAtScale(frame ui.Frame, dst *image.RGBA, scale float32) error {
+	if dst == nil || frame.Width <= 0 || frame.Height <= 0 || !(scale > 0 && scale <= 8) {
+		return fmt.Errorf("invalid scaled UI target")
+	}
+	if scale == 1 && dst.Bounds().Dx() == frame.Width && dst.Bounds().Dy() == frame.Height {
+		return renderer.Render(frame, dst)
+	}
+	return renderer.renderScaled(frame, dst, scale, scale)
+}
+
+func (renderer *Renderer) renderScaled(frame ui.Frame, dst *image.RGBA, sx, sy float32) error {
 	scaleRect := func(r ui.Rect) ui.Rect {
 		return ui.Rect{X: r.X * sx, Y: r.Y * sy, W: r.W * sx, H: r.H * sy}
 	}

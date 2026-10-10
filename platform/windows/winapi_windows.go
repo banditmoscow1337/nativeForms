@@ -58,6 +58,7 @@ type functions struct {
 	createWindow, registerClass, defProc, getMessage, translateMessage, dispatchMessage, showWindow   uintptr
 	destroyWindow, postQuit, postMessage, beginPaint, endPaint, invalidateRect                        uintptr
 	getClientRect, screenToClient, getDpi, setDpi, setWindowPos                                       uintptr
+	adjustWindowRect, adjustWindowRectForDpi                                                          uintptr
 	setCapture, releaseCapture, loadCursor, setCursor, getKeyState, trackMouse                        uintptr
 	setTimer, killTimer, openClipboard, closeClipboard, emptyClipboard                                uintptr
 	setClipboardData, getClipboardData, globalAlloc, globalLock, globalUnlock, globalFree, globalSize uintptr
@@ -124,8 +125,8 @@ func load() error {
 		{win.user, "InvalidateRect", &win.invalidateRect},
 		{win.user, "GetClientRect", &win.getClientRect},
 		{win.user, "ScreenToClient", &win.screenToClient},
-		{win.user, "GetDpiForWindow", &win.getDpi},
 		{win.user, "SetWindowPos", &win.setWindowPos},
+		{win.user, "AdjustWindowRectEx", &win.adjustWindowRect},
 		{win.user, "SetCapture", &win.setCapture},
 		{win.user, "ReleaseCapture", &win.releaseCapture},
 		{win.user, "LoadCursorW", &win.loadCursor},
@@ -161,6 +162,8 @@ func load() error {
 	}
 	// A host may have set its process DPI policy already. That is fine.
 	win.setDpi, _ = syscall.GetProcAddress(syscall.Handle(win.user), "SetProcessDpiAwarenessContext")
+	win.getDpi, _ = syscall.GetProcAddress(syscall.Handle(win.user), "GetDpiForWindow")
+	win.adjustWindowRectForDpi, _ = syscall.GetProcAddress(syscall.Handle(win.user), "AdjustWindowRectExForDpi")
 	return nil
 }
 
@@ -210,6 +213,7 @@ const (
 	cwUseDefault       = 0x80000000
 	swShow             = 5
 	swpNoZOrder        = 0x0004
+	swpNoMove          = 0x0002
 	swpNoActivate      = 0x0010
 	biRGB              = 0
 	dibRGBColors       = 0

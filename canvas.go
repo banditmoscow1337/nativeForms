@@ -40,10 +40,11 @@ type DrawCommand struct {
 }
 
 type Canvas struct {
-	commands *[]DrawCommand
-	clips    []Rect
-	theme    *Theme
-	fonts    *FontContext
+	commands     *[]DrawCommand
+	clips        []Rect
+	theme        *Theme
+	fonts        *FontContext
+	displayScale float32
 }
 
 func (canvas *Canvas) Theme() *Theme { return canvas.theme }
@@ -64,6 +65,9 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		return
 	}
 	spec = normalFontSpec(spec)
+	if canvas.displayScale > 0 {
+		spec.Scale = min(spec.Scale*canvas.displayScale, 8)
+	}
 	text = normalizeTextBreaks(text)
 	lines := strings.Split(text, "\n")
 	layouts := make([]TextLayout, len(lines))
@@ -251,9 +255,13 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		case TextRight:
 			x += bounds.W - lineWidth
 		}
-		if shaped, ok := shapeText(line, size); ok {
+		pixelScale := canvas.displayScale
+		if !(pixelScale > 0 && pixelScale <= 8) {
+			pixelScale = 1
+		}
+		if shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale); ok {
 			if mask := shaped.Mask; mask != nil {
-				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()), H: float32(mask.Bounds().Dy())}, tint)
+				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
 			}
 		} else {
 			walkAtlasText(line, size, nil, func(glyph glyphInfo, offset float32) {

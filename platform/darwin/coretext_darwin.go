@@ -21,8 +21,8 @@ var coreTextError error
 var systemShaper *coreTextShaper
 
 type shapeKey struct {
-	text string
-	size float32
+	text        string
+	size, scale float32
 }
 type coreTextShaper struct {
 	sync.Mutex
@@ -38,6 +38,7 @@ type coreTextShaper struct {
 	release        func(uintptr)
 	bitmap         func(unsafe.Pointer, uintptr, uintptr, uintptr, uintptr, uintptr, uint32) uintptr
 	translate      func(uintptr, float64, float64)
+	scale          func(uintptr, float64, float64)
 	textPosition   func(uintptr, float64, float64)
 	fill           func(uintptr, float64, float64, float64, float64)
 	contextRelease func(uintptr)
@@ -67,7 +68,7 @@ func EnableCoreText() error {
 			{ct, "CTFontCreateUIFontForLanguage", &s.font}, {ct, "CTLineCreateWithAttributedString", &s.line},
 			{ct, "CTLineGetTypographicBounds", &s.bounds}, {ct, "CTLineGetImageBounds", &s.ink}, {ct, "CTLineGetOffsetForStringIndex", &s.offset},
 			{ct, "CTLineDraw", &s.draw}, {ct, "CFRelease", &s.release},
-			{cg, "CGBitmapContextCreate", &s.bitmap}, {cg, "CGContextTranslateCTM", &s.translate}, {cg, "CGContextSetTextPosition", &s.textPosition},
+			{cg, "CGBitmapContextCreate", &s.bitmap}, {cg, "CGContextTranslateCTM", &s.translate}, {cg, "CGContextScaleCTM", &s.scale}, {cg, "CGContextSetTextPosition", &s.textPosition},
 			{cg, "CGContextSetRGBFillColor", &s.fill}, {cg, "CGContextRelease", &s.contextRelease},
 		} {
 			address, e := purego.Dlsym(entry.lib, entry.name)
@@ -92,7 +93,11 @@ func EnableCoreText() error {
 	return nil
 }
 func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bool) {
-	if fontSize <= 0 || fontSize > 512 || len(text) > 64<<10 || !utf8.ValidString(text) {
+	return s.ShapeAtScale(text, fontSize, 1)
+}
+
+func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32) (ui.ShapedText, bool) {
+	if fontSize <= 0 || fontSize > 512 || !(pixelScale > 0 && pixelScale <= 8) || len(text) > 64<<10 || !utf8.ValidString(text) {
 		return ui.ShapedText{}, false
 	}
 	if text == "" {
@@ -100,7 +105,7 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 	}
 	s.Lock()
 	defer s.Unlock()
-	key := shapeKey{text, fontSize}
+	key := shapeKey{text, fontSize, pixelScale}
 	if cached, ok := s.cache[key]; ok {
 		return cached, true
 	}
@@ -141,7 +146,7 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 	if ink.Size.W > 0 && ink.Size.H > 0 {
 		x0, y0 := math.Floor(ink.Origin.X)-1, math.Floor(ink.Origin.Y)-1
 		x1, y1 := math.Ceil(ink.Origin.X+ink.Size.W)+1, math.Ceil(ink.Origin.Y+ink.Size.H)+1
-		width, height := int(x1-x0), int(y1-y0)
+		width, height := int(math.Ceil((x1-x0)*float64(pixelScale))), int(math.Ceil((y1-y0)*float64(pixelScale)))
 		if width <= 0 || height <= 0 || width > 65536 || height > 2048 || int64(width)*int64(height) > 4<<20 {
 			return ui.ShapedText{}, false
 		}
@@ -153,6 +158,7 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 		if context == 0 {
 			return ui.ShapedText{}, false
 		}
+		s.scale(context, float64(pixelScale), float64(pixelScale))
 		s.translate(context, -x0, -y0)
 		s.textPosition(context, 0, 0)
 		s.fill(context, 1, 1, 1, 1)
@@ -179,6 +185,8 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 
 func coreTextMask(pixels []byte, width, height int) *image.Alpha {
 	mask := image.NewAlpha(image.Rect(0, 0, width, height))
-	copy(mask.Pix, pixels)
+	for y := 0; y < height; y++ {
+		copy(mask.Pix[y*mask.Stride:y*mask.Stride+width], pixels[(height-1-y)*width:(height-y)*width])
+	}
 	return mask
 }
