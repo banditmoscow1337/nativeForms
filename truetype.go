@@ -8,8 +8,6 @@ import (
 	"math"
 )
 
-// TrueTypeFace reads quadratic TrueType outlines without font libraries.
-// CFF, variations, GSUB/GPOS and hinting are outside this initial engine.
 type TrueTypeFace struct {
 	data       []byte
 	tables     map[string][]byte

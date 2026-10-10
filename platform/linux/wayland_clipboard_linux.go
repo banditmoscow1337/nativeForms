@@ -159,9 +159,6 @@ func (w *WaylandWindow) dataSourceEvent(id uint32, opcode uint16, payload []byte
 	return nil
 }
 
-// SetClipboardText claims the current seat selection. Call it on the Run
-// goroutine in response to keyboard or pointer input, which provides the
-// serial required by wl_data_device.set_selection.
 func (w *WaylandWindow) SetClipboardText(value string) error {
 	if w == nil || w.dataDevice == 0 || w.wire == nil {
 		return fmt.Errorf("wayland: clipboard data device unavailable")
@@ -189,8 +186,6 @@ func (w *WaylandWindow) SetClipboardText(value string) error {
 	return nil
 }
 
-// ClipboardText reads UTF-8 from the current compositor selection. An empty
-// selection returns an empty string. Call it on the Run goroutine.
 func (w *WaylandWindow) ClipboardText() (string, error) {
 	if w == nil || w.dataDevice == 0 || w.wire == nil {
 		return "", fmt.Errorf("wayland: clipboard data device unavailable")

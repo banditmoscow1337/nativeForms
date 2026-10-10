@@ -14,7 +14,6 @@ import (
 const vertexSize = int(unsafe.Sizeof(nativeforms.Vertex{}))
 const maxVertices = 64 * 1024
 
-// Renderer is the game host's Vulkan resource provider.
 type Renderer interface {
 	Device() uintptr
 	QuadPipelineLayout() uint64
@@ -48,8 +47,6 @@ type Backend struct {
 	vertices                                        []nativeforms.Vertex
 }
 
-// New uses shader files supplied by the game. The caller owns synchronization
-// with in-flight GPU work before Destroy is called.
 func New(renderer Renderer, shaders ShaderPaths) (*Backend, error) {
 	if renderer == nil || shaders.Vertex == "" || shaders.Fragment == "" {
 		return nil, fmt.Errorf("Vulkan renderer and shader paths are required")

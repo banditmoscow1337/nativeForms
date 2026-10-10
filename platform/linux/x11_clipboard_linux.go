@@ -25,8 +25,6 @@ type xProperty struct {
 	data   []byte
 }
 
-// SetClipboardText claims CLIPBOARD. Keep the owner window running while
-// other applications consume its selection. INCR handles large values.
 func (w *X11Window) SetClipboardText(value string) error {
 	if w == nil || w.conn == nil || w.clipboard == 0 {
 		return fmt.Errorf("x11: clipboard needs a running window")
@@ -156,8 +154,6 @@ func minTime(a, b time.Time) time.Time {
 	return b
 }
 
-// Header and payload survive wakeups and short reads; no bytes are lost when
-// a timer expires in the middle of a GetProperty reply.
 func (w *X11Window) clipboardPacket(deadline time.Time) ([]byte, error) {
 	if w.packet == nil {
 		p, err := w.readEvent(deadline)

@@ -1,7 +1,5 @@
 //go:build windows && (amd64 || arm64)
 
-// Package windows presents nativeForms software frames in Win32 windows.
-// Run owns the UI goroutine and must be called from the application's main goroutine.
 package windows
 
 import (
@@ -20,8 +18,6 @@ import (
 	"github.com/ebitengine/purego"
 )
 
-// Options specifies the initial window size in physical pixels. OnReady runs
-// on the UI thread after the window is shown and may update the UI tree.
 type Options struct {
 	Title          string
 	Width, Height  int
@@ -176,7 +172,7 @@ func windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) (result uintptr) {
 	w := windowsByHandle[hwnd]
 	windowsMu.RUnlock()
 	if w == nil {
-		w = creatingWindow.Load() // synchronous messages while CreateWindowExW is running
+		w = creatingWindow.Load()
 	}
 	if w == nil || (w.hwnd.Load() != 0 && w.hwnd.Load() != hwnd) {
 		return call(win.defProc, hwnd, uintptr(msg), wp, lp)
@@ -376,7 +372,6 @@ func (w *Window) invalidate() {
 	}
 }
 
-// Close requests shutdown and is safe to call from a different goroutine.
 func (w *Window) Close() {
 	if w != nil {
 		if h := w.hwnd.Load(); h != 0 {

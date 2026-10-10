@@ -79,7 +79,6 @@ var Transparent = Color{}
 type Constraints struct {
 	Min Vec2
 	Max Vec2
-	// A zero Max component is unbounded unless its Bounded flag is true.
 	BoundedX, BoundedY bool
 }
 

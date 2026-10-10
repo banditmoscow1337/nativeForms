@@ -10,9 +10,6 @@ import (
 
 var nextImageID atomic.Uint64
 
-// ImageResource is an immutable, zero-origin, premultiplied sRGB RGBA snapshot.
-// The caller may mutate or release the source image after construction.
-// A DrawCommand retains its snapshot until the command is discarded.
 type ImageResource struct {
 	id, version   uint64
 	width, height int
@@ -32,8 +29,6 @@ func NewImageResource(source image.Image) (*ImageResource, error) {
 	return resource, nil
 }
 
-// Replace returns a new version with the same ID. Existing frames keep the
-// old snapshot alive; update widgets via SetImage to show the new version.
 func (resource *ImageResource) Replace(source image.Image) (*ImageResource, error) {
 	if resource == nil || resource.versions == nil {
 		return nil, fmt.Errorf("cannot replace an uninitialized image resource")
@@ -71,7 +66,6 @@ func (resource *ImageResource) Bounds() image.Rectangle {
 	return image.Rect(0, 0, resource.width, resource.height)
 }
 
-// RGBAAt returns premultiplied channels by value, without exposing storage.
 func (resource *ImageResource) RGBAAt(x, y int) color.RGBA {
 	if resource == nil || x < 0 || y < 0 || x >= resource.width || y >= resource.height {
 		return color.RGBA{}

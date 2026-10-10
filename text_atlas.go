@@ -1,8 +1,5 @@
 package nativeforms
 
-// walkAtlasText is the portable LTR positioning path shared by measurement,
-// paint and hit testing. carets, when non-nil, has runeCount(text)+1 entries.
-// emit receives an atlas cell and its pen position in logical pixels.
 func walkAtlasText(text string, size float32, carets []float32, emit func(glyphInfo, float32)) float32 {
 	runes := []rune(text)
 	var previous glyphInfo
@@ -16,7 +13,6 @@ func walkAtlasText(text string, size float32, carets []float32, emit func(glyphI
 		}
 		glyph := glyphForRune(character)
 		if glyph.face != nil && glyph.face == previous.face {
-			// Keep caret positions monotone even with pathological font data.
 			x += maxFloat32(-previous.advance*size, glyph.face.atlasKerning(previous.id, glyph.id)*size)
 		}
 		if carets != nil {
@@ -37,9 +33,6 @@ func walkAtlasText(text string, size float32, carets []float32, emit func(glyphI
 	return x
 }
 
-// Common canonically decomposed Russian letters can use existing atlas cells
-// without changing the application's text or its rune/UTF-8 selection offsets.
-// This is deliberately not a general Unicode normalizer or mark positioner.
 func composeRussian(base, mark rune) rune {
 	if mark == '\u0308' {
 		switch base {

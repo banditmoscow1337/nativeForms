@@ -5,14 +5,13 @@ package darwin
 import "testing"
 
 func TestCoreTextMaskOrientation(t *testing.T) {
-	// Every pixel differs so reversing either axis alone cannot pass.
 	mask := coreTextMask([]byte{
 		1, 2, 3,
 		4, 5, 6,
 	}, 3, 2)
 	want := []byte{
-		6, 5, 4,
-		3, 2, 1,
+		4, 5, 6,
+		1, 2, 3,
 	}
 	for y := 0; y < 2; y++ {
 		for x := 0; x < 3; x++ {

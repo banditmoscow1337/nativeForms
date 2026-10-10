@@ -1,4 +1,3 @@
-// Package paintdemo supplies one component tree for offscreen and native hosts.
 package paintdemo
 
 import (
@@ -14,8 +13,6 @@ func (b *badge) Paint(canvas *ui.Canvas) {
 	canvas.RoundedRect(b.Bounds(), 8, ui.RGBA(8, 13, 24, 208))
 }
 
-// New uses embedded procedural pixels, so no image files or external fonts are
-// needed to exercise RGBA blending and clipping in every desktop example.
 func New() ui.Component {
 	pixels := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	for y := 0; y < 4; y++ {
@@ -29,7 +26,7 @@ func New() ui.Component {
 	}
 	resource, err := ui.NewImageResource(pixels)
 	if err != nil {
-		panic(err) // Fixed four-by-four image with valid bounds.
+		panic(err)
 	}
 	preview := ui.NewImage(resource)
 	preview.Fit = ui.ImageCover

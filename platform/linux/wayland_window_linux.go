@@ -166,8 +166,6 @@ type wlBuffer struct {
 	busy, retired bool
 }
 
-// WaylandWindow uses xdg-shell, wl_shm and the data device protocol directly
-// over the compositor's Unix socket.
 type WaylandWindow struct {
 	Manager                                                              *ui.Manager
 	Options                                                              WaylandOptions
@@ -918,8 +916,7 @@ func (w *WaylandWindow) dispatchKey(code uint32, down, repeat bool) {
 		w.compose.reset(w.Manager)
 	}
 	w.Manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods, Repeat: repeat})
-	// A compositor's input method consumes intercepted keys itself. Keys still
-	// delivered on wl_keyboard need normal text translation even when enabled.
+
 	if down && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
 		if w.keymap != nil {
 			for _, s := range w.keymap.symbols(code, w.keyGroup, w.keyMods) {

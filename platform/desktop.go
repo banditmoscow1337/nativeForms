@@ -1,4 +1,3 @@
-// Package platform describes the features of a native desktop adapter.
 package platform
 
 import (
@@ -25,8 +24,6 @@ type Capabilities struct {
 	DragDrop, FileDialog, Wayland               bool
 }
 
-// FileDialogs opens a native file picker on the adapter's UI goroutine.
-// The empty path with a nil error means the user cancelled the picker.
 type FileDialogs interface {
 	OpenFile() (string, error)
 	SaveFile(defaultName string) (string, error)

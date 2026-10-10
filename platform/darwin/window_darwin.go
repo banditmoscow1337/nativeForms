@@ -1,6 +1,5 @@
 //go:build darwin && (amd64 || arm64)
 
-// Package darwin presents software frames through AppKit using purego/objc.
 package darwin
 
 import (
@@ -78,8 +77,6 @@ func nsString(value string) objc.ID {
 	return class("NSString").Send(selector("stringWithUTF8String:"), value)
 }
 
-// Run presents this window. Call it on the main goroutine; lock that goroutine
-// to the startup OS thread in main's init. Use Run(w1,w2) or Open for more windows.
 func (w *Window) Run() error { return Run(w) }
 
 type application struct {
@@ -106,8 +103,6 @@ func loadAppKit() error {
 	return cocoaErr
 }
 
-// Run owns one AppKit event loop for all supplied windows. Managers must be
-// distinct. The loop exits after the last window closes.
 func Run(windows ...*Window) error {
 	if len(windows) == 0 {
 		return fmt.Errorf("darwin: no windows")
@@ -157,8 +152,6 @@ func Run(windows ...*Window) error {
 	return nil
 }
 
-// Open adds a window while Run is active. Invoke on its UI goroutine, for
-// example from OnReady or a button callback. Each window owns its Manager.
 func (w *Window) Open() error {
 	if w == nil || w.manager == nil {
 		return fmt.Errorf("darwin: nil window or manager")
@@ -191,8 +184,6 @@ func (w *Window) Open() error {
 	if w.window == 0 {
 		return fmt.Errorf("darwin: NSWindow initialization failed")
 	}
-	// Keep our owning reference across close-button callbacks. Only destroy
-	// releases it, after the event dispatcher has returned.
 	w.window.Send(selector("setReleasedWhenClosed:"), false)
 	w.view = objc.ID(nativeViewClass).Send(selector("alloc")).Send(selector("initWithFrame:"), makeRect(float64(width), float64(height)))
 	if w.view == 0 {
@@ -201,8 +192,7 @@ func (w *Window) Open() error {
 	}
 	viewWindows[w.view] = w
 	app.windows[w.window] = w
-	// Framebuffer coordinates always increase from left to right.
-	w.view.Send(selector("setUserInterfaceLayoutDirection:"), uint64(0)) // NSUserInterfaceLayoutDirectionLeftToRight
+	w.view.Send(selector("setUserInterfaceLayoutDirection:"), uint64(0))
 	title := w.options.Title
 	if title == "" {
 		title = "nativeForms"
@@ -281,8 +271,6 @@ func (a *application) step(mode objc.ID) error {
 			w.event(event, w.height)
 			return nil
 		}
-		// Dispatch only pointer events here. Title-bar presses belong to
-		// AppKit, but releases/drags outside the content must clear capture.
 		switch typ {
 		case 1, 2, 3, 4, 5, 6, 7, 9, 22, 25, 26, 27:
 			p := objc.Send[point](event, selector("locationInWindow"))
@@ -383,8 +371,6 @@ func (w *Window) SetClipboardText(value string) error {
 	return nil
 }
 
-// OpenFile shows an AppKit file panel on the Run goroutine. An empty path
-// with a nil error means the user cancelled.
 func (w *Window) OpenFile() (string, error) {
 	if w == nil || w.window == 0 {
 		return "", fmt.Errorf("darwin: file dialog needs a running window")
@@ -399,7 +385,6 @@ func (w *Window) OpenFile() (string, error) {
 	return stringValue(panel.Send(selector("URL")).Send(selector("path"))), nil
 }
 
-// SaveFile shows an AppKit save panel with an optional initial file name.
 func (w *Window) SaveFile(defaultName string) (string, error) {
 	if w == nil || w.window == 0 {
 		return "", fmt.Errorf("darwin: file dialog needs a running window")
@@ -487,8 +472,6 @@ func (w *Window) event(event objc.ID, height int) {
 		}
 		w.syncInputFocus()
 		if w.manager.TextInputFocused() && flags&ui.ModSuper == 0 {
-			// Input methods and dead keys interpret the event first. Editing
-			// selectors call back through doCommandBySelector exactly once.
 			w.currentKey = e
 			w.inputHandled = false
 			events := class("NSArray").Send(selector("arrayWithObject:"), event)

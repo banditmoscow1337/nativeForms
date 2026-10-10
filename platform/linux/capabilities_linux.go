@@ -1,6 +1,5 @@
 //go:build linux
 
-// Package linux contains independent X11 wire and Wayland discovery adapters.
 package linux
 
 import (
@@ -18,7 +17,6 @@ func WaylandCapabilities() platform.Capabilities {
 	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true, DragDrop: true, Wayland: true}
 }
 
-// BackendName selects a display endpoint without routing Wayland through Xwayland.
 func BackendName() (string, error) {
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
 		return "wayland", nil

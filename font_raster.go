@@ -5,8 +5,6 @@ import (
 	"math"
 )
 
-// rasterOutline samples a TrueType outline at its requested physical size.
-// Offset is relative to the baseline, in physical pixels.
 func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alpha, Vec2) {
 	if len(o.points) == 0 || scale <= 0 {
 		return nil, Vec2{}

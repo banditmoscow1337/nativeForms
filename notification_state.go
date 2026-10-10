@@ -7,7 +7,6 @@ type suspendedNotification struct {
 	remaining time.Duration
 }
 
-// NotificationState holds notification lifetimes while they are suspended.
 type NotificationState struct{ items []suspendedNotification }
 
 func (manager *Manager) SuspendNotifications() NotificationState {

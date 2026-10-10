@@ -5,12 +5,10 @@ import (
 	"sync"
 )
 
-// ShapedText is a single line at the requested logical font size. Carets are
-// indexed by rune boundary. Mask and Carets must remain immutable after return.
 type ShapedText struct {
 	Advance float32
 	Mask    *image.Alpha
-	Offset  Vec2 // mask's top-left relative to the line box
+	Offset  Vec2
 	Carets  []float32
 }
 type TextShaper interface {
@@ -22,9 +20,6 @@ var textShaping struct {
 	engine TextShaper
 }
 
-// SetTextShaper installs native shaping before constructing UI trees. Passing
-// nil restores the portable TrueType atlas. Existing managers need layout
-// invalidation if the shaper is changed while they are running.
 func SetTextShaper(engine TextShaper) {
 	textShaping.Lock()
 	textShaping.engine = engine
@@ -40,8 +35,6 @@ func shapeText(text string, size float32) (ShapedText, bool) {
 	return engine.Shape(text, size)
 }
 
-// TextCaretX measures a caret in the context of the whole shaped line, including
-// kerning, ligatures and right-to-left runs. runeIndex is a rune boundary.
 func TextCaretX(text string, size float32, runeIndex int) float32 {
 	r := []rune(text)
 	runeIndex = min(max(0, runeIndex), len(r))
@@ -66,9 +59,6 @@ func (canvas *Canvas) mask(mask *image.Alpha, rect Rect, tint Color) {
 	*canvas.commands = append(*canvas.commands, DrawCommand{Kind: CommandMask, Mask: mask, Rect: rect, Clip: clip, Tint: tint})
 }
 
-// The Vulkan adapter's fixed atlas can also present shaped masks as constant
-// alpha spans. Software consumes the mask directly. This fallback trades
-// vertex count for keeping the renderer's existing single-texture contract.
 func tessellateMask(c DrawCommand, dst []Vertex) []Vertex {
 	if c.Mask == nil || c.Mask.Bounds().Empty() || c.Rect.Empty() {
 		return dst

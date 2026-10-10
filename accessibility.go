@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// AccessibleID is stable for the lifetime of a State and never reused. Like
-// other UI state, a State must not be copied after it has been attached/used.
 type AccessibleID uint64
 
 var nextAccessibleID atomic.Uint64
@@ -29,11 +27,6 @@ const (
 	RoleDialog      AccessibleRole = "dialog"
 )
 
-// AccessibilityInfo overrides the defaults inferred from standard widgets.
-// Language is an inherited language tag, e.g. "ru" or "en"; it does not
-// translate content. Hidden excludes the entire subtree from this API.
-// LabelledBy is resolved only when the label is in the same exposed tree.
-// An empty Name uses the label relation, then the widget's default name.
 type AccessibilityInfo struct {
 	Role                        AccessibleRole
 	Name, Description, Language string
@@ -47,7 +40,6 @@ func (s *State) SetAccessibility(info AccessibilityInfo) {
 }
 func (s *State) Accessibility() AccessibilityInfo { return s.accessibility }
 
-// AccessibilityID must be called on the UI owner goroutine.
 func (s *State) AccessibilityID() AccessibleID {
 	if s.accessibleID == 0 {
 		s.accessibleID = AccessibleID(nextAccessibleID.Add(1))
@@ -69,7 +61,6 @@ const (
 	AccessibleModal
 )
 
-// AccessibilityAction is a bit mask in a node; pass exactly one bit to Perform.
 type AccessibilityAction uint16
 
 const (
@@ -81,14 +72,8 @@ const (
 )
 
 type AccessibleRange struct{ Min, Max, Value, Step float32 }
-
-// AccessibleSelection uses UTF-8 byte offsets in Value, not rune indices.
-// Password fields expose neither Value nor selection offsets.
 type AccessibleSelection struct{ Anchor, Cursor int }
 
-// AccessibilityNode contains only copied data; no widget or callback escapes.
-// Bounds and VisibleBounds use logical window coordinates. Offscreen nodes
-// remain discoverable so focusing a control can scroll it into view.
 type AccessibilityNode struct {
 	ID, Parent                         AccessibleID
 	Children                           []AccessibleID
@@ -102,12 +87,10 @@ type AccessibilityNode struct {
 	Selection                          *AccessibleSelection
 }
 
-// AccessibilityTree is a detached snapshot. Read it on any goroutine after
-// transferring ownership; do not mutate it while another reader is using it.
 type AccessibilityTree struct {
 	Roots   []AccessibleID
 	Focused AccessibleID
-	Nodes   []AccessibilityNode // preorder, including layout groups
+	Nodes   []AccessibilityNode
 }
 
 func (t AccessibilityTree) Node(id AccessibleID) (AccessibilityNode, bool) {
@@ -119,10 +102,6 @@ func (t AccessibilityTree) Node(id AccessibleID) (AccessibilityNode, bool) {
 	return AccessibilityNode{}, false
 }
 
-// AccessibilitySnapshot runs on the UI owner goroutine, normally after
-// BeginFrame so bounds reflect the latest layout. It does not run pending
-// callbacks or trigger layout. With a modal open, only its subtree is exposed.
-// Background callers should request/publish snapshots through Manager.Post.
 func (m *Manager) AccessibilitySnapshot() AccessibilityTree {
 	tree, _ := m.accessibilitySnapshot()
 	return tree
@@ -205,11 +184,12 @@ func (m *Manager) accessibilitySnapshot() (AccessibilityTree, map[AccessibleID]C
 			}
 		}
 	}
-	// Resolve relations against this snapshot, dropping stale/hidden labels.
+
 	indices := make(map[AccessibleID]int, len(tree.Nodes))
 	for i := range tree.Nodes {
 		indices[tree.Nodes[i].ID] = i
 	}
+
 	for i := range tree.Nodes {
 		node := &tree.Nodes[i]
 		info := components[node.ID].UIState().accessibility
@@ -295,10 +275,6 @@ func describeAccessible(c Component) AccessibilityNode {
 	return n
 }
 
-// PerformAccessibilityAction executes on the UI owner goroutine. Actions are
-// checked against the current tree, not a previously published snapshot.
-// Hidden/detached/disabled nodes and nodes outside the top modal are rejected.
-// value is used only by SetValue (text, or a locale-independent slider number).
 func (m *Manager) PerformAccessibilityAction(id AccessibleID, action AccessibilityAction, value string) bool {
 	if action == 0 || action&(action-1) != 0 || !m.Visible() || !m.Interactive() {
 		return false
@@ -311,7 +287,6 @@ func (m *Manager) PerformAccessibilityAction(id AccessibleID, action Accessibili
 	c := components[id]
 	if action == AccessibilityFocus {
 		m.setFocus(c)
-		// FocusLost handlers may have removed/hidden/disabled this target.
 		current := m.AccessibilitySnapshot()
 		now, exists := current.Node(id)
 		if !exists || now.Actions&AccessibilityFocus == 0 {

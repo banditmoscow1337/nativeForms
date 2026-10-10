@@ -8,8 +8,6 @@ import (
 	ui "github.com/banditmoscow1337/nativeForms"
 )
 
-// Renderer rasterizes nativeForms paint commands into a premultiplied RGBA
-// image. It does not create or present an OS window.
 type Renderer struct {
 	atlas  *image.NRGBA
 	scaled []ui.DrawCommand
@@ -17,8 +15,6 @@ type Renderer struct {
 
 func New() *Renderer { return &Renderer{atlas: ui.FontAtlas().(*image.NRGBA)} }
 
-// RenderScaled maps logical UI coordinates to a physical pixel buffer.
-// Pixel dimensions are taken from dst, avoiding rounding gaps on resize.
 func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || frame.Width <= 0 || frame.Height <= 0 {
 		return fmt.Errorf("invalid scaled UI target")
@@ -46,13 +42,10 @@ func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	}
 	err := renderer.Render(ui.Frame{Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
 		Commands: renderer.scaled}, dst)
-	// Keep the backing storage, but do not pin images from a completed frame.
 	clear(renderer.scaled)
 	return err
 }
 
-// Render clears dst and paints a frame. dst must have the frame's dimensions.
-// The same Renderer can be reused, but calls must be serialized.
 func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || dst.Bounds().Min != (image.Point{}) || frame.Width <= 0 || frame.Height <= 0 ||
 		dst.Bounds().Dx() != frame.Width || dst.Bounds().Dy() != frame.Height {
@@ -252,7 +245,6 @@ func (renderer *Renderer) image(dst *image.RGBA, c ui.DrawCommand) {
 
 func clampInt(value, low, high int) int { return min(max(value, low), high) }
 
-// Source pixels and the destination are both premultiplied sRGB RGBA.
 func blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, coverage float32) {
 	factor := clamp(tint.A, 0, 1) * clamp(coverage, 0, 1)
 	alpha := source.a * factor / 255
@@ -341,8 +333,6 @@ func abs(v float32) float32 {
 	return v
 }
 
-// image.RGBA stores premultiplied channels; preserve that representation
-// when blending a tinted atlas mask over the current pixel.
 func blend(dst *image.RGBA, x, y int, tint ui.Color, mask float32) {
 	alpha := clamp(tint.A, 0, 1) * clamp(mask, 0, 1)
 	if alpha <= 0 {

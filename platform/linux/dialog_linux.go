@@ -29,7 +29,7 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 		return "", fmt.Errorf("linux: desktop portal unavailable: %w (%v)", platform.ErrUnsupported, err)
 	}
 	defer b.close()
-	// Subscribe before making the request: a response may precede the method reply.
+
 	if err = b.match("type='signal',sender='org.freedesktop.portal.Desktop',interface='org.freedesktop.portal.Request',member='Response'"); err != nil {
 		return "", err
 	}
@@ -47,7 +47,7 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 		method, title = "SaveFile", "Save file"
 		options["current_name"] = dbValue{"s", name}
 	}
-	// Close the outstanding request if the window closes or a transport fails.
+
 	completed := false
 	defer func() {
 		if !completed {
@@ -147,8 +147,7 @@ func (w *WaylandWindow) fileDialog(name string, save bool) (string, error) {
 	}
 	w.modal = true
 	defer func() { w.modal = false }()
-	// An empty parent is specified by the portal protocol when no exported
-	// xdg-foreign handle is available. The picker still works on native Wayland.
+
 	w.repeatCode = 0
 	if err := w.syncTextInput(false); err != nil {
 		return "", err

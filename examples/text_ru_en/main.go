@@ -1,5 +1,3 @@
-// An offscreen specimen for manual RU/EN text and semantic-tree inspection.
-// Run on the target host; no platform bindings or external font packages.
 package main
 
 import (

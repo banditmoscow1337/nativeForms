@@ -1,7 +1,5 @@
 package nativeforms
 
-// paintChevron uses the same line commands on software and Vulkan backends.
-// Portable fonts do not need arrow glyphs for ComboBox or VirtualTree.
 func paintChevron(canvas *Canvas, bounds Rect, down bool, tint Color) {
 	if bounds.Empty() {
 		return

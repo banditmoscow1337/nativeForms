@@ -93,9 +93,6 @@ var (
 	xkbComments   = regexp.MustCompile(`(?m)//[^\n]*|(?s:/\*.*?\*/)`)
 )
 
-// Compositors supply a resolved keymap: includes and actions are evaluated by
-// the compositor. We consume its effective modifier mask and group, then
-// apply the key's declared XKB type (including virtual modifiers and levels).
 func parseWaylandKeymap(data []byte) waylandSymbols {
 	text := xkbComments.ReplaceAllString(strings.TrimRight(string(data), "\x00"), "")
 	mods := map[string]uint32{"Shift": 1, "Lock": 2, "Control": 4, "Mod1": 8, "Mod2": 16, "Mod3": 32, "Mod4": 64, "Mod5": 128}
@@ -284,7 +281,6 @@ func xkbLevels(text string) [][]uint32 {
 	return levels
 }
 
-// Match the key's braces rather than stopping at a nested action/level block.
 func xkbBlock(text string, open int) string {
 	depth := 0
 	quoted := false

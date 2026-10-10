@@ -23,8 +23,6 @@ const (
 	FilterBilinear
 )
 
-// DrawCommand is an ordered paint operation in logical coordinates.
-// Quad UVs address the shared font atlas; its white texel draws solid shapes.
 type DrawCommand struct {
 	Kind   CommandKind
 	Rect   Rect
@@ -36,7 +34,7 @@ type DrawCommand struct {
 	Width  float32
 	Mask   *image.Alpha
 	Image  *ImageResource
-	Source Rect // image pixel coordinates, not atlas UVs
+	Source Rect
 	Filter ImageFilter
 	Radius float32
 }
@@ -50,7 +48,6 @@ type Canvas struct {
 
 func (canvas *Canvas) Theme() *Theme { return canvas.theme }
 
-// MeasureText uses the same context and specification as TextStyled.
 func (canvas *Canvas) MeasureText(text string, spec FontSpec) Vec2 {
 	if canvas.fonts != nil {
 		return canvas.fonts.Measure(text, spec)
@@ -58,8 +55,6 @@ func (canvas *Canvas) MeasureText(text string, spec FontSpec) Vec2 {
 	return MeasureText(text, spec.Size)
 }
 
-// TextStyled draws text with a context's face, style and physical scale.
-// Without a context it retains the existing global text path.
 func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align TextAlign, tint Color) {
 	if canvas.fonts == nil {
 		canvas.Text(text, bounds, spec.Size, align, tint)
@@ -112,8 +107,6 @@ func (canvas *Canvas) Rect(rect Rect, tint Color) {
 	canvas.quad(rect, Rect{X: uv, Y: uv}, tint)
 }
 
-// RoundedRect records a filled rectangle with circular corners. Its radius is
-// clamped to half the shorter side. The software renderer antialiases edges.
 func (canvas *Canvas) RoundedRect(rect Rect, radius float32, tint Color) {
 	if radius <= 0 {
 		canvas.Rect(rect, tint)
@@ -132,9 +125,6 @@ func (canvas *Canvas) RoundedRect(rect Rect, radius float32, tint Color) {
 	})
 }
 
-// Image draws source pixel coordinates into dest logical coordinates. A zero
-// source rectangle selects the whole image. Tint is straight RGBA and
-// multiplies the image channels and alpha; use opaque white for no tint.
 func (canvas *Canvas) Image(resource *ImageResource, dest, source Rect, tint Color, filter ImageFilter) {
 	if resource == nil || dest.Empty() || tint.A <= 0 || len(canvas.clips) == 0 {
 		return
@@ -149,7 +139,7 @@ func (canvas *Canvas) Image(resource *ImageResource, dest, source Rect, tint Col
 	if visibleSource.Empty() {
 		return
 	}
-	// Preserve the mapping if the requested source extends beyond the image.
+
 	fullDest := dest
 	dest = Rect{
 		X: fullDest.X + (visibleSource.X-source.X)*fullDest.W/source.W,
@@ -186,7 +176,7 @@ func (canvas *Canvas) Line(from, to Vec2, width float32, tint Color) {
 	if clip.Empty() {
 		return
 	}
-	// Preserve strokes whose centerline lies just outside the clip.
+
 	expanded := Rect{X: clip.X - width*0.5, Y: clip.Y - width*0.5, W: clip.W + width, H: clip.H + width}
 	var visible bool
 	from, to, visible = clipLine(from, to, expanded)
@@ -296,16 +286,12 @@ func (canvas *Canvas) quad(rect, uv Rect, tint Color) {
 	}
 }
 
-// Vertex is the format consumed by the optional Vulkan backend.
 type Vertex struct {
 	X, Y       float32
 	U, V       float32
 	R, G, B, A float32
 }
 
-// Tessellate returns atlas-backed geometric and mask vertices in paint order
-// without truncating. Image and rounded-rectangle commands require the software
-// renderer; the Vulkan adapter reports an error for them.
 func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 	dst = dst[:0]
 	for _, c := range commands {

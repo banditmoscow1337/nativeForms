@@ -30,8 +30,6 @@ func textGlue(r rune) bool {
 	return r == '\u00a0' || r == '\u202f' || r == '\u2060' || r == '\ufeff' || r == '\u2011'
 }
 
-// A deliberately small RU/EN subset, not a complete UAX #14 implementation.
-// Never break clusters, explicit glue, after opening or before closing marks.
 func textBreakBlocked(r []rune, at int) bool {
 	if at <= 0 || at >= len(r) {
 		return false
@@ -61,7 +59,7 @@ func textBreakOpportunity(r []rune, at int) bool {
 	if left == '—' || right == '—' {
 		return left != right
 	}
-	// Avoid introducing breaks in negative numbers and common date fragments.
+
 	if left == '-' || left == '‐' || left == '/' {
 		return at > 1 && !(r[at-2] >= '0' && r[at-2] <= '9' && right >= '0' && right <= '9')
 	}
@@ -79,8 +77,6 @@ func fittedTextWidthWith(r []rune, start, end int, size float32, measure func(st
 	return measure(string(r[start:end]), size)
 }
 
-// wrappedLineEnd retains all rune offsets for editors. Trailing breakable
-// spaces do not affect fitting; labels may discard them when emitting lines.
 func wrappedLineEnd(r []rune, start, end int, width, size float32) int {
 	return wrappedLineEndWith(r, start, end, width, size, measureTextLine)
 }
@@ -104,8 +100,7 @@ func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure f
 			return at
 		}
 	}
-	// Keep an explicitly glued first word together, even if it overflows. This
-	// preserves amounts such as "10\u00a0000" and nonbreaking compound names.
+
 	wordEnd, glued := start, false
 	for wordEnd < end {
 		glued = glued || textGlue(r[wordEnd])
@@ -117,7 +112,7 @@ func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure f
 	if glued {
 		return wordEnd
 	}
-	// Emergency wrapping of a long word is allowed only at safe cluster edges.
+
 	for at := fit; at > start; at = previousGrapheme(r, at) {
 		if !textBreakBlocked(r[:end], at) && !wrappingSpace(r[at]) {
 			return at
@@ -131,10 +126,6 @@ func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure f
 	return end
 }
 
-// WrapText wraps Russian/English prose at spaces, hyphens, slashes, em dashes
-// and zero-width spaces. Explicit glue and common paired punctuation are kept
-// together. Long words may break at grapheme boundaries; no hyphens are added.
-// CRLF/CR/NEL/LS/PS become LF in this display string. Editor text is untouched.
 func WrapText(text string, width, size float32) string {
 	return wrapTextWith(text, width, size, measureTextLine)
 }

@@ -9,8 +9,6 @@ import (
 	"unsafe"
 )
 
-// SetClipboardText copies UTF-8 text into the system clipboard. Call this
-// from the Run goroutine (for example a widget callback or Options.OnReady).
 func (w *Window) SetClipboardText(value string) error {
 	hwnd := w.hwnd.Load()
 	if hwnd == 0 {
@@ -46,11 +44,10 @@ func (w *Window) SetClipboardText(value string) error {
 	if call(win.setClipboardData, cfUnicodeText, handle) == 0 {
 		return fmt.Errorf("windows: SetClipboardData failed")
 	}
-	owned = false // ownership transferred to Windows
+	owned = false
 	return nil
 }
 
-// ClipboardText reads Unicode text from the system clipboard on the Run goroutine.
 func (w *Window) ClipboardText() (string, error) {
 	hwnd := w.hwnd.Load()
 	if hwnd == 0 {

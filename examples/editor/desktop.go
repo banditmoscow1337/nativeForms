@@ -13,8 +13,6 @@ type DesktopHost interface {
 	Capabilities() platform.Capabilities
 }
 
-// Desktop adds native file pickers and a visible file-drop result to the editor.
-// Construct it from OnReady, once the host has discovered its capabilities.
 func Desktop(manager *ui.Manager, host DesktopHost) (ui.Component, func([]string)) {
 	root := ui.NewStack(ui.Vertical, 4)
 	tools := ui.NewStack(ui.Horizontal, 8)

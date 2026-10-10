@@ -1,7 +1,5 @@
 package nativeforms
 
-// ListModel is indexed for viewport access. ID must remain stable across
-// inserts, removals and sorting, and should be unique within this model.
 type ListModel interface {
 	Len() int
 	ID(index int) string
@@ -142,7 +140,6 @@ func (v *VirtualList) Handle(e Event) bool {
 	return v.State.Handle(e)
 }
 
-// TableModel owns its data. Implementations may load cells lazily.
 type TableModel interface {
 	Len() int
 	ID(row int) string
@@ -291,8 +288,6 @@ func (v *VirtualTable) Handle(e Event) bool {
 	return v.State.Handle(e)
 }
 
-// TreeModel provides stable node IDs and children by index. The tree flattens
-// expanded nodes on layout; painting and hit testing only visit viewport rows.
 type TreeModel interface {
 	Roots() int
 	Root(index int) string

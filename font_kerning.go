@@ -1,12 +1,9 @@
 package nativeforms
 
-// atlasKerning implements horizontal OpenType 'kern' format 0. Unsupported or
-// malformed subtables are ignored, so a damaged optional table cannot prevent
-// a valid outline font from being used. No kerning crosses font boundaries.
 func (f *TrueTypeFace) atlasKerning(left, right uint16) float32 {
 	table := f.tables["kern"]
 	if len(table) < 4 || u16(table, 0) != 0 {
-		return 0 // Apple fixed-point version 1 is a different format.
+		return 0
 	}
 	value := int32(0)
 	key := uint32(left)<<16 | uint32(right)
@@ -20,7 +17,7 @@ func (f *TrueTypeFace) atlasKerning(left, right uint16) float32 {
 		at += length
 		coverage := u16(sub, 4)
 		if u16(sub, 0) != 0 || coverage&0xfff7 != 1 || len(sub) < 14 {
-			continue // format 0, horizontal, no minimum/cross-stream/reserved bits
+			continue
 		}
 		count := int(u16(sub, 6))
 		if count > (len(sub)-14)/6 {

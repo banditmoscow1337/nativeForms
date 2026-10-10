@@ -108,7 +108,7 @@ func (i *linuxIME) sync() error {
 		if err := i.send("SetCursorLocation", dbValue{"i", int32(r.X) + int32(i.screenX)}, dbValue{"i", int32(r.Y) + int32(i.screenY)}, dbValue{"i", int32(max(float32(1), r.W))}, dbValue{"i", int32(max(float32(1), r.H))}); err != nil {
 			return err
 		}
-		// Send bounded surrounding text; IBus offsets are Unicode code points.
+
 		text, c, a, valid := surroundingText(s, 16000)
 		if valid {
 			attrs := dbValue{"(sa{sv}av)", []any{"IBusAttrList", []any{}, []any{}}}
@@ -213,8 +213,6 @@ func (i *linuxIME) signal(m dbMessage) {
 	}
 }
 
-// Follow IBus' standard address-file convention when it uses a private bus.
-// The file is data, never sourced as a shell script.
 func ibusAddress() string {
 	if address := os.Getenv("IBUS_ADDRESS"); address != "" {
 		return address
@@ -243,7 +241,7 @@ func ibusAddress() string {
 			if wayland := os.Getenv("WAYLAND_DISPLAY"); wayland != "" {
 				host, display = "unix", wayland
 			}
-			// Only a single file for this display is considered.
+
 			if !strings.ContainsAny(host+display, "/\\") {
 				path = filepath.Join(config, "ibus", "bus", machine+"-"+host+"-"+display)
 			}

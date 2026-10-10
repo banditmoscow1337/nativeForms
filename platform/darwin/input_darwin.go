@@ -33,8 +33,6 @@ func registerView() error {
 			if w == nil || w.representation == 0 {
 				return
 			}
-			// The framebuffer uses top-left coordinates. Draw its pixels
-			// directly so an image view cannot reinterpret their direction.
 			bounds := objc.Send[rect](self, selector("bounds"))
 			objc.Send[bool](w.representation, selector("drawInRect:fromRect:operation:fraction:respectFlipped:hints:"),
 				bounds, rect{}, uint64(1), float64(1), true, objc.ID(0))
@@ -314,8 +312,6 @@ func (w *Window) nativeReplacement(r nsRange) {
 	if !ok || s.Password {
 		return
 	}
-	// A replacement referring to the virtual marked range replaces the original
-	// selection when committed; no intermediate preedit enters undo history.
 	base := w.committedSelection()
 	if w.marked != "" && r.Location >= base.Location && r.Location <= base.Location+utf16Length(w.marked) {
 		return

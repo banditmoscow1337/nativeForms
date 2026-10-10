@@ -1,7 +1,5 @@
 package nativeforms
 
-// ScrollPanel clips one child and can scroll in either axis. Offset retains
-// the previous vertical API; OffsetX is the horizontal position.
 type ScrollPanel struct {
 	State
 	Content               Component
@@ -66,8 +64,6 @@ func (p *ScrollPanel) Arrange(r Rect) {
 	p.Content.Arrange(Rect{X: r.X - p.OffsetX, Y: r.Y - p.Offset, W: size.X, H: size.Y})
 }
 
-// ScrollBy returns the unused delta, allowing a nested scroll panel's parent
-// to consume movement after this viewport reaches its edge.
 func (p *ScrollPanel) ScrollBy(dx, dy float32) Vec2 {
 	beforeX, beforeY := p.OffsetX, p.Offset
 	p.OffsetX = clampFloat32(p.OffsetX+dx, 0, maxFloat32(0, p.width-p.rect.W))
@@ -112,7 +108,6 @@ func (p *ScrollPanel) ScrollIntoView(target Component) bool {
 	return beforeX != p.OffsetX || beforeY != p.Offset
 }
 
-// PaintOverlay runs after its content so the scrollbars remain visible.
 func (p *ScrollPanel) PaintOverlay(c *Canvas) {
 	const thickness float32 = 8
 	if p.height > p.rect.H && p.rect.H > 0 {

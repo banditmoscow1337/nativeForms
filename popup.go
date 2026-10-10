@@ -1,6 +1,5 @@
 package nativeforms
 
-// PopupID identifies a popup within one Manager. IDs are not reused.
 type PopupID uint64
 
 type popupEntry struct {
@@ -12,10 +11,6 @@ type popupEntry struct {
 	passive  bool
 }
 
-// OpenPopup displays content above the ordinary tree. A modal popup confines
-// focus and pointer input to itself until it is closed. A zero width or height
-// uses the content's measured size. Menus opened this way close themselves
-// when an item is selected.
 func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) PopupID {
 	if content == nil {
 		return 0
@@ -83,7 +78,6 @@ func (manager *Manager) CloseTopPopup() bool {
 	return manager.ClosePopup(manager.popups[len(manager.popups)-1].id)
 }
 
-// ShowTooltip paints a noninteractive overlay. It never changes keyboard focus.
 func (manager *Manager) ShowTooltip(text string, bounds Rect) PopupID {
 	label := NewLabel(text)
 	label.SetMargin(Symmetric(8, 4))
@@ -101,7 +95,6 @@ func (manager *Manager) ShowTooltip(text string, bounds Rect) PopupID {
 	return id
 }
 
-// OpenDialog centers a modal component in the last painted viewport.
 func (manager *Manager) OpenDialog(content Component, width, height float32) PopupID {
 	w, h := float32(manager.layoutWidth), float32(manager.layoutHeight)
 	if width <= 0 {

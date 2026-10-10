@@ -17,8 +17,6 @@ type gridItem struct {
 	row, col, rowSpan, colSpan int
 }
 
-// Grid places components into explicit tracks. Auto tracks use intrinsic
-// measure; Star tracks divide remaining space according to Value.
 type Grid struct {
 	State
 	Columns, Rows     []Track
@@ -55,7 +53,6 @@ func (g *Grid) AddAt(child Component, row, col, rowSpan, colSpan int) {
 	g.State.Add(child)
 }
 
-// Remove also discards the placement record.
 func (g *Grid) Remove(child Component) bool {
 	if !g.State.Remove(child) {
 		return false
@@ -188,7 +185,7 @@ func (g *Grid) Measure(c Constraints) Vec2 {
 	if c.HasMaxX() {
 		distributeTracks(g.Columns, cols, maxFloat32(0, c.Max.X-g.ColumnGap*float32(max(0, len(cols)-1))))
 	}
-	// Wrapping labels and editors need a second measure at their assigned width.
+
 	for _, item := range g.items {
 		if !item.child.UIState().Visible() || !sameComponent(item.child.UIState().parent, g) {
 			continue
@@ -220,7 +217,7 @@ func (g *Grid) Arrange(bounds Rect) {
 	g.rect = bounds
 	cols, rows := g.intrinsic()
 	distributeTracks(g.Columns, cols, maxFloat32(0, bounds.W-g.ColumnGap*float32(max(0, len(cols)-1))))
-	// Recompute row heights after the final column widths are known.
+
 	for _, item := range g.items {
 		if !item.child.UIState().Visible() || !sameComponent(item.child.UIState().parent, g) {
 			continue
@@ -268,7 +265,6 @@ func (g *Grid) Arrange(bounds Rect) {
 	}
 }
 
-// SplitPane arranges two children around a draggable divider.
 type SplitPane struct {
 	State
 	First, Second       Component

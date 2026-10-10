@@ -10,7 +10,6 @@ import (
 	"unsafe"
 )
 
-// openFilename mirrors the 64-bit OPENFILENAMEW structure from commdlg.h.
 type openFilename struct {
 	Size                                                   uint32
 	Owner, Instance, Filter, CustomFilter                  uintptr
@@ -26,11 +25,8 @@ type openFilename struct {
 	ReservedFlags, FlagsEx                                 uint32
 }
 
-// OpenFile shows a native file picker. Call it from the Run goroutine.
-// An empty path with a nil error means the user cancelled.
 func (w *Window) OpenFile() (string, error) { return w.fileDialog(false, "") }
 
-// SaveFile shows a native save picker with an optional initial file name.
 func (w *Window) SaveFile(defaultName string) (string, error) {
 	return w.fileDialog(true, defaultName)
 }

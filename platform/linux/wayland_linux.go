@@ -38,8 +38,6 @@ func waylandPath() (string, error) {
 	return path, nil
 }
 
-// ProbeWayland exchanges wl_display.get_registry and sync messages directly
-// with the compositor. It never loads libwayland-client.
 func ProbeWayland() ([]WaylandGlobal, error) {
 	path, err := waylandPath()
 	if err != nil {
@@ -51,7 +49,6 @@ func ProbeWayland() ([]WaylandGlobal, error) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
-	// wl_display@1.get_registry(new_id=2), then sync(new_id=3).
 	request := make([]byte, 24)
 	binary.LittleEndian.PutUint32(request[0:], 1)
 	binary.LittleEndian.PutUint32(request[4:], (12<<16)|1)

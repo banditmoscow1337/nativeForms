@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-// TextField and NewTextArea share the same editor, selection and undo model.
-// Text and Cursor remain exported for source compatibility; prefer SetText and
-// Editor methods for mutations. ReadOnly permits selecting and copying.
 type TextField struct {
 	State
 	Text, Placeholder             string
@@ -44,7 +41,6 @@ func NewTextArea(text string, onChange func(string)) *TextField {
 
 func (f *TextField) Editor() *TextEditor { f.syncExternal(); return f.editor }
 
-// CommitEditor publishes changes made through Editor to the widget and layout.
 func (f *TextField) CommitEditor() {
 	if f.editor != nil && f.editor.Text != f.Text {
 		f.changed()
@@ -179,7 +175,6 @@ func maskPasswordRunes(r []rune, preserveClusters bool) {
 		}
 		end := nextGrapheme(r, i)
 		r[i] = '*'
-		// Invisible combining grapheme joiners preserve original rune offsets.
 		for j := i + 1; j < end; j++ {
 			r[j] = '\u034f'
 		}
@@ -278,7 +273,6 @@ func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeigh
 	return Vec2{X: inner.X, Y: inner.Y}
 }
 
-// CaretRect is in logical window coordinates for IME candidate placement.
 func (f *TextField) CaretRect() Rect {
 	inner, r, lines, h := f.compositionGeometry()
 	p := f.caretPoint(inner, r, lines, h)
@@ -639,11 +633,8 @@ func absFloat32(x float32) float32 {
 	return x
 }
 
-// BlinkCaret is driven by the host's next-frame timer.
 func (f *TextField) BlinkCaret() { f.caretVisible = !f.caretVisible; f.invalidatePaint() }
 
-// Preedit participates in layout as a virtual replacement. Committed text and
-// undo history remain untouched until the input method commits.
 func (f *TextField) compositionGeometry() (Rect, []rune, []textLine, float32) {
 	inner, r, lines, h := f.textGeometry()
 	if f.editor.Preedit == "" {

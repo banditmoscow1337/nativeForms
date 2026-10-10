@@ -2,17 +2,15 @@ package nativeforms
 
 import "unicode"
 
-// TextEditor stores rune offsets at grapheme boundaries. The selection is
-// the half-open interval between Anchor and Caret. Preedit is kept separate
-// from committed text, so an IME update never enters undo history.
+
 type TextEditor struct {
 	Text                        string
 	Caret, Anchor               int
 	Preedit                     string
 	PreeditCaret, PreeditAnchor int
 	undo, redo                  []editSnapshot
-	Limit                       int // maximum undo snapshots; zero uses 128
-	UndoByteLimit               int // combined snapshot text budget; zero uses 8 MiB
+	Limit                       int
+	UndoByteLimit               int
 }
 
 type editSnapshot struct {
@@ -199,10 +197,6 @@ func (e *TextEditor) CommitComposition(value string) bool {
 	return e.Replace(value)
 }
 
-// Boundaries implement the common UAX #29 extended-cluster rules (CR/LF,
-// combining marks, spacing marks, Hangul, ZWJ emoji and flag pairs). The
-// standard library has no Grapheme_Cluster_Break property table, so rare
-// Indic conjunct and prepend cases remain outside this implementation.
 func previousGrapheme(r []rune, at int) int {
 	at = min(max(at, 0), len(r))
 	for i := at - 1; i >= 0; i-- {

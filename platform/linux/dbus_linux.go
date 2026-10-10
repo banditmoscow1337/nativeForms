@@ -2,8 +2,6 @@
 
 package linux
 
-// Small D-Bus client for desktop services. It uses EXTERNAL authentication on
-// local Unix sockets and does not negotiate file descriptor passing.
 import (
 	"bufio"
 	"encoding/binary"

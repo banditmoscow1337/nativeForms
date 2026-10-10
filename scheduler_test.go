@@ -80,7 +80,7 @@ func TestNotificationStartsAtNotifyAfterLongIdle(t *testing.T) {
 	now = now.Add(10 * time.Second)
 	manager.Notify("fresh", 2500*time.Millisecond)
 	scheduledAt(t, manager, now.Add(2500*time.Millisecond))
-	manager.BeginFrame(320, 240, 10) // The long idle before Notify must not consume its lifetime.
+	manager.BeginFrame(320, 240, 10)
 	if len(manager.notifications) != 1 || len(manager.Frame().Commands) == 0 {
 		t.Fatal("new notification disappeared on its first frame")
 	}

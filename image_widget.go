@@ -8,7 +8,6 @@ const (
 	ImageStretch
 )
 
-// Image displays an ImageResource inside its layout bounds.
 type Image struct {
 	State
 	Source *ImageResource

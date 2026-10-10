@@ -11,8 +11,6 @@ type notification struct {
 	deadline time.Time
 }
 
-// Frame is valid until the next BeginFrame call. Consumers must not modify
-// Commands or retain its backing storage beyond that point.
 type Frame struct {
 	Width, Height int
 	Commands      []DrawCommand
@@ -57,7 +55,6 @@ type Manager struct {
 	layoutHeight int
 }
 
-// New creates a UI tree without opening a window or initializing Vulkan.
 func New() *Manager {
 	return &Manager{
 		visible: true, theme: DefaultTheme(),
@@ -167,8 +164,6 @@ func (manager *Manager) Theme() Theme {
 	return manager.theme
 }
 
-// SetFontContext selects managed TrueType shaping and dynamic glyph masks for
-// this manager. Passing nil restores the legacy global atlas/native shaper.
 func (manager *Manager) SetFontContext(ctx *FontContext) {
 	manager.mu.Lock()
 	manager.fonts = ctx
@@ -213,7 +208,6 @@ func (manager *Manager) Notifyf(format string, args ...any) {
 	manager.Notify(fmt.Sprintf(format, args...))
 }
 
-// ShowMessage retains the previous notification helper during migration.
 func (manager *Manager) ShowMessage(format string, args ...any) {
 	if len(args) == 1 {
 		var seconds float64
@@ -243,8 +237,6 @@ func (manager *Manager) ClearNotifications() {
 	manager.InvalidatePaint()
 }
 
-// BeginFrame records the current UI frame. deltaSeconds is retained for game
-// integrations; caret and notification deadlines follow monotonic wall time.
 func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.ProcessPending()
 	now := manager.now()
@@ -267,8 +259,6 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.mu.Unlock()
 
 	manager.frame.Width, manager.frame.Height = width, height
-	// The backing array is reused, but discarded commands must not retain
-	// immutable image snapshots from earlier frames.
 	clear(manager.frame.Commands)
 	manager.frame.Commands = manager.frame.Commands[:0]
 	if !visible || width <= 0 || height <= 0 {
@@ -303,7 +293,6 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 
 func (manager *Manager) Frame() Frame { return manager.frame }
 
-// InvalidateLayout requests measurement, arrangement, and repaint.
 func (manager *Manager) InvalidateLayout() {
 	manager.mu.Lock()
 	manager.dirtyLayout, manager.dirtyPaint = true, true
@@ -335,9 +324,6 @@ func (manager *Manager) NeedsFrame() bool {
 	return scheduled && !manager.now().Before(deadline)
 }
 
-// NextFrameDeadline reports the earliest scheduled UI frame. The bool is false
-// when no timer is active (no notifications and no focused editor).
-// Hosts should also call NeedsFrame after a wait, even when it timed out.
 func (manager *Manager) NextFrameDeadline() (time.Time, bool) {
 	manager.mu.RLock()
 	visible := manager.visible
@@ -362,8 +348,6 @@ func (manager *Manager) NextFrameDeadline() (time.Time, bool) {
 	return deadline, !deadline.IsZero()
 }
 
-// NextFrameAfter is kept for existing hosts. Use NextFrameDeadline to
-// distinguish an elapsed deadline from the absence of a timer.
 func (manager *Manager) NextFrameAfter() time.Duration {
 	deadline, scheduled := manager.NextFrameDeadline()
 	if !scheduled {
@@ -372,22 +356,16 @@ func (manager *Manager) NextFrameAfter() time.Duration {
 	return max(time.Duration(0), deadline.Sub(manager.now()))
 }
 
-// SetWakeHandler installs a thread-safe signal to wake the host event loop.
-// The handler must only signal; it must not mutate the UI tree.
 func (manager *Manager) SetWakeHandler(wake func()) {
 	manager.mu.Lock()
 	manager.wake = wake
 	manager.mu.Unlock()
 }
 
-// SetClipboardHandlers connects focused editors to the host clipboard. Both
-// functions are called on the UI owner goroutine; pass nil to detach a host.
 func (manager *Manager) SetClipboardHandlers(read func() (string, error), write func(string) error) {
 	manager.clipboardRead, manager.clipboardWrite = read, write
 }
 
-// Post queues a mutation from another goroutine. ProcessPending runs it on
-// the owner goroutine before dispatch or painting.
 func (manager *Manager) Post(fn func()) {
 	if fn == nil {
 		return
@@ -483,16 +461,12 @@ func (manager *Manager) HandleEvent(event Event) bool {
 	return handled || (visible && interactive && root != nil && consumeUnhandled)
 }
 
-// SetConsumeUnhandledInput preserves the former game-overlay policy when
-// enabled. Desktop hosts normally use the default false value.
 func (manager *Manager) SetConsumeUnhandledInput(consume bool) {
 	manager.mu.Lock()
 	manager.consumeUnhandled = consume
 	manager.mu.Unlock()
 }
 
-// SetGameNavigation enables arrow/WASD focus movement for game menus.
-// Tab and Shift+Tab remain available in either mode.
 func (manager *Manager) SetGameNavigation(enabled bool) {
 	manager.mu.Lock()
 	manager.gameNavigation = enabled
@@ -558,8 +532,6 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 		return dispatchEvent(manager.focused, event)
 	case KeyDown, KeyUp:
 		if event.Type == KeyDown && event.Key == KeyEscape {
-			// The first Escape cancels an active IME preedit. A subsequent
-			// Escape may close the popup after the editor has settled.
 			if field, ok := manager.focused.(*TextField); ok && field.composing && dispatchEvent(field, event) {
 				return true
 			}
@@ -786,8 +758,6 @@ func (manager *Manager) ClearInteraction() {
 	manager.InvalidatePaint()
 }
 
-// clearSubtreeInteraction is called by State before a child leaves the tree.
-// All tree mutations and input delivery are serialized on the UI owner.
 func (manager *Manager) clearSubtreeInteraction(root *State) {
 	inSubtree := func(component Component) bool {
 		if component == nil {

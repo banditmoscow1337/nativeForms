@@ -1,6 +1,5 @@
 package nativeforms
 
-// Checkbox is a compact boolean editor. Its callback runs on the UI owner goroutine.
 type Checkbox struct {
 	State
 	Text     string
@@ -58,7 +57,6 @@ func (c *Checkbox) Handle(e Event) bool {
 	return c.State.Handle(e)
 }
 
-// RadioOption has an application-owned stable ID.
 type RadioOption struct{ ID, Label string }
 
 type RadioGroup struct {
@@ -155,7 +153,6 @@ type MenuItem struct {
 	Action    func()
 }
 
-// Menu is a popup body with pointer and keyboard selection.
 type Menu struct {
 	State
 	Items    []MenuItem
@@ -499,7 +496,6 @@ func (t *Tabs) Handle(e Event) bool {
 	return t.State.Handle(e)
 }
 
-// NewDialog returns content that can be passed to Manager.OpenDialog.
 func NewDialog(title string, body Component, actions ...*Button) *Panel {
 	p := NewStack(Vertical, 12)
 	p.SetAccessibility(AccessibilityInfo{Role: RoleDialog, Name: title})

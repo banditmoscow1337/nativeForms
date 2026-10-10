@@ -30,8 +30,6 @@ type X11Options struct {
 	OnFilesDropped func([]string)
 }
 
-// X11Window speaks the core X11 protocol over a Unix socket, without Xlib.
-// The caller owns its Manager and must invoke Run on the UI goroutine.
 type X11Window struct {
 	manager                                                       *ui.Manager
 	options                                                       X11Options
@@ -122,7 +120,7 @@ func x11Authority(display string) ([]byte, []byte) {
 	if err != nil {
 		return nil, nil
 	}
-	// Xauthority uses big-endian lengths, independently of the X11 wire order.
+
 	for len(data) >= 2 {
 		family := binary.BigEndian.Uint16(data[:2])
 		data = data[2:]
@@ -349,7 +347,6 @@ func (w *X11Window) createWindow() error {
 	le.PutUint16(request[18:], uint16(w.height))
 	le.PutUint16(request[22:], 1)
 	le.PutUint32(request[28:], 1<<11)
-	// Key, button, motion, leave, expose, structure and focus events.
 	le.PutUint32(request[32:], 1|2|4|8|32|64|1<<15|1<<17|1<<21|1<<22)
 	if err = w.send(request); err != nil {
 		return err
@@ -528,7 +525,7 @@ func (w *X11Window) Run() error {
 		if next, scheduled := w.manager.NextFrameDeadline(); w.width > 0 && w.height > 0 && scheduled && next.Before(deadline) {
 			deadline = next
 		}
-		// A callback may have queued work before the socket read begins.
+
 		w.manager.ProcessPending()
 		if w.width > 0 && w.height > 0 && w.manager.NeedsFrame() {
 			continue
@@ -548,7 +545,6 @@ func (w *X11Window) Run() error {
 	return nil
 }
 
-// Keep partial packets across timer expiry and wakeups.
 func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
 	_ = w.conn.SetReadDeadline(deadline)
 	for w.have < len(w.incoming) {

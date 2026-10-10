@@ -34,8 +34,6 @@ var selectedFace *TrueTypeFace
 var fallbackFaces []*TrueTypeFace
 var atlasReady bool
 
-// SetFontData installs a TrueType font before the first measurement or frame.
-// The bytes are copied so callers can release their buffer immediately.
 func SetFontData(data []byte) error {
 	face, err := ParseTrueType(append([]byte(nil), data...))
 	if err != nil {
@@ -50,11 +48,6 @@ func SetFontData(data []byte) error {
 	return nil
 }
 
-// SetFallbackFontData replaces the ordered portable fallback chain before the
-// first measurement/frame. Buffers are copied; a failed call changes nothing.
-// SetFontData is the primary face, followed by these fonts. When no fonts are
-// configured, known system fonts are tried instead. The final fallback is ASCII.
-// Native TextShapers, such as Core Text, manage their own fonts.
 func SetFallbackFontData(fonts ...[]byte) error {
 	faces := make([]*TrueTypeFace, 0, len(fonts))
 	for i, data := range fonts {
@@ -73,8 +66,6 @@ func SetFallbackFontData(fonts ...[]byte) error {
 	return nil
 }
 
-// FontAtlas is shared by the software and Vulkan renderers. It also
-// initializes the glyph metrics used by MeasureText.
 func FontAtlas() image.Image {
 	atlasOnce.Do(func() {
 		fontMu.Lock()
@@ -258,7 +249,7 @@ func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 
 func glyphForRune(character rune) glyphInfo {
 	FontAtlas()
-	// Format controls have no ink/advance, including inside a shaped caret run.
+	
 	switch character {
 	case '\r', '\n', '\u0085', '\u2028', '\u2029', '\u00ad', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff':
 		return glyphInfo{}

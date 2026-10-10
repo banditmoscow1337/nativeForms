@@ -69,9 +69,8 @@ type Event struct {
 	Scroll Vec2
 	Mods   int
 	Rune   rune
-	Text   string // IME preedit or committed result
+	Text   string
 	Clicks int    // 1: caret, 2: word, 3: line
-	// Composition offsets are rune boundaries within Text; -1 hides the caret.
 	CompositionCursor, CompositionAnchor int
 	CompositionSelection                 bool
 }

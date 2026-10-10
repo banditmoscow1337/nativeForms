@@ -43,9 +43,6 @@ type coreTextShaper struct {
 	contextRelease func(uintptr)
 }
 
-// EnableCoreText installs Apple's shaping and fallback fonts for nativeForms.
-// Run calls this automatically. Call it before creating trees if measuring
-// text earlier. No Core Text object escapes the shaper's locked call.
 func EnableCoreText() error {
 	if err := loadAppKit(); err != nil {
 		return err
@@ -152,7 +149,7 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 		var pin runtime.Pinner
 		pin.Pin(&pixels[0])
 		defer pin.Unpin()
-		context := s.bitmap(unsafe.Pointer(&pixels[0]), uintptr(width), uintptr(height), 8, uintptr(width), 0, 7) // kCGImageAlphaOnly
+		context := s.bitmap(unsafe.Pointer(&pixels[0]), uintptr(width), uintptr(height), 8, uintptr(width), 0, 7)
 		if context == 0 {
 			return ui.ShapedText{}, false
 		}
@@ -180,17 +177,8 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 	return result, true
 }
 
-// Core Text's bitmap is upside down and mirrored relative to the mask
-// coordinates used by the software renderer. Convert both axes together;
-// the line's image bounds and caret positions stay in their original space.
 func coreTextMask(pixels []byte, width, height int) *image.Alpha {
 	mask := image.NewAlpha(image.Rect(0, 0, width, height))
-	for y := 0; y < height; y++ {
-		src := pixels[(height-1-y)*width : (height-y)*width]
-		dst := mask.Pix[y*mask.Stride : y*mask.Stride+width]
-		for x := range dst {
-			dst[x] = src[width-1-x]
-		}
-	}
+	copy(mask.Pix, pixels)
 	return mask
 }

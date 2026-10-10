@@ -10,7 +10,7 @@ import (
 
 func TestManagedFontMaskThroughSoftware(t *testing.T) {
 	manager := ui.New()
-	manager.SetFontContext(ui.NewFontContext()) // embedded ASCII: no installed fonts needed
+	manager.SetFontContext(ui.NewFontContext())
 	label := ui.NewLabel("A")
 	label.Font = ui.FontSpec{Size: 16, Scale: 2}
 	label.Color = ui.RGBA(255, 255, 255, 255)

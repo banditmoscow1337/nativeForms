@@ -10,30 +10,24 @@ import (
 	"unicode"
 )
 
-// FontSpec selects a font for one text run. Size is in logical pixels; Scale
-// converts them to physical pixels when rasterizing (zero means 1). Language
-// is a BCP 47 hint reserved for native shapers. The portable path supports
-// left-to-right Russian/English text, not full bidirectional shaping.
+
 type FontSpec struct {
 	Family   string
-	Weight   int // 400 is regular; 700 is bold
+	Weight   int
 	Italic   bool
 	Size     float32
 	Scale    float32
 	Language string
 }
 
-// PositionedGlyph is a physical mask placed in logical line coordinates.
 type PositionedGlyph struct {
 	Mask  *image.Alpha
-	X, Y  float32 // relative to the line box
+	X, Y  float32
 	Scale float32
 	Face  int
 	ID    uint16
 }
 
-// TextLayout is one immutable line of text. Carets are indexed by rune
-// boundaries; the interior of a grapheme cluster shares its leading edge.
 type TextLayout struct {
 	Advance, Ascent, Descent, LineGap float32
 	Carets                            []float32
@@ -66,10 +60,6 @@ type cachedGlyph struct {
 
 const defaultGlyphCacheBytes = 8 << 20
 
-// FontContext owns faces and a bounded cache of physical glyph masks. It is
-// safe to share across managers; registration and layout are serialized.
-// Existing global SetFontData/SetTextShaper APIs remain available to managers
-// that do not opt into a context.
 type FontContext struct {
 	mu           sync.Mutex
 	faces        []registeredFace
@@ -82,16 +72,12 @@ func NewFontContext() *FontContext {
 	return &FontContext{cache: make(map[glyphKey]*list.Element), limit: defaultGlyphCacheBytes}
 }
 
-// NewSystemFontContext loads installed TrueType fallback faces where present.
-// Register application fonts explicitly for reproducible appearance.
 func NewSystemFontContext() *FontContext {
 	ctx := NewFontContext()
 	ctx.AddSystemFallbacks()
 	return ctx
 }
 
-// AddSystemFallbacks appends known local TrueType fonts after application
-// fonts. It may add no faces on a minimal installation.
 func (ctx *FontContext) AddSystemFallbacks() {
 	if ctx == nil {
 		return
@@ -103,8 +89,6 @@ func (ctx *FontContext) AddSystemFallbacks() {
 	ctx.mu.Unlock()
 }
 
-// AddFont copies and validates a quadratic TrueType font. Registration order
-// determines the fallback order after the requested family and style.
 func (ctx *FontContext) AddFont(family string, weight int, italic bool, data []byte) error {
 	if ctx == nil {
 		return fmt.Errorf("nil font context")
@@ -122,9 +106,6 @@ func (ctx *FontContext) AddFont(family string, weight int, italic bool, data []b
 	return nil
 }
 
-// SetCacheLimit bounds cached mask bytes. In-flight frames retain their own
-// immutable mask pointers and stay valid when an entry is evicted. Zero
-// disables caching; the default is eight MiB per context.
 func (ctx *FontContext) SetCacheLimit(bytes int) {
 	if ctx == nil {
 		return
@@ -184,7 +165,7 @@ func (ctx *FontContext) orderedFaces(spec FontSpec) []int {
 			order = append(order, i)
 		}
 	}
-	// Match weight/style inside a family before trying other families.
+
 	for i := 1; i < len(order); i++ {
 		j := i
 		for j > 0 && faceDistance(ctx.faces[order[j]], spec) < faceDistance(ctx.faces[order[j-1]], spec) {
@@ -239,8 +220,7 @@ func invisibleRune(r rune) bool {
 
 func (ctx *FontContext) maskFor(index int, id uint16, spec FontSpec) (*image.Alpha, Vec2) {
 	face := ctx.faces[index]
-	// Quantize to a quarter physical pixel to keep the cache finite across
-	// fractional display scales while preserving a close raster size.
+
 	physical := max(1, int(math.Round(float64(spec.Size*spec.Scale*4))))
 	bolder := 0
 	if spec.Weight >= 600 && face.weight < 600 {
@@ -287,9 +267,6 @@ func (ctx *FontContext) fallbackMaskFor(character rune, spec FontSpec) (*image.A
 	return mask, offset
 }
 
-// Layout uses the same glyph positions for painting, measurement and hit
-// testing. It positions ordinary combining accents over their base; common
-// decomposed Cyrillic letters use the precomposed glyph when available.
 func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 	spec := normalFontSpec(request)
 	r := []rune(text)
@@ -326,7 +303,7 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 	if len(order) == 0 {
 		line.LineGap = spec.Size * 0.1
 	}
-	// First compute pen positions, then apply the final baseline to each mask.
+
 	var priorFace = -1
 	var priorID uint16
 	var priorAdvance float32
@@ -343,7 +320,6 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 		index, ids, ok := ctx.faceFor(cluster, order)
 		markFaces := make([]int, len(cluster))
 		if !ok {
-			// Keep the base even when a separate fallback supplies the marks.
 			if len(cluster) > 1 {
 				var base []uint16
 				index, base, ok = ctx.faceFor(cluster[:1], order)
@@ -372,7 +348,6 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 			line.Carets[i] = line.Advance
 		}
 		if !ok {
-			// An embedded ASCII last resort makes missing glyphs visible.
 			character := r[at]
 			if character > 126 || character < 32 {
 				character = '?'
@@ -428,7 +403,6 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 			x := line.Advance + offset.X/spec.Scale
 			y := offset.Y / spec.Scale
 			if i > 0 {
-				// Center accents over the base advance, above the cap height.
 				x += (baseAdvance-float32(mask.Bounds().Dx())/spec.Scale)*0.5 - offset.X/spec.Scale
 				y = maxFloat32(-line.Ascent, minFloat32(y, -spec.Size*0.75-float32(mask.Bounds().Dy())/spec.Scale))
 			}
@@ -515,7 +489,6 @@ func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 	return Vec2{X: maxWidth, Y: height}
 }
 
-// Ellipsize retains grapheme boundaries and fits one display line in width.
 func (ctx *FontContext) Ellipsize(text string, width float32, spec FontSpec) string {
 	ellipsis := "…"
 	if glyphs := ctx.Layout(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {

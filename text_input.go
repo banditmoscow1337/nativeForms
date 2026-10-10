@@ -5,14 +5,11 @@ import (
 	"unicode/utf8"
 )
 
-// TextInputState is the committed text exposed to a native input method.
-// Offsets are UTF-8 bytes. Password contents are never exposed.
 type TextInputState struct {
 	Text                string
 	Cursor, Anchor      int
 	Password, Multiline bool
 	Caret               Rect
-	// Identity changes when focus moves between editors, even with equal text.
 	Identity *TextField
 }
 
@@ -32,8 +29,6 @@ func (m *Manager) TextInputState() (TextInputState, bool) {
 	return state, true
 }
 
-// ReplaceTextRange applies a native edit as one undo operation. Byte offsets
-// must fall on UTF-8 boundaries. Validation and OnChange run as for typing.
 func (m *Manager) ReplaceTextRange(start, end int, value string) bool {
 	f, ok := m.focused.(*TextField)
 	if !ok || f.ReadOnly || !utf8.ValidString(value) {
@@ -61,8 +56,6 @@ func (m *Manager) ReplaceTextRange(start, end int, value string) bool {
 	return false
 }
 
-// DeleteSurroundingText excludes the selected range when counting bytes, as
-// required by text-input-v3. The deletion and replacement form one edit.
 func (m *Manager) DeleteSurroundingText(before, after int) bool {
 	s, ok := m.TextInputState()
 	if !ok || s.Password || before < 0 || after < 0 {
@@ -75,7 +68,6 @@ func (m *Manager) DeleteSurroundingText(before, after int) bool {
 	return m.ReplaceTextRange(a-before, b+after, "")
 }
 
-// SelectTextRange moves the native selection without changing undo history.
 func (m *Manager) SelectTextRange(start, end int) bool {
 	f, ok := m.focused.(*TextField)
 	if !ok || f.ReadOnly {
@@ -91,8 +83,6 @@ func (m *Manager) SelectTextRange(start, end int) bool {
 	return true
 }
 
-// CommitTextInput combines an IME's surrounding deletion and insertion into a
-// single validated undo operation. Counts exclude the current selection.
 func (m *Manager) CommitTextInput(before, after int, value string) bool {
 	s, ok := m.TextInputState()
 	if !ok || before < 0 || after < 0 {

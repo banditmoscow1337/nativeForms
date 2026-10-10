@@ -1,4 +1,3 @@
-// Package editor demonstrates the same application tree on every host.
 package editor
 
 import (

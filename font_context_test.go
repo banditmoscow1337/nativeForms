@@ -7,8 +7,6 @@ import (
 	"testing"
 )
 
-// A tiny in-memory TrueType outline avoids host-installed fonts in the tests.
-// It exercises the same cmap, hmtx, loca and glyf readers as application data.
 func stageFiveTestFace(characters map[rune]uint16) *TrueTypeFace {
 	put16 := binary.BigEndian.PutUint16
 	put32 := binary.BigEndian.PutUint32
@@ -27,13 +25,13 @@ func stageFiveTestFace(characters map[rune]uint16) *TrueTypeFace {
 	}
 	glyph := func(width, height int16) []byte {
 		b := make([]byte, 34)
-		put16(b[0:], 1) // one rectangle contour
+		put16(b[0:], 1)
 		put16(b[6:], uint16(width))
 		put16(b[8:], uint16(height))
-		put16(b[10:], 3) // last point
+		put16(b[10:], 3)
 		for i := 0; i < 4; i++ {
 			b[14+i] = 1
-		} // on-curve, signed 16-bit deltas
+		}
 		put16(b[20:], uint16(width))
 		put16(b[24:], uint16(-width))
 		put16(b[30:], uint16(height))
@@ -171,7 +169,7 @@ func TestFontContextRegistrationStyleAndWrap(t *testing.T) {
 	if err := ctx.AddFont("sample", 400, false, data); err != nil {
 		t.Fatal(err)
 	}
-	data[0] = 0 // the context must own the copied bytes
+	data[0] = 0
 	bold := stageFiveSFNT(stageFiveTestFace(map[rune]uint16{'A': 1, 'V': 2}))
 	if err := ctx.AddFont("sample", 700, false, bold); err != nil {
 		t.Fatal(err)
