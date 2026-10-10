@@ -1,11 +1,10 @@
 name: Desktop baseline
 
-# The owner starts the checks. A draft PR does not run them automatically;
-# marking it ready for review runs the matrix once. After this workflow is on
-# the default branch, it can also be started from Actions via workflow_dispatch.
+# Draft PRs skip the matrix; new commits to a ready PR run it again.
+# The owner can also start it from Actions via workflow_dispatch.
 on:
   pull_request:
-    types: [ready_for_review]
+    types: [opened, reopened, ready_for_review, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -13,6 +12,7 @@ permissions:
 
 jobs:
   desktop:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:

@@ -179,6 +179,8 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 
 func coreTextMask(pixels []byte, width, height int) *image.Alpha {
 	mask := image.NewAlpha(image.Rect(0, 0, width, height))
-	copy(mask.Pix, pixels)
+	for y := 0; y < height; y++ {
+		copy(mask.Pix[y*mask.Stride:y*mask.Stride+width], pixels[(height-1-y)*width:(height-y)*width])
+	}
 	return mask
 }
