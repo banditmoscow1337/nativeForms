@@ -26,6 +26,7 @@ type linuxIME struct {
 	focused, delivered, needSurrounding bool
 	failed                              error
 	screenX, screenY                    int
+	scale                               float32
 	preedit                             string
 }
 
@@ -105,7 +106,11 @@ func (i *linuxIME) sync() error {
 		i.state = s
 		i.needSurrounding = false
 		r := s.Caret
-		if err := i.send("SetCursorLocation", dbValue{"i", int32(r.X) + int32(i.screenX)}, dbValue{"i", int32(r.Y) + int32(i.screenY)}, dbValue{"i", int32(max(float32(1), r.W))}, dbValue{"i", int32(max(float32(1), r.H))}); err != nil {
+		scale := i.scale
+		if scale <= 0 {
+			scale = 1
+		}
+		if err := i.send("SetCursorLocation", dbValue{"i", int32(r.X*scale) + int32(i.screenX)}, dbValue{"i", int32(r.Y*scale) + int32(i.screenY)}, dbValue{"i", int32(max(float32(1), r.W*scale))}, dbValue{"i", int32(max(float32(1), r.H*scale))}); err != nil {
 			return err
 		}
 

@@ -26,6 +26,7 @@ var le = binary.LittleEndian
 type X11Options struct {
 	Title          string
 	Width, Height  int
+	Scale          float32 // Zero uses the Xft.dpi setting, falling back to 96 DPI.
 	OnReady        func(*X11Window)
 	OnFilesDropped func([]string)
 }
@@ -40,6 +41,7 @@ type X11Window struct {
 	minKey, maxKey                                                byte
 	maxRequest                                                    int
 	width, height                                                 int
+	scale                                                         float32
 	framebuffer                                                   *image.RGBA
 	renderer                                                      *software.Renderer
 	lastFrame                                                     time.Time
@@ -60,6 +62,7 @@ type X11Window struct {
 	compose                                                       composeState
 	ime                                                           *linuxIME
 	screenX, screenY                                              int
+	originDirty                                                   bool
 	clipboard, utf8Atom, targetsAtom, textAtom, selectionProperty uint32
 	clipboardText                                                 string
 	clipboardOwned                                                bool
@@ -336,8 +339,10 @@ func (w *X11Window) createWindow() error {
 	if w.height <= 0 {
 		w.height = 600
 	}
-	if w.width > 16384 || w.height > 16384 {
-		return fmt.Errorf("x11: window size exceeds 16384")
+	w.width = platform.PixelSize(w.width, w.scale)
+	w.height = platform.PixelSize(w.height, w.scale)
+	if w.width > 16384 || w.height > 16384 || int64(w.width)*int64(w.height) > 64*1024*1024 {
+		return fmt.Errorf("x11: window exceeds framebuffer limit")
 	}
 	request := make([]byte, 36)
 	request[0] = 1
@@ -473,13 +478,22 @@ func (w *X11Window) Run() error {
 	if err = w.open(screen, display); err != nil {
 		return err
 	}
+	w.scale = w.options.Scale
+	if !(w.scale > 0 && w.scale <= 8) {
+		w.scale = w.resourceScale()
+	}
+	w.manager.SetDisplayScale(w.scale)
 	if err = w.createWindow(); err != nil {
 		return err
 	}
+	w.originDirty = true
 	w.running = true
 	defer func() { w.running = false }()
 	w.portal = portalAvailable()
 	w.ime = openLinuxIME(w.manager)
+	if w.ime != nil {
+		w.ime.scale = w.scale
+	}
 	defer func() {
 		if w.ime != nil {
 			w.ime.close()
@@ -504,6 +518,9 @@ func (w *X11Window) Run() error {
 	for !w.closeRequested.Load() {
 		w.manager.ProcessPending()
 		if w.ime != nil {
+			if w.originDirty && w.manager.TextInputFocused() {
+				_ = w.refreshOrigin()
+			}
 			w.ime.screenX, w.ime.screenY = w.screenX, w.screenY
 			if err := w.ime.sync(); err != nil {
 				w.ime.close()
@@ -573,9 +590,9 @@ func (w *X11Window) paint() error {
 		w.framebuffer = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
 	}
 	now := time.Now()
-	w.manager.BeginFrame(w.width, w.height, now.Sub(w.lastFrame).Seconds())
+	w.manager.BeginFrame(platform.LogicalSize(w.width, w.scale), platform.LogicalSize(w.height, w.scale), now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.Render(w.manager.Frame(), w.framebuffer); err != nil {
+	if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale); err != nil {
 		return err
 	}
 	rowBytes := w.width * 4
@@ -763,7 +780,7 @@ func (w *X11Window) handle(message []byte) bool {
 		}
 		w.screenX = int(int16(le.Uint16(message[20:]))) - int(int16(le.Uint16(message[24:])))
 		w.screenY = int(int16(le.Uint16(message[22:]))) - int(int16(le.Uint16(message[26:])))
-		x, y := float32(int16(le.Uint16(message[24:]))), float32(int16(le.Uint16(message[26:])))
+		x, y := float32(int16(le.Uint16(message[24:])))/w.scale, float32(int16(le.Uint16(message[26:])))/w.scale
 		if typ == 6 {
 			w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: x, Y: y})
 			break
@@ -826,6 +843,7 @@ func (w *X11Window) handle(message []byte) bool {
 	case 12:
 		return true
 	case 22:
+		w.originDirty = true
 		if message[0]&128 != 0 {
 			w.screenX = int(int16(le.Uint16(message[16:])))
 			w.screenY = int(int16(le.Uint16(message[18:])))
@@ -844,4 +862,26 @@ func (w *X11Window) handle(message []byte) bool {
 		}
 	}
 	return false
+}
+
+// IBus expects screen coordinates. WM-reparented X11 windows may report
+// ConfigureNotify positions relative to their decoration frame instead.
+func (w *X11Window) refreshOrigin() error {
+	w.originDirty = false
+	request := make([]byte, 16)
+	request[0] = 40 // TranslateCoordinates, from the client window to the root.
+	le.PutUint32(request[4:], w.id)
+	le.PutUint32(request[8:], w.root)
+	if err := w.send(request); err != nil {
+		return err
+	}
+	reply, err := w.waitReply(w.sequence, time.Now().Add(time.Second))
+	if err != nil {
+		return err
+	}
+	if reply[1] != 0 {
+		w.screenX = int(int16(le.Uint16(reply[12:])))
+		w.screenY = int(int16(le.Uint16(reply[14:])))
+	}
+	return nil
 }

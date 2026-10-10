@@ -40,10 +40,11 @@ type DrawCommand struct {
 }
 
 type Canvas struct {
-	commands *[]DrawCommand
-	clips    []Rect
-	theme    *Theme
-	fonts    *FontContext
+	commands     *[]DrawCommand
+	clips        []Rect
+	theme        *Theme
+	fonts        *FontContext
+	displayScale float32
 }
 
 func (canvas *Canvas) Theme() *Theme { return canvas.theme }
@@ -64,6 +65,9 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		return
 	}
 	spec = normalFontSpec(spec)
+	if canvas.displayScale > 0 {
+		spec.Scale = min(spec.Scale*canvas.displayScale, 8)
+	}
 	text = normalizeTextBreaks(text)
 	lines := strings.Split(text, "\n")
 	layouts := make([]TextLayout, len(lines))

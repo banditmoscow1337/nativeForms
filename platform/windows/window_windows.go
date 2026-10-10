@@ -14,6 +14,7 @@ import (
 	"unsafe"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/platform"
 	"github.com/banditmoscow1337/nativeForms/software"
 	"github.com/ebitengine/purego"
 )
@@ -115,9 +116,15 @@ func (w *Window) Run() error {
 	defer func() { windowsMu.Lock(); delete(windowsByHandle, hwnd); windowsMu.Unlock() }()
 	w.hwnd.Store(hwnd)
 	call(win.dragAcceptFiles, hwnd, 1)
-	w.dpi = uint32(call(win.getDpi, hwnd))
-	if w.dpi == 0 {
-		w.dpi = 96
+	if win.getDpi != 0 {
+		if dpi := uint32(call(win.getDpi, hwnd)); dpi != 0 {
+			w.dpi = dpi
+		}
+	}
+	w.manager.SetDisplayScale(w.scale())
+	if err := w.sizeClient(hwnd, width, height); err != nil {
+		call(win.destroyWindow, hwnd)
+		return err
 	}
 	w.manager.SetWakeHandler(func() {
 		if h := w.hwnd.Load(); h != 0 {
@@ -211,6 +218,7 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		if w.dpi == 0 {
 			w.dpi = 96
 		}
+		w.manager.SetDisplayScale(w.scale())
 		r := (*rect)(unsafe.Pointer(lp))
 		if r != nil {
 			call(win.setWindowPos, hwnd, 0, uintptr(r.Left), uintptr(r.Top),
@@ -318,13 +326,13 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 	}
 	rendered := resized || w.manager.NeedsFrame()
 	if rendered {
-		logicalWidth := max(1, int((int64(width)*96+int64(w.dpi)/2)/int64(w.dpi)))
-		logicalHeight := max(1, int((int64(height)*96+int64(w.dpi)/2)/int64(w.dpi)))
+		logicalWidth := platform.LogicalSize(width, w.scale())
+		logicalHeight := platform.LogicalSize(height, w.scale())
 		now := time.Now()
 		delta := now.Sub(w.lastFrame).Seconds()
 		w.lastFrame = now
 		w.manager.BeginFrame(logicalWidth, logicalHeight, delta)
-		if err := w.renderer.RenderScaled(w.manager.Frame(), w.framebuffer); err != nil {
+		if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale()); err != nil {
 			return err
 		}
 		w.placeCandidate(hwnd)
@@ -347,6 +355,33 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 	}
 	if rendered {
 		w.armFrameTimer(hwnd)
+	}
+	return nil
+}
+
+func (w *Window) scale() float32 {
+	scale := float32(w.dpi) / 96
+	if !(scale > 0 && scale <= 8) {
+		return 1
+	}
+	return scale
+}
+
+func (w *Window) sizeClient(hwnd uintptr, width, height int) error {
+	scale := w.scale()
+	pw, ph := platform.PixelSize(width, scale), platform.PixelSize(height, scale)
+	if pw < 1 || ph < 1 || pw > 16384 || ph > 16384 || int64(pw)*int64(ph) > 64*1024*1024 {
+		return fmt.Errorf("windows: requested client size exceeds framebuffer limit")
+	}
+	r := rect{Right: int32(pw), Bottom: int32(ph)}
+	var ok uintptr
+	if win.adjustWindowRectForDpi != 0 {
+		ok = call(win.adjustWindowRectForDpi, pointer(&r), wsOverlappedWindow, 0, 0, uintptr(w.dpi))
+	} else {
+		ok = call(win.adjustWindowRect, pointer(&r), wsOverlappedWindow, 0, 0)
+	}
+	if ok == 0 || call(win.setWindowPos, hwnd, 0, 0, 0, uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoMove|swpNoZOrder|swpNoActivate) == 0 {
+		return fmt.Errorf("windows: could not size client area")
 	}
 	return nil
 }

@@ -24,6 +24,7 @@ type Manager struct {
 	unhandled        func(Event) bool
 	theme            Theme
 	fonts            *FontContext
+	displayScale     float32
 	focused          Component
 	hovered          Component
 	captured         Component
@@ -58,7 +59,8 @@ type Manager struct {
 func New() *Manager {
 	return &Manager{
 		visible: true, theme: DefaultTheme(),
-		dirtyLayout: true, dirtyPaint: true,
+		displayScale: 1,
+		dirtyLayout:  true, dirtyPaint: true,
 		clock: time.Now,
 		frame: Frame{Commands: make([]DrawCommand, 0, 1024)},
 		clips: make([]Rect, 0, 16),
@@ -177,6 +179,28 @@ func (manager *Manager) FontContext() *FontContext {
 	return manager.fonts
 }
 
+// SetDisplayScale sets the number of framebuffer pixels per UI coordinate.
+// Desktop adapters update it when the window moves between displays. It affects
+// glyph rasterization, but leaves layout and input coordinates in logical units.
+func (manager *Manager) SetDisplayScale(scale float32) {
+	if !(scale > 0 && scale <= 8) {
+		scale = 1
+	}
+	manager.mu.Lock()
+	changed := manager.displayScale != scale
+	manager.displayScale = scale
+	manager.mu.Unlock()
+	if changed {
+		manager.InvalidatePaint()
+	}
+}
+
+func (manager *Manager) DisplayScale() float32 {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.displayScale
+}
+
 func (manager *Manager) Notify(text string, duration ...time.Duration) {
 	if text == "" {
 		return
@@ -254,6 +278,7 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	visible := manager.visible
 	theme := manager.theme
 	fonts := manager.fonts
+	displayScale := manager.displayScale
 	layoutNeeded := manager.dirtyLayout || width != manager.layoutWidth || height != manager.layoutHeight
 	manager.dirtyLayout, manager.dirtyPaint = false, false
 	manager.mu.Unlock()
@@ -267,10 +292,11 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	viewport := Rect{W: float32(width), H: float32(height)}
 	manager.clips = append(manager.clips[:0], viewport)
 	canvas := Canvas{
-		commands: &manager.frame.Commands,
-		clips:    manager.clips,
-		theme:    &theme,
-		fonts:    fonts,
+		commands:     &manager.frame.Commands,
+		clips:        manager.clips,
+		theme:        &theme,
+		fonts:        fonts,
+		displayScale: displayScale,
 	}
 	if root != nil && root.UIState().Visible() {
 		if layoutNeeded {

@@ -166,12 +166,21 @@ type wlBuffer struct {
 	busy, retired bool
 }
 
+type wlOutput struct {
+	global  uint32
+	scale   int
+	entered bool
+}
+
 type WaylandWindow struct {
 	Manager                                                              *ui.Manager
 	Options                                                              WaylandOptions
 	wire                                                                 *waylandWire
 	compositor, shm, wm, surface, xdg, toplevel, seat, pointer, keyboard uint32
 	width, height                                                        int
+	compositorVersion                                                    int
+	scale, preferredScale                                                float32
+	viewporter, viewport, fractionalManager, fractional                  uint32
 	framebuffer                                                          *image.RGBA
 	renderer                                                             *software.Renderer
 	buffers                                                              map[uint32]*wlBuffer
@@ -182,6 +191,7 @@ type WaylandWindow struct {
 	pointerPos                                                           ui.Vec2
 	pressed                                                              map[uint32]bool
 	globals                                                              map[uint32]string
+	outputs                                                              map[uint32]*wlOutput
 	keymap                                                               waylandSymbols
 	keyGroup                                                             uint32
 	keyMods                                                              uint32
@@ -238,6 +248,8 @@ func (w *WaylandWindow) Run() error {
 		return fmt.Errorf("wayland: Unix transport unavailable")
 	}
 	w.wire = &waylandWire{conn: unix, next: 3}
+	w.scale = 1
+	w.outputs = make(map[uint32]*wlOutput)
 	defer func() {
 		for _, buffer := range w.buffers {
 			_ = syscall.Munmap(buffer.pixels)
@@ -351,8 +363,27 @@ func (w *WaylandWindow) setup() error {
 			if w.compositor != 0 {
 				continue
 			}
-			id, err = w.wire.bind(global, 1)
+			w.compositorVersion = int(min(global.Version, 4))
+			id, err = w.wire.bind(global, uint32(w.compositorVersion))
 			w.compositor = id
+		case "wl_output":
+			if global.Version < 2 {
+				continue
+			}
+			id, err = w.wire.bind(global, 2)
+			w.outputs[id] = &wlOutput{global: global.Name, scale: 1}
+		case "wp_viewporter":
+			if w.viewporter != 0 {
+				continue
+			}
+			id, err = w.wire.bind(global, 1)
+			w.viewporter = id
+		case "wp_fractional_scale_manager_v1":
+			if w.fractionalManager != 0 {
+				continue
+			}
+			id, err = w.wire.bind(global, 1)
+			w.fractionalManager = id
 		case "wl_shm":
 			if w.shm != 0 {
 				continue
@@ -413,6 +444,16 @@ func (w *WaylandWindow) setup() error {
 	if err := w.wire.send(w.compositor, 0, wlWord(w.surface)); err != nil {
 		return err
 	}
+	if w.viewporter != 0 && w.fractionalManager != 0 {
+		w.viewport = w.wire.id()
+		if err := w.wire.send(w.viewporter, 1, append(wlWord(w.viewport), wlWord(w.surface)...)); err != nil {
+			return err
+		}
+		w.fractional = w.wire.id()
+		if err := w.wire.send(w.fractionalManager, 1, append(wlWord(w.fractional), wlWord(w.surface)...)); err != nil {
+			return err
+		}
+	}
 	w.xdg = w.wire.id()
 	if err := w.wire.send(w.wm, 2, append(wlWord(w.xdg), wlWord(w.surface)...)); err != nil {
 		return err
@@ -439,7 +480,8 @@ func (w *WaylandWindow) setup() error {
 }
 
 func (w *WaylandWindow) createBuffer() (*wlBuffer, error) {
-	count := int64(w.width) * int64(w.height) * 4
+	pw, ph := w.framebuffer.Bounds().Dx(), w.framebuffer.Bounds().Dy()
+	count := int64(pw) * int64(ph) * 4
 	if count <= 0 || count > 256<<20 {
 		return nil, fmt.Errorf("wayland: framebuffer exceeds 64 megapixels")
 	}
@@ -468,7 +510,7 @@ func (w *WaylandWindow) createBuffer() (*wlBuffer, error) {
 	}
 	id := w.wire.id()
 	args = append(wlWord(id), wlWord(0)...)
-	for _, value := range []int{w.width, w.height, w.width * 4} {
+	for _, value := range []int{pw, ph, pw * 4} {
 		args = append(args, wlWord(uint32(value))...)
 	}
 	args = append(args, wlWord(0)...) // WL_SHM_FORMAT_ARGB8888.
@@ -517,13 +559,13 @@ func (w *WaylandWindow) paintAvailable() bool {
 }
 
 func (w *WaylandWindow) paint() error {
-	if w.width < 1 || w.height < 1 || w.width > 16384 || w.height > 16384 || int64(w.width)*int64(w.height) > 64*1024*1024 {
+	pw, ph := platform.PixelSize(w.width, w.scale), platform.PixelSize(w.height, w.scale)
+	if pw < 1 || ph < 1 || pw > 16384 || ph > 16384 || int64(pw)*int64(ph) > 64*1024*1024 {
 		return fmt.Errorf("wayland: invalid window dimensions")
 	}
-	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != w.width || w.framebuffer.Bounds().Dy() != w.height {
+	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != pw || w.framebuffer.Bounds().Dy() != ph {
 		w.retireBuffers()
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
-		w.Manager.InvalidateLayout()
+		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pw, ph))
 	}
 	var buffer *wlBuffer
 	for i := range w.current {
@@ -544,19 +586,25 @@ func (w *WaylandWindow) paint() error {
 	now := time.Now()
 	w.Manager.BeginFrame(w.width, w.height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.Render(w.Manager.Frame(), w.framebuffer); err != nil {
+	if err := w.renderer.RenderAtScale(w.Manager.Frame(), w.framebuffer, w.scale); err != nil {
 		return err
 	}
-	for y := 0; y < w.height; y++ {
-		for x := 0; x < w.width; x++ {
+	for y := 0; y < ph; y++ {
+		for x := 0; x < pw; x++ {
 			i := w.framebuffer.PixOffset(x, y)
-			j := (y*w.width + x) * 4
+			j := (y*pw + x) * 4
 			buffer.pixels[j], buffer.pixels[j+1], buffer.pixels[j+2], buffer.pixels[j+3] =
 				w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
 		}
 	}
 	args := append(wlWord(buffer.id), wlWord(0)...)
 	args = append(args, wlWord(0)...)
+	if w.viewport != 0 {
+		destination := append(wlWord(uint32(w.width)), wlWord(uint32(w.height))...)
+		if err := w.wire.send(w.viewport, 2, destination); err != nil {
+			return err
+		}
+	}
 	if err := w.wire.send(w.surface, 1, args); err != nil {
 		return err
 	}
@@ -587,6 +635,14 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 		}
 	case 2:
 		if opcode == 1 {
+			for id, output := range w.outputs {
+				if output.global == u32(0) {
+					delete(w.outputs, id)
+					if err := w.updateScale(); err != nil {
+						return err
+					}
+				}
+			}
 			switch w.globals[u32(0)] {
 			case "wl_compositor", "wl_shm", "xdg_wm_base":
 				return fmt.Errorf("wayland: required global was removed")
@@ -595,6 +651,23 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 	case w.wm:
 		if opcode == 0 {
 			return w.wire.send(w.wm, 3, wlWord(u32(0)))
+		}
+	case w.surface:
+		if (opcode == 0 || opcode == 1) && len(payload) >= 4 {
+			if output := w.outputs[u32(0)]; output != nil {
+				output.entered = opcode == 0
+				return w.updateScale()
+			}
+		}
+	case w.shm:
+		// wl_shm.format is informational; ARGB8888 is mandatory.
+	case w.fractional:
+		if opcode == 0 && len(payload) >= 4 {
+			preferred := float32(u32(0)) / 120
+			if preferred >= 0.5 && preferred <= 8 {
+				w.preferredScale = preferred
+				return w.updateScale()
+			}
 		}
 	case w.toplevel:
 		if opcode == 1 {
@@ -656,6 +729,16 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 	case w.dataDevice:
 		return w.dataDeviceEvent(opcode, payload)
 	default:
+		if output := w.outputs[object]; output != nil {
+			if opcode == 3 && len(payload) >= 4 {
+				scale := int(int32(u32(0)))
+				if scale >= 1 && scale <= 8 {
+					output.scale = scale
+					return w.updateScale()
+				}
+			}
+			return nil
+		}
 		if _, ok := w.dataSources[object]; ok {
 			return w.dataSourceEvent(object, opcode, payload)
 		}
@@ -670,6 +753,36 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 		}
 	}
 	return nil
+}
+
+func (w *WaylandWindow) updateScale() error {
+	scale := w.desiredScale()
+	if scale == w.scale {
+		return nil
+	}
+	if w.viewport == 0 {
+		if err := w.wire.send(w.surface, 8, wlWord(uint32(scale))); err != nil {
+			return err
+		}
+	}
+	w.scale = scale
+	w.Manager.SetDisplayScale(scale)
+	return nil
+}
+
+func (w *WaylandWindow) desiredScale() float32 {
+	if w.viewport != 0 && w.preferredScale > 0 {
+		return w.preferredScale
+	}
+	scale := float32(1)
+	if w.compositorVersion >= 3 || w.viewport != 0 {
+		for _, output := range w.outputs {
+			if output.entered {
+				scale = max(scale, float32(output.scale))
+			}
+		}
+	}
+	return scale
 }
 
 func (w *WaylandWindow) pointerEvent(opcode uint16, p []byte) error {
