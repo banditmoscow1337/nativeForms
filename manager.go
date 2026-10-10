@@ -2,90 +2,84 @@ package nativeforms
 
 import (
 	"fmt"
-	"image"
 	"sync"
 	"time"
-	"unsafe"
 )
-
-const maxVertices = 64 * 1024
 
 type notification struct {
 	text      string
 	remaining float64
 }
 
-type Texture struct {
-}
-
-type Renderer interface {
-	Device() uintptr
-	QuadPipelineLayout() uint64
-	FramesInFlight() uint32
-	CreateBufferHelper(size uint64, usage, props uint32) (uint64, uint64)
-	MapBufferHelper(buffer, offset, size uint64) unsafe.Pointer
-	CreateTexture(name string, img image.Image) int
-	SwapchainFormat() uint32
-	SwapRenderPass() uint64
-	QuadSetLayout() uint64
-	DefaultSampler() uint64
-	TextureImageViewByID(id uint32) (uint64, bool)
-	DestroyTexture(uint32)
-	TextureReady(id uint32) bool
-	CurrentFrameIndex() uint32
-	DestroyBufferHelper(uint64)
-	DescriptorPool() uint64
+// Frame is valid until the next BeginFrame call. Consumers must not modify
+// Commands or retain its backing storage beyond that point.
+type Frame struct {
+	Width, Height int
+	Commands      []DrawCommand
 }
 
 type Manager struct {
-	mu             sync.RWMutex
-	root           Component
-	visible        bool
-	interactive    bool
-	unhandled      func(Event) bool
-	theme          Theme
-	focused        Component
-	hovered        Component
-	captured       Component
-	capturedButton MouseButton
-	pointer        Vec2
+	mu               sync.RWMutex
+	root             Component
+	visible          bool
+	interactive      bool
+	unhandled        func(Event) bool
+	theme            Theme
+	focused          Component
+	hovered          Component
+	captured         Component
+	capturedButton   MouseButton
+	pointer          Vec2
+	consumeUnhandled bool
+	gameNavigation   bool
+	dirtyLayout      bool
+	dirtyPaint       bool
+	wake             func()
+	clipboardRead    func() (string, error)
+	clipboardWrite   func(string) error
+	caretDue         time.Time
+	popups           []popupEntry
+	nextPopup        PopupID
+	tooltipID        PopupID
+	shortcuts        map[ShortcutID]Shortcut
+	nextShortcut     ShortcutID
+	postMu           sync.Mutex
+	pending          []func()
 
 	notificationMu sync.Mutex
 	notifications  []notification
 
-	renderer       Renderer
-	device         uintptr
-	pipeline       uint64
-	pipelineFormat uint32
-	pipelineLayout uint64
-	descriptorSet  uint64
-	buffer         uint64
-	mapped         unsafe.Pointer
-	frameStride    uint64
-	atlasTextureID uint32
-	vertices       []Vertex
-	clips          []Rect
+	frame        Frame
+	clips        []Rect
+	layoutWidth  int
+	layoutHeight int
 }
 
-func New(renderer Renderer) *Manager {
-	manager := &Manager{
-		renderer: renderer,
-		visible:  true,
-		theme:    DefaultTheme(),
-		vertices: make([]Vertex, 0, maxVertices),
-		clips:    make([]Rect, 0, 16),
+// New creates a UI tree without opening a window or initializing Vulkan.
+func New() *Manager {
+	return &Manager{
+		visible: true, theme: DefaultTheme(),
+		dirtyLayout: true, dirtyPaint: true,
+		frame: Frame{Commands: make([]DrawCommand, 0, 1024)},
+		clips: make([]Rect, 0, 16),
 	}
-	manager.initSurface()
-	return manager
 }
 
 func (manager *Manager) SetRoot(root Component) {
+	for len(manager.popups) > 0 {
+		manager.CloseTopPopup()
+	}
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	manager.clearInteractionLocked()
+	blurred := manager.clearInteractionLocked()
+	bindTree(manager.root, nil, nil)
 	manager.root = root
-	bindTree(root, nil)
+	bindTree(root, nil, manager)
 	applyTheme(root, manager.theme)
+	manager.mu.Unlock()
+	if blurred != nil {
+		blurred.Handle(Event{Type: FocusLost})
+	}
+	manager.InvalidateLayout()
 }
 
 func (manager *Manager) Root() Component {
@@ -97,10 +91,15 @@ func (manager *Manager) Root() Component {
 func (manager *Manager) SetVisible(visible bool) {
 	manager.mu.Lock()
 	manager.visible = visible
+	var blurred Component
 	if !visible {
-		manager.clearInteractionLocked()
+		blurred = manager.clearInteractionLocked()
 	}
 	manager.mu.Unlock()
+	if blurred != nil {
+		blurred.Handle(Event{Type: FocusLost})
+	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) Visible() bool {
@@ -112,10 +111,15 @@ func (manager *Manager) Visible() bool {
 func (manager *Manager) SetInteractive(interactive bool) {
 	manager.mu.Lock()
 	manager.interactive = interactive
+	var blurred Component
 	if !interactive {
-		manager.clearInteractionLocked()
+		blurred = manager.clearInteractionLocked()
 	}
 	manager.mu.Unlock()
+	if blurred != nil {
+		blurred.Handle(Event{Type: FocusLost})
+	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) Interactive() bool {
@@ -140,7 +144,11 @@ func (manager *Manager) SetTheme(theme Theme) {
 	manager.mu.Lock()
 	manager.theme = theme
 	applyTheme(manager.root, theme)
+	for _, popup := range manager.popups {
+		applyTheme(popup.content, theme)
+	}
 	manager.mu.Unlock()
+	manager.InvalidateLayout()
 }
 
 func (manager *Manager) Theme() Theme {
@@ -164,6 +172,7 @@ func (manager *Manager) Notify(text string, duration ...time.Duration) {
 	if count := len(manager.notifications); count > 0 && manager.notifications[count-1].text == text {
 		manager.notifications[count-1].remaining = seconds
 		manager.notificationMu.Unlock()
+		manager.InvalidatePaint()
 		return
 	}
 	manager.notifications = append(manager.notifications, notification{text: text, remaining: seconds})
@@ -171,46 +180,184 @@ func (manager *Manager) Notify(text string, duration ...time.Duration) {
 		manager.notifications = manager.notifications[len(manager.notifications)-4:]
 	}
 	manager.notificationMu.Unlock()
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) Notifyf(format string, args ...any) {
 	manager.Notify(fmt.Sprintf(format, args...))
 }
 
+// ShowMessage retains the previous notification helper during migration.
+func (manager *Manager) ShowMessage(format string, args ...any) {
+	if len(args) == 1 {
+		var seconds float64
+		switch value := args[0].(type) {
+		case float64:
+			seconds = value
+		case float32:
+			seconds = float64(value)
+		case int:
+			seconds = float64(value)
+		case int32:
+			seconds = float64(value)
+		default:
+			manager.Notifyf(format, args...)
+			return
+		}
+		manager.Notify(format, time.Duration(seconds*float64(time.Second)))
+		return
+	}
+	manager.Notifyf(format, args...)
+}
+
 func (manager *Manager) ClearNotifications() {
 	manager.notificationMu.Lock()
 	manager.notifications = manager.notifications[:0]
 	manager.notificationMu.Unlock()
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
-	manager.ensurePipeline()
+	manager.ProcessPending()
+	if !manager.caretDue.IsZero() && !time.Now().Before(manager.caretDue) {
+		if field, ok := manager.focused.(*TextField); ok {
+			field.BlinkCaret()
+			manager.caretDue = time.Now().Add(500 * time.Millisecond)
+		} else {
+			manager.caretDue = time.Time{}
+		}
+	}
 
-	manager.mu.RLock()
+	manager.mu.Lock()
 	root := manager.root
 	visible := manager.visible
 	theme := manager.theme
-	manager.mu.RUnlock()
+	layoutNeeded := manager.dirtyLayout || width != manager.layoutWidth || height != manager.layoutHeight
+	manager.dirtyLayout, manager.dirtyPaint = false, false
+	manager.mu.Unlock()
 
-	manager.vertices = manager.vertices[:0]
+	manager.frame.Width, manager.frame.Height = width, height
+	manager.frame.Commands = manager.frame.Commands[:0]
 	if !visible || width <= 0 || height <= 0 {
 		return
 	}
 	viewport := Rect{W: float32(width), H: float32(height)}
 	manager.clips = append(manager.clips[:0], viewport)
 	canvas := Canvas{
-		vertices: &manager.vertices,
-		limit:    maxVertices,
+		commands: &manager.frame.Commands,
 		clips:    manager.clips,
 		theme:    &theme,
 	}
 	if root != nil && root.UIState().Visible() {
-		root.Measure(Constraints{Min: Vec2{X: viewport.W, Y: viewport.H}, Max: Vec2{X: viewport.W, Y: viewport.H}})
-		root.Arrange(viewport)
+		if layoutNeeded {
+			root.Measure(Constraints{Min: Vec2{X: viewport.W, Y: viewport.H}, Max: Vec2{X: viewport.W, Y: viewport.H}})
+			root.Arrange(viewport)
+		}
 		paintComponent(root, &canvas)
+	}
+	manager.layoutPopups(viewport)
+	for _, entry := range manager.popups {
+		if entry.modal {
+			canvas.Rect(viewport, theme.Scrim)
+		}
+		paintComponent(entry.content, &canvas)
 	}
 	manager.paintNotifications(&canvas, viewport, deltaSeconds)
 	manager.clips = canvas.clips
+	manager.layoutWidth, manager.layoutHeight = width, height
+}
+
+func (manager *Manager) Frame() Frame { return manager.frame }
+
+// InvalidateLayout requests measurement, arrangement, and repaint.
+func (manager *Manager) InvalidateLayout() {
+	manager.mu.Lock()
+	manager.dirtyLayout, manager.dirtyPaint = true, true
+	wake := manager.wake
+	manager.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+}
+
+func (manager *Manager) InvalidatePaint() {
+	manager.mu.Lock()
+	manager.dirtyPaint = true
+	wake := manager.wake
+	manager.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+}
+
+func (manager *Manager) NeedsFrame() bool {
+	manager.mu.RLock()
+	dirty := manager.dirtyLayout || manager.dirtyPaint
+	manager.mu.RUnlock()
+	return dirty
+}
+
+// NextFrameAfter reports the next notification or caret deadline. A host can
+// use it with its event loop timer; zero means no scheduled frame is pending.
+func (manager *Manager) NextFrameAfter() time.Duration {
+	manager.notificationMu.Lock()
+	defer manager.notificationMu.Unlock()
+	var delay time.Duration
+	if len(manager.notifications) > 0 {
+		remaining := manager.notifications[0].remaining
+		for _, item := range manager.notifications[1:] {
+			if item.remaining < remaining {
+				remaining = item.remaining
+			}
+		}
+		delay = time.Duration(remaining * float64(time.Second))
+	}
+	if !manager.caretDue.IsZero() {
+		caret := time.Until(manager.caretDue)
+		if caret <= 0 {
+			caret = time.Millisecond
+		}
+		if delay <= 0 || caret < delay {
+			delay = caret
+		}
+	}
+	return delay
+}
+
+// SetWakeHandler installs a thread-safe signal to wake the host event loop.
+// The handler must only signal; it must not mutate the UI tree.
+func (manager *Manager) SetWakeHandler(wake func()) {
+	manager.mu.Lock()
+	manager.wake = wake
+	manager.mu.Unlock()
+}
+
+// SetClipboardHandlers connects focused editors to the host clipboard. Both
+// functions are called on the UI owner goroutine; pass nil to detach a host.
+func (manager *Manager) SetClipboardHandlers(read func() (string, error), write func(string) error) {
+	manager.clipboardRead, manager.clipboardWrite = read, write
+}
+
+// Post queues a mutation from another goroutine. ProcessPending runs it on
+// the owner goroutine before dispatch or painting.
+func (manager *Manager) Post(fn func()) {
+	if fn == nil {
+		return
+	}
+	manager.postMu.Lock()
+	manager.pending = append(manager.pending, fn)
+	manager.postMu.Unlock()
+	manager.InvalidatePaint()
+}
+
+func (manager *Manager) ProcessPending() {
+	manager.postMu.Lock()
+	pending := manager.pending
+	manager.pending = nil
+	manager.postMu.Unlock()
+	for _, fn := range pending {
+		fn()
+	}
 }
 
 func paintComponent(component Component, canvas *Canvas) {
@@ -228,13 +375,16 @@ func paintComponent(component Component, canvas *Canvas) {
 	for _, child := range state.children {
 		paintComponent(child, canvas)
 	}
+	if overlay, ok := component.(interface{ PaintOverlay(*Canvas) }); ok {
+		overlay.PaintOverlay(canvas)
+	}
 	if state.clip {
 		canvas.PopClip()
 	}
 }
 
 func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, deltaSeconds float64) {
-	if deltaSeconds < 0 || deltaSeconds > 0.5 {
+	if deltaSeconds < 0 {
 		deltaSeconds = 0
 	}
 	manager.notificationMu.Lock()
@@ -263,11 +413,14 @@ func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, deltaS
 }
 
 func (manager *Manager) HandleEvent(event Event) bool {
+	manager.ProcessPending()
 	manager.mu.RLock()
 	root := manager.root
 	visible := manager.visible
 	interactive := manager.interactive
 	unhandled := manager.unhandled
+	consumeUnhandled := manager.consumeUnhandled
+	gameNavigation := manager.gameNavigation
 	manager.mu.RUnlock()
 
 	if event.IsPointer() {
@@ -275,18 +428,37 @@ func (manager *Manager) HandleEvent(event Event) bool {
 	}
 	handled := false
 	if visible && interactive && root != nil {
-		handled = manager.handleTreeEvent(root, event)
+		handled = manager.handleTreeEvent(root, event, gameNavigation)
 	}
 	if !handled && unhandled != nil {
 		handled = unhandled(event)
 	}
-	return handled || (visible && interactive && root != nil)
+	if visible && interactive && root != nil && (event.Type == PointerDown || event.Type == PointerUp) {
+		manager.InvalidatePaint()
+	}
+	return handled || (visible && interactive && root != nil && consumeUnhandled)
 }
 
-func (manager *Manager) handleTreeEvent(root Component, event Event) bool {
+// SetConsumeUnhandledInput preserves the former game-overlay policy when
+// enabled. Desktop hosts normally use the default false value.
+func (manager *Manager) SetConsumeUnhandledInput(consume bool) {
+	manager.mu.Lock()
+	manager.consumeUnhandled = consume
+	manager.mu.Unlock()
+}
+
+// SetGameNavigation enables arrow/WASD focus movement for game menus.
+// Tab and Shift+Tab remain available in either mode.
+func (manager *Manager) SetGameNavigation(enabled bool) {
+	manager.mu.Lock()
+	manager.gameNavigation = enabled
+	manager.mu.Unlock()
+}
+
+func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigation bool) bool {
 	switch event.Type {
 	case PointerMove:
-		target := hitTest(root, event.X, event.Y)
+		target, _ := manager.popupHit(event.X, event.Y)
 		manager.setHovered(target)
 		if manager.captured != nil {
 			return dispatchEvent(manager.captured, event)
@@ -296,11 +468,17 @@ func (manager *Manager) handleTreeEvent(root Component, event Event) bool {
 		if manager.captured != nil && event.Button != manager.capturedButton {
 			return dispatchEvent(manager.captured, event)
 		}
-		target := hitTest(root, event.X, event.Y)
+		target, blocked := manager.popupHit(event.X, event.Y)
+		if top := manager.topInteractivePopup(); !blocked && top != nil && !top.modal && !containsComponent(top.content, target) {
+			manager.ClosePopup(top.id)
+			target, blocked = manager.popupHit(event.X, event.Y)
+		}
 		manager.setHovered(target)
 		if target == nil {
-			manager.setFocus(nil)
-			return false
+			if !blocked {
+				manager.setFocus(nil)
+			}
+			return blocked
 		}
 		if target.UIState().Focusable() {
 			manager.setFocus(target)
@@ -316,24 +494,49 @@ func (manager *Manager) handleTreeEvent(root Component, event Event) bool {
 			return dispatchEvent(manager.captured, event)
 		}
 		target := manager.captured
+		blocked := false
 		if target == nil {
-			target = hitTest(root, event.X, event.Y)
+			target, blocked = manager.popupHit(event.X, event.Y)
 		}
 		handled := dispatchEvent(target, event)
 		if manager.captured != nil {
 			manager.captured.UIState().pressed = false
 		}
 		manager.captured = nil
-		return handled
+		return handled || blocked
 	case PointerScroll:
-		return dispatchEvent(hitTest(root, event.X, event.Y), event)
-	case TextInput:
+		target, blocked := manager.popupHit(event.X, event.Y)
+		if target == nil {
+			return blocked
+		}
+		return dispatchScroll(target, event)
+	case TextInput, CompositionStart, CompositionUpdate, CompositionEnd:
 		return dispatchEvent(manager.focused, event)
 	case KeyDown, KeyUp:
+		if event.Type == KeyDown && event.Key == KeyEscape {
+			for i := len(manager.popups) - 1; i >= 0; i-- {
+				if !manager.popups[i].passive {
+					return manager.ClosePopup(manager.popups[i].id)
+				}
+			}
+		}
 		if manager.focused != nil && dispatchEvent(manager.focused, event) {
 			return true
 		}
 		if event.Type == KeyDown {
+			if manager.handleShortcut(event) {
+				return true
+			}
+			if modal := manager.topModal(); modal != nil {
+				root = modal.content
+			} else {
+				for i := len(manager.popups) - 1; i >= 0; i-- {
+					if !manager.popups[i].passive {
+						root = manager.popups[i].content
+						break
+					}
+				}
+			}
 			switch event.Key {
 			case KeyTab:
 				if event.Mods&ModShift != 0 {
@@ -341,9 +544,13 @@ func (manager *Manager) handleTreeEvent(root Component, event Event) bool {
 				}
 				return manager.focusNext(root, 1)
 			case KeyDownArrow, KeyS:
-				return manager.focusNext(root, 1)
+				if gameNavigation && event.Mods == 0 {
+					return manager.focusNext(root, 1)
+				}
 			case KeyUpArrow, KeyW:
-				return manager.focusNext(root, -1)
+				if gameNavigation && event.Mods == 0 {
+					return manager.focusNext(root, -1)
+				}
 			}
 		}
 		if manager.focused == nil {
@@ -379,6 +586,32 @@ func dispatchEvent(target Component, event Event) bool {
 	return false
 }
 
+func dispatchScroll(target Component, event Event) bool {
+	remaining := Vec2{X: -event.Scroll.X * 40, Y: -event.Scroll.Y * 40}
+	used := false
+	for target != nil {
+		if target.UIState().Enabled() {
+			if panel, ok := target.(*ScrollPanel); ok {
+				before := remaining
+				remaining = panel.ScrollBy(remaining.X, remaining.Y)
+				if remaining != before {
+					used = true
+				}
+				if remaining == (Vec2{}) {
+					return true
+				}
+			} else {
+				event.Scroll = Vec2{X: -remaining.X / 40, Y: -remaining.Y / 40}
+				if target.Handle(event) {
+					return true
+				}
+			}
+		}
+		target = target.UIState().parent
+	}
+	return used
+}
+
 func (manager *Manager) setHovered(component Component) {
 	if sameComponent(manager.hovered, component) {
 		return
@@ -386,13 +619,24 @@ func (manager *Manager) setHovered(component Component) {
 	if manager.hovered != nil {
 		manager.hovered.UIState().hovered = false
 	}
+	if manager.tooltipID != 0 {
+		manager.ClosePopup(manager.tooltipID)
+		manager.tooltipID = 0
+	}
 	manager.hovered = component
 	if component != nil {
 		component.UIState().hovered = true
+		if value := component.UIState().tooltip; value != "" && manager.topModal() == nil {
+			manager.tooltipID = manager.ShowTooltip(value, Rect{X: manager.pointer.X + 14, Y: manager.pointer.Y + 18})
+		}
 	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) setFocus(component Component) {
+	if modal := manager.topModal(); modal != nil && component != nil && !containsComponent(modal.content, component) {
+		return
+	}
 	if sameComponent(manager.focused, component) {
 		return
 	}
@@ -403,7 +647,18 @@ func (manager *Manager) setFocus(component Component) {
 	manager.focused = component
 	if component != nil {
 		component.UIState().focused = true
+		for ancestor := component.UIState().parent; ancestor != nil; ancestor = ancestor.UIState().parent {
+			if scroll, ok := ancestor.(*ScrollPanel); ok {
+				scroll.ScrollIntoView(component)
+			}
+		}
 	}
+	manager.caretDue = time.Time{}
+	if field, ok := component.(*TextField); ok {
+		field.caretVisible = true
+		manager.caretDue = time.Now().Add(500 * time.Millisecond)
+	}
+	manager.InvalidatePaint()
 }
 
 func (manager *Manager) focusNext(root Component, direction int) bool {
@@ -454,7 +709,8 @@ func collectFocusable(component Component, result *[]Component) {
 	}
 }
 
-func (manager *Manager) clearInteractionLocked() {
+func (manager *Manager) clearInteractionLocked() Component {
+	blurred := manager.focused
 	if manager.focused != nil {
 		manager.focused.UIState().focused = false
 	}
@@ -467,13 +723,75 @@ func (manager *Manager) clearInteractionLocked() {
 	manager.focused = nil
 	manager.hovered = nil
 	manager.captured = nil
+	manager.caretDue = time.Time{}
+	return blurred
 }
 
-func (manager *Manager) ClearInteraction() { manager.clearInteractionLocked() }
+func (manager *Manager) ClearInteraction() {
+	manager.mu.Lock()
+	blurred := manager.clearInteractionLocked()
+	manager.mu.Unlock()
+	if blurred != nil {
+		blurred.Handle(Event{Type: FocusLost})
+	}
+	manager.InvalidatePaint()
+}
+
+// clearSubtreeInteraction is called by State before a child leaves the tree.
+// All tree mutations and input delivery are serialized on the UI owner.
+func (manager *Manager) clearSubtreeInteraction(root *State) {
+	inSubtree := func(component Component) bool {
+		if component == nil {
+			return false
+		}
+		for state := component.UIState(); state != nil; {
+			if state == root {
+				return true
+			}
+			if state.parent == nil {
+				break
+			}
+			state = state.parent.UIState()
+		}
+		return false
+	}
+	if inSubtree(manager.focused) {
+		manager.setFocus(nil)
+	}
+	if inSubtree(manager.hovered) {
+		manager.setHovered(nil)
+	}
+	if inSubtree(manager.captured) {
+		manager.captured.UIState().pressed = false
+		manager.captured = nil
+	}
+	manager.InvalidatePaint()
+}
 
 func (manager *Manager) TextInputFocused() bool {
 	_, ok := manager.focused.(*TextField)
 	return ok
+}
+
+func (manager *Manager) FocusedCaretRect() (Rect, bool) {
+	field, ok := manager.focused.(*TextField)
+	if !ok {
+		return Rect{}, false
+	}
+	return field.CaretRect(), true
+}
+
+func (manager *Manager) HoveredTextInput() bool {
+	_, ok := manager.hovered.(*TextField)
+	return ok
+}
+
+func (manager *Manager) CancelPointerCapture() {
+	if manager.captured != nil {
+		manager.captured.UIState().pressed = false
+		manager.captured = nil
+		manager.InvalidatePaint()
+	}
 }
 
 func (manager *Manager) UnhandledEventHandler() func(Event) bool {

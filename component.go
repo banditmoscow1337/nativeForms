@@ -11,6 +11,7 @@ type Component interface {
 type State struct {
 	owner    Component
 	parent   Component
+	manager  *Manager
 	children []Component
 	rect     Rect
 	theme    Theme
@@ -23,6 +24,9 @@ type State struct {
 	offset    Vec2
 	anchor    Anchor
 	flex      float32
+	basis     float32
+	shrink    float32
+	shrinkSet bool
 
 	hidden    bool
 	disabled  bool
@@ -32,7 +36,10 @@ type State struct {
 	pressed   bool
 	focused   bool
 
-	onEvent func(Event) bool
+	onEvent       func(Event) bool
+	tooltip       string
+	accessibleID  AccessibleID
+	accessibility AccessibilityInfo
 }
 
 func (state *State) UIState() *State { return state }
@@ -71,11 +78,12 @@ func (state *State) Add(children ...Component) {
 		}
 		childState.parent = state.owner
 		state.children = append(state.children, child)
-		bindTree(child, state.owner)
+		bindTree(child, state.owner, state.manager)
 		if state.themed {
 			applyTheme(child, state.theme)
 		}
 	}
+	state.invalidateLayout()
 }
 
 func componentContainsState(component Component, target *State) bool {
@@ -102,19 +110,28 @@ func (state *State) Remove(child Component) bool {
 		copy(state.children[index:], state.children[index+1:])
 		state.children[len(state.children)-1] = nil
 		state.children = state.children[:len(state.children)-1]
-		child.UIState().parent = nil
+		bindTree(child, nil, nil)
+		if state.manager != nil {
+			state.manager.clearSubtreeInteraction(child.UIState())
+		}
+		state.invalidateLayout()
 		return true
 	}
 	return false
 }
 
 func (state *State) ClearChildren() {
-	for _, child := range state.children {
+	children := state.children
+	state.children = nil
+	for _, child := range children {
 		if child != nil {
-			child.UIState().parent = nil
+			bindTree(child, nil, nil)
+			if state.manager != nil {
+				state.manager.clearSubtreeInteraction(child.UIState())
+			}
 		}
 	}
-	state.children = state.children[:0]
+	state.invalidateLayout()
 }
 
 func (state *State) Children() []Component {
@@ -140,28 +157,75 @@ func (state *State) Theme() Theme {
 	return DefaultTheme()
 }
 
-func (state *State) SetVisible(visible bool)             { state.hidden = !visible }
-func (state *State) SetEnabled(enabled bool)             { state.disabled = !enabled }
-func (state *State) SetFocusable(focusable bool)         { state.focusable = focusable }
-func (state *State) SetClip(clip bool)                   { state.clip = clip }
-func (state *State) SetFlex(flex float32)                { state.flex = maxFloat32(0, flex) }
-func (state *State) SetMargin(margin Insets)             { state.margin = margin }
-func (state *State) SetOffset(offset Vec2)               { state.offset = offset }
-func (state *State) SetAnchor(anchor Anchor)             { state.anchor = anchor }
-func (state *State) SetPreferredSize(size Vec2)          { state.preferred = size }
-func (state *State) SetMinimumSize(size Vec2)            { state.minimum = size }
-func (state *State) SetMaximumSize(size Vec2)            { state.maximum = size }
+func (state *State) SetVisible(visible bool) {
+	if state.hidden == !visible {
+		return
+	}
+	if !visible && state.manager != nil {
+		state.manager.clearSubtreeInteraction(state)
+	}
+	state.hidden = !visible
+	state.invalidateLayout()
+}
+func (state *State) SetEnabled(enabled bool) {
+	if state.disabled == !enabled {
+		return
+	}
+	if !enabled && state.manager != nil {
+		state.manager.clearSubtreeInteraction(state)
+	}
+	state.disabled = !enabled
+	state.invalidatePaint()
+}
+func (state *State) SetFocusable(focusable bool) {
+	state.focusable = focusable
+	if !focusable && state.manager != nil && sameComponent(state.owner, state.manager.focused) {
+		state.manager.setFocus(nil)
+	}
+	state.invalidatePaint()
+}
+func (state *State) SetClip(clip bool)    { state.clip = clip; state.invalidatePaint() }
+func (state *State) SetFlex(flex float32) { state.flex = maxFloat32(0, flex); state.invalidateLayout() }
+func (state *State) SetFlexBasis(basis float32) {
+	state.basis = maxFloat32(0, basis)
+	state.invalidateLayout()
+}
+func (state *State) SetFlexShrink(shrink float32) {
+	state.shrink = maxFloat32(0, shrink)
+	state.shrinkSet = true
+	state.invalidateLayout()
+}
+func (state *State) SetMargin(margin Insets)             { state.margin = margin; state.invalidateLayout() }
+func (state *State) SetOffset(offset Vec2)               { state.offset = offset; state.invalidateLayout() }
+func (state *State) SetAnchor(anchor Anchor)             { state.anchor = anchor; state.invalidateLayout() }
+func (state *State) SetPreferredSize(size Vec2)          { state.preferred = size; state.invalidateLayout() }
+func (state *State) SetMinimumSize(size Vec2)            { state.minimum = size; state.invalidateLayout() }
+func (state *State) SetMaximumSize(size Vec2)            { state.maximum = size; state.invalidateLayout() }
 func (state *State) SetEventHandler(fn func(Event) bool) { state.onEvent = fn }
+func (state *State) SetTooltip(text string)              { state.tooltip = text }
+func (state *State) Tooltip() string                     { return state.tooltip }
 
-func bindTree(component Component, parent Component) {
+func (state *State) invalidateLayout() {
+	if state.manager != nil {
+		state.manager.InvalidateLayout()
+	}
+}
+func (state *State) invalidatePaint() {
+	if state.manager != nil {
+		state.manager.InvalidatePaint()
+	}
+}
+
+func bindTree(component Component, parent Component, manager *Manager) {
 	if component == nil {
 		return
 	}
 	state := component.UIState()
 	state.owner = component
 	state.parent = parent
+	state.manager = manager
 	for _, child := range state.children {
-		bindTree(child, component)
+		bindTree(child, component, manager)
 	}
 }
 
@@ -211,7 +275,7 @@ func (panel *Panel) Measure(constraints Constraints) Vec2 {
 		X: maxFloat32(0, constraints.Max.X-panel.Padding.Left-panel.Padding.Right),
 		Y: maxFloat32(0, constraints.Max.Y-panel.Padding.Top-panel.Padding.Bottom),
 	}
-	childConstraints := Constraints{Max: innerMax}
+	childConstraints := Constraints{Max: innerMax, BoundedX: constraints.HasMaxX(), BoundedY: constraints.HasMaxY()}
 	visibleCount := 0
 	content := Vec2{}
 
@@ -275,69 +339,151 @@ func (panel *Panel) Arrange(rect Rect) {
 }
 
 func (panel *Panel) arrangeStack(inner Rect) {
-	clear(panel.layoutChildren)
 	children := panel.layoutChildren[:0]
-	measured := panel.layoutSizes[:0]
-	mainFixed := float32(0)
-	flexTotal := float32(0)
-	for _, child := range panel.children {
-		if child == nil || !child.UIState().Visible() {
-			continue
-		}
-		size := child.Measure(Constraints{Max: Vec2{X: inner.W, Y: inner.H}})
-		children = append(children, child)
-		measured = append(measured, size)
-		state := child.UIState()
-		margin := state.margin
-		if panel.Direction == Horizontal {
-			mainFixed += margin.Left + margin.Right
-			if state.flex <= 0 {
-				mainFixed += size.X
-			}
-		} else {
-			mainFixed += margin.Top + margin.Bottom
-			if state.flex <= 0 {
-				mainFixed += size.Y
-			}
-		}
-		flexTotal += state.flex
-	}
-	panel.layoutChildren = children
-	panel.layoutSizes = measured
-	if len(children) > 1 {
-		mainFixed += panel.Gap * float32(len(children)-1)
-	}
+	sizes := panel.layoutSizes[:0]
 	mainAvailable := inner.W
 	if panel.Direction == Vertical {
 		mainAvailable = inner.H
 	}
-	flexSpace := maxFloat32(0, mainAvailable-mainFixed)
+	total := float32(0)
+	for _, child := range panel.children {
+		if child == nil || !child.UIState().Visible() {
+			continue
+		}
+		limits := Constraints{Max: Vec2{X: inner.W, Y: inner.H}}
+		if panel.Direction == Vertical {
+			limits.BoundedX = true
+			limits.Max.Y = 0
+		} else {
+			limits.BoundedY = true
+			limits.Max.X = 0
+		}
+		size := child.Measure(limits)
+		state := child.UIState()
+		if state.basis > 0 {
+			if panel.Direction == Vertical {
+				size.Y = state.basis
+			} else {
+				size.X = state.basis
+			}
+		}
+		children = append(children, child)
+		sizes = append(sizes, size)
+		if panel.Direction == Vertical {
+			total += size.Y + state.margin.Top + state.margin.Bottom
+		} else {
+			total += size.X + state.margin.Left + state.margin.Right
+		}
+	}
+	panel.layoutChildren, panel.layoutSizes = children, sizes
+	if len(children) > 1 {
+		total += panel.Gap * float32(len(children)-1)
+	}
+	delta := mainAvailable - total
+	weights := make([]float32, len(children))
+	active := make([]bool, len(children))
+	weight := float32(0)
+	for i, child := range children {
+		state := child.UIState()
+		if delta >= 0 {
+			weights[i] = state.flex
+		} else {
+			shrink := float32(1)
+			if state.shrinkSet {
+				shrink = state.shrink
+			}
+			base := sizes[i].X
+			if panel.Direction == Vertical {
+				base = sizes[i].Y
+			}
+			weights[i] = shrink * base
+		}
+		active[i] = weights[i] > 0
+		weight += weights[i]
+	}
+	remaining := delta
+	for weight > 0 {
+		frozen := false
+		for i, child := range children {
+			if !active[i] {
+				continue
+			}
+			state := child.UIState()
+			base, low, high := sizes[i].X, state.minimum.X, state.maximum.X
+			if panel.Direction == Vertical {
+				base, low, high = sizes[i].Y, state.minimum.Y, state.maximum.Y
+			}
+			proposed := base + remaining*weights[i]/weight
+			bounded := maxFloat32(low, proposed)
+			if high > 0 {
+				bounded = minFloat32(bounded, high)
+			}
+			if bounded != proposed {
+				if panel.Direction == Vertical {
+					sizes[i].Y = bounded
+				} else {
+					sizes[i].X = bounded
+				}
+				remaining -= bounded - base
+				weight -= weights[i]
+				active[i] = false
+				frozen = true
+			}
+		}
+		if frozen {
+			continue
+		}
+		for i := range children {
+			if !active[i] {
+				continue
+			}
+			if panel.Direction == Vertical {
+				sizes[i].Y += remaining * weights[i] / weight
+			} else {
+				sizes[i].X += remaining * weights[i] / weight
+			}
+		}
+		break
+	}
+	baseline := float32(0)
+	if panel.Align == AlignBaseline && panel.Direction == Horizontal {
+		for i, child := range children {
+			height := child.Measure(Constraints{Max: Vec2{X: sizes[i].X, Y: inner.H}, BoundedX: true, BoundedY: true}).Y
+			sizes[i].Y = height
+			value := height * 0.8
+			if b, ok := child.(interface{ Baseline() float32 }); ok {
+				value = b.Baseline()
+			}
+			baseline = maxFloat32(baseline, value+child.UIState().margin.Top)
+		}
+	}
 	cursor := inner.X
 	if panel.Direction == Vertical {
 		cursor = inner.Y
 	}
-
-	for index, child := range children {
+	for i, child := range children {
 		state := child.UIState()
 		margin := state.margin
-		size := measured[index]
+		size := sizes[i]
 		if panel.Direction == Horizontal {
 			cursor += margin.Left
-			if state.flex > 0 && flexTotal > 0 {
-				size.X = flexSpace * state.flex / flexTotal
+			cross := maxFloat32(0, inner.H-margin.Top-margin.Bottom)
+			y, height := alignCross(inner.Y+margin.Top, cross, size.Y, panel.Align)
+			if panel.Align == AlignBaseline {
+				value := size.Y * 0.8
+				if b, ok := child.(interface{ Baseline() float32 }); ok {
+					value = b.Baseline()
+				}
+				y = inner.Y + baseline - value
+				height = size.Y
 			}
-			availableCross := maxFloat32(0, inner.H-margin.Top-margin.Bottom)
-			y, height := alignCross(inner.Y+margin.Top, availableCross, size.Y, panel.Align)
-			child.Arrange(Rect{X: cursor, Y: y, W: size.X, H: height})
+			child.Arrange(Rect{X: cursor, Y: y, W: maxFloat32(0, size.X), H: height})
 			cursor += size.X + margin.Right + panel.Gap
 		} else {
 			cursor += margin.Top
-			if state.flex > 0 && flexTotal > 0 {
-				size.Y = flexSpace * state.flex / flexTotal
-			}
-			availableCross := maxFloat32(0, inner.W-margin.Left-margin.Right)
-			x, width := alignCross(inner.X+margin.Left, availableCross, size.X, panel.Align)
-			child.Arrange(Rect{X: x, Y: cursor, W: width, H: size.Y})
+			cross := maxFloat32(0, inner.W-margin.Left-margin.Right)
+			x, width := alignCross(inner.X+margin.Left, cross, size.X, panel.Align)
+			child.Arrange(Rect{X: x, Y: cursor, W: width, H: maxFloat32(0, size.Y)})
 			cursor += size.Y + margin.Bottom + panel.Gap
 		}
 	}
