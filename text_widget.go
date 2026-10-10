@@ -79,7 +79,7 @@ func (f *TextField) changed() {
 	f.Cursor = f.editor.Caret
 	f.caretVisible = true
 	if f.manager != nil && f.Focused() {
-		f.manager.caretDue = time.Now().Add(500 * time.Millisecond)
+		f.manager.caretDue = f.manager.now().Add(500 * time.Millisecond)
 	}
 	if f.Multiline {
 		f.invalidateLayout()
@@ -95,7 +95,7 @@ func (f *TextField) moved() {
 	f.caretVisible = true
 	f.invalidatePaint()
 	if f.manager != nil && f.Focused() {
-		f.manager.caretDue = time.Now().Add(500 * time.Millisecond)
+		f.manager.caretDue = f.manager.now().Add(500 * time.Millisecond)
 	}
 }
 func (f *TextField) insert(s string) bool {
