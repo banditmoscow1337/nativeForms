@@ -162,10 +162,7 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 		s.draw(line, context)
 		s.contextRelease(context)
 		runtime.KeepAlive(pixels)
-		mask := image.NewAlpha(image.Rect(0, 0, width, height))
-		for y := 0; y < height; y++ {
-			copy(mask.Pix[y*mask.Stride:y*mask.Stride+width], pixels[(height-1-y)*width:(height-y)*width])
-		}
+		mask := coreTextMask(pixels, width, height)
 		baseline := (float64(fontSize)*1.2-ascent-descent)/2 + ascent
 		result.Mask = mask
 		result.Offset = ui.Vec2{X: float32(x0), Y: float32(baseline - y1)}
@@ -181,4 +178,19 @@ func (s *coreTextShaper) Shape(text string, fontSize float32) (ui.ShapedText, bo
 	s.cache[key] = result
 	s.bytes += cost
 	return result, true
+}
+
+// Core Text's bitmap is upside down and mirrored relative to the mask
+// coordinates used by the software renderer. Convert both axes together;
+// the line's image bounds and caret positions stay in their original space.
+func coreTextMask(pixels []byte, width, height int) *image.Alpha {
+	mask := image.NewAlpha(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		src := pixels[(height-1-y)*width : (height-y)*width]
+		dst := mask.Pix[y*mask.Stride : y*mask.Stride+width]
+		for x := range dst {
+			dst[x] = src[width-1-x]
+		}
+	}
+	return mask
 }
