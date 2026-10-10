@@ -165,8 +165,14 @@ type Menu struct {
 }
 
 func NewMenu(items []MenuItem, onSelect func(string)) *Menu {
-	m := &Menu{Items: append([]MenuItem(nil), items...), OnSelect: onSelect}
+	m := &Menu{Items: append([]MenuItem(nil), items...), OnSelect: onSelect, active: -1}
 	m.owner, m.focusable = m, true
+	for i, item := range m.Items {
+		if !item.Disabled {
+			m.active = i
+			break
+		}
+	}
 	return m
 }
 
@@ -198,7 +204,10 @@ func (m *Menu) Paint(c *Canvas) {
 	}
 }
 
-func (m *Menu) indexAt(y float32) int {
+func (m *Menu) indexAt(x, y float32) int {
+	if !m.rect.Contains(x, y) {
+		return -1
+	}
 	i := int((y - m.rect.Y - 4) / m.Theme().ControlHeight)
 	if y < m.rect.Y+4 || i < 0 || i >= len(m.Items) {
 		return -1
@@ -226,16 +235,22 @@ func (m *Menu) activate() bool {
 func (m *Menu) Handle(e Event) bool {
 	switch e.Type {
 	case PointerMove:
-		if i := m.indexAt(e.Y); i >= 0 && i != m.active {
+		i := m.indexAt(e.X, e.Y)
+		if i >= 0 && m.Items[i].Disabled {
+			i = -1
+		}
+		if i != m.active {
 			m.active = i
 			m.invalidatePaint()
 		}
+		return true
 	case PointerDown:
 		return e.Button == MouseLeft
 	case PointerUp:
 		if e.Button == MouseLeft && m.rect.Contains(e.X, e.Y) {
-			m.active = m.indexAt(e.Y)
-			return m.activate()
+			m.active = m.indexAt(e.X, e.Y)
+			m.activate()
+			return true
 		}
 	case KeyDown:
 		switch e.Key {
@@ -247,16 +262,35 @@ func (m *Menu) Handle(e Event) bool {
 			if e.Key == KeyUpArrow {
 				step = -1
 			}
+			index := m.active
+			if index < 0 && step < 0 {
+				index = 0
+			}
 			for n := 0; n < len(m.Items); n++ {
-				m.active = (m.active + step + len(m.Items)) % len(m.Items)
-				if !m.Items[m.active].Disabled {
+				index = (index + step + len(m.Items)) % len(m.Items)
+				if !m.Items[index].Disabled {
+					m.active = index
+					m.invalidatePaint()
 					break
 				}
 			}
-			m.invalidatePaint()
+			return true
+		case KeyHome, KeyEnd:
+			start, step := 0, 1
+			if e.Key == KeyEnd {
+				start, step = len(m.Items)-1, -1
+			}
+			for i := start; i >= 0 && i < len(m.Items); i += step {
+				if !m.Items[i].Disabled {
+					m.active = i
+					m.invalidatePaint()
+					break
+				}
+			}
 			return true
 		case KeyEnter, KeySpace:
-			return m.activate()
+			m.activate()
+			return true
 		}
 	}
 	return m.State.Handle(e)
@@ -264,9 +298,7 @@ func (m *Menu) Handle(e Event) bool {
 
 func (manager *Manager) OpenMenu(items []MenuItem, bounds Rect) PopupID {
 	m := NewMenu(items, nil)
-	id := manager.OpenPopup(m, bounds, false)
-	m.popup = id
-	return id
+	return manager.OpenPopup(m, bounds, false)
 }
 
 func (manager *Manager) OpenContextMenu(items []MenuItem, x, y float32) PopupID {
@@ -323,20 +355,27 @@ func (c *ComboBox) Paint(canvas *Canvas) {
 			break
 		}
 	}
-	canvas.Text(label, c.rect.Inset(Symmetric(10, 0)), canvas.theme.FontSize, TextLeft, canvas.theme.Text)
-	canvas.Text("▾", c.rect.Inset(Symmetric(10, 0)), canvas.theme.FontSize, TextRight, canvas.theme.Text)
+	canvas.Text(label, Rect{X: c.rect.X + 10, Y: c.rect.Y, W: maxFloat32(0, c.rect.W-38), H: c.rect.H}, canvas.theme.FontSize, TextLeft, canvas.theme.Text)
+	paintChevron(canvas, Rect{X: c.rect.X + c.rect.W - 26, Y: c.rect.Y, W: 18, H: c.rect.H}, true, canvas.theme.Text)
 }
 
-func (c *ComboBox) open() {
-	if c.manager == nil {
-		return
+func (c *ComboBox) open() bool {
+	if c.manager == nil || len(c.Options) == 0 {
+		return false
 	}
 	items := make([]MenuItem, 0, len(c.Options))
 	for _, option := range c.Options {
 		items = append(items, MenuItem{ID: option.ID, Label: option.Label})
 	}
 	m := NewMenu(items, c.SetSelected)
-	m.popup = c.manager.OpenPopup(m, Rect{X: c.rect.X, Y: c.rect.Y + c.rect.H, W: c.rect.W}, false)
+	for i, option := range c.Options {
+		if option.ID == c.SelectedID {
+			m.active = i
+			break
+		}
+	}
+	c.manager.OpenPopup(m, Rect{X: c.rect.X, Y: c.rect.Y + c.rect.H, W: c.rect.W}, false)
+	return true
 }
 
 func (c *ComboBox) Handle(e Event) bool {
@@ -347,9 +386,8 @@ func (c *ComboBox) Handle(e Event) bool {
 		return true
 	}
 	if (e.Type == PointerUp && e.Button == MouseLeft && c.Pressed() && c.rect.Contains(e.X, e.Y)) ||
-		(e.Type == KeyDown && (e.Key == KeySpace || e.Key == KeyEnter)) {
-		c.open()
-		return true
+		(e.Type == KeyDown && !e.Repeat && (e.Key == KeySpace || e.Key == KeyEnter || e.Key == KeyDownArrow)) {
+		return c.open()
 	}
 	return c.State.Handle(e)
 }

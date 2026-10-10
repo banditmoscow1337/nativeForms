@@ -481,12 +481,12 @@ func (manager *Manager) SetGameNavigation(enabled bool) {
 func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigation bool) bool {
 	switch event.Type {
 	case PointerMove:
-		target, _ := manager.popupHit(event.X, event.Y)
+		target, blocked := manager.popupHit(event.X, event.Y)
 		manager.setHovered(target)
 		if manager.captured != nil {
-			return dispatchEvent(manager.captured, event)
+			target = manager.captured
 		}
-		return false
+		return dispatchEvent(target, event) || blocked
 	case PointerDown:
 		if manager.captured != nil && event.Button != manager.capturedButton {
 			return dispatchEvent(manager.captured, event)
@@ -537,6 +537,11 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 		return dispatchEvent(manager.focused, event)
 	case KeyDown, KeyUp:
 		if event.Type == KeyDown && event.Key == KeyEscape {
+			// The first Escape cancels an active IME preedit. A subsequent
+			// Escape may close the popup after the editor has settled.
+			if field, ok := manager.focused.(*TextField); ok && field.composing && dispatchEvent(field, event) {
+				return true
+			}
 			for i := len(manager.popups) - 1; i >= 0; i-- {
 				if !manager.popups[i].passive {
 					return manager.ClosePopup(manager.popups[i].id)
