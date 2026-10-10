@@ -12,20 +12,33 @@ const (
 	CommandQuad CommandKind = iota
 	CommandLine
 	CommandMask
+	CommandImage
+	CommandRoundedRect
+)
+
+type ImageFilter uint8
+
+const (
+	FilterNearest ImageFilter = iota
+	FilterBilinear
 )
 
 // DrawCommand is an ordered paint operation in logical coordinates.
 // Quad UVs address the shared font atlas; its white texel draws solid shapes.
 type DrawCommand struct {
-	Kind  CommandKind
-	Rect  Rect
-	UV    Rect
-	Clip  Rect
-	Tint  Color
-	From  Vec2
-	To    Vec2
-	Width float32
-	Mask  *image.Alpha
+	Kind   CommandKind
+	Rect   Rect
+	UV     Rect
+	Clip   Rect
+	Tint   Color
+	From   Vec2
+	To     Vec2
+	Width  float32
+	Mask   *image.Alpha
+	Image  *ImageResource
+	Source Rect // image pixel coordinates, not atlas UVs
+	Filter ImageFilter
+	Radius float32
 }
 
 type Canvas struct {
@@ -52,6 +65,61 @@ func (canvas *Canvas) PopClip() {
 func (canvas *Canvas) Rect(rect Rect, tint Color) {
 	const uv = 0.5 / fontAtlasSize
 	canvas.quad(rect, Rect{X: uv, Y: uv}, tint)
+}
+
+// RoundedRect records a filled rectangle with circular corners. Its radius is
+// clamped to half the shorter side. The software renderer antialiases edges.
+func (canvas *Canvas) RoundedRect(rect Rect, radius float32, tint Color) {
+	if radius <= 0 {
+		canvas.Rect(rect, tint)
+		return
+	}
+	if rect.Empty() || tint.A <= 0 || len(canvas.clips) == 0 {
+		return
+	}
+	clip := canvas.clips[len(canvas.clips)-1]
+	if intersect(rect, clip).Empty() {
+		return
+	}
+	radius = minFloat32(radius, minFloat32(rect.W, rect.H)*0.5)
+	*canvas.commands = append(*canvas.commands, DrawCommand{
+		Kind: CommandRoundedRect, Rect: rect, Clip: clip, Radius: radius, Tint: tint,
+	})
+}
+
+// Image draws source pixel coordinates into dest logical coordinates. A zero
+// source rectangle selects the whole image. Tint is straight RGBA and
+// multiplies the image channels and alpha; use opaque white for no tint.
+func (canvas *Canvas) Image(resource *ImageResource, dest, source Rect, tint Color, filter ImageFilter) {
+	if resource == nil || dest.Empty() || tint.A <= 0 || len(canvas.clips) == 0 {
+		return
+	}
+	if source == (Rect{}) {
+		source = Rect{W: float32(resource.width), H: float32(resource.height)}
+	}
+	if source.Empty() {
+		return
+	}
+	visibleSource := intersect(source, Rect{W: float32(resource.width), H: float32(resource.height)})
+	if visibleSource.Empty() {
+		return
+	}
+	// Preserve the mapping if the requested source extends beyond the image.
+	fullDest := dest
+	dest = Rect{
+		X: fullDest.X + (visibleSource.X-source.X)*fullDest.W/source.W,
+		Y: fullDest.Y + (visibleSource.Y-source.Y)*fullDest.H/source.H,
+		W: visibleSource.W*fullDest.W/source.W,
+		H: visibleSource.H*fullDest.H/source.H,
+	}
+	clip := canvas.clips[len(canvas.clips)-1]
+	if intersect(dest, clip).Empty() {
+		return
+	}
+	*canvas.commands = append(*canvas.commands, DrawCommand{
+		Kind: CommandImage, Image: resource, Rect: dest, Source: visibleSource,
+		Clip: clip, Tint: tint, Filter: filter,
+	})
 }
 
 func (canvas *Canvas) Border(rect Rect, width float32, tint Color) {
@@ -186,7 +254,9 @@ type Vertex struct {
 	R, G, B, A float32
 }
 
-// Tessellate returns all vertices in paint order without silently truncating.
+// Tessellate returns atlas-backed geometric and mask vertices in paint order
+// without truncating. Image and rounded-rectangle commands require the software
+// renderer; the Vulkan adapter reports an error for them.
 func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 	dst = dst[:0]
 	for _, c := range commands {

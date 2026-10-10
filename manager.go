@@ -250,6 +250,9 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.mu.Unlock()
 
 	manager.frame.Width, manager.frame.Height = width, height
+	// The backing array is reused, but discarded commands must not retain
+	// immutable image snapshots from earlier frames.
+	clear(manager.frame.Commands)
 	manager.frame.Commands = manager.frame.Commands[:0]
 	if !visible || width <= 0 || height <= 0 {
 		return

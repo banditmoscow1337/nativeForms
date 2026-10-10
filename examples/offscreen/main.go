@@ -6,6 +6,7 @@ import (
 	"os"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/examples/paintdemo"
 	"github.com/banditmoscow1337/nativeForms/software"
 )
 
@@ -14,6 +15,7 @@ func main() {
 	root.Padding = ui.All(20)
 	root.Background = ui.RGBA(20, 24, 31, 255)
 	root.Add(ui.NewLabel("nativeForms software frame"))
+	root.Add(paintdemo.New())
 	field := ui.NewTextField("Hello, мир!", nil)
 	root.Add(field)
 	root.Add(ui.NewButton("Button", nil))
