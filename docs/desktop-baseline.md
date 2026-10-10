@@ -79,7 +79,8 @@ check the Wayland path when both buffers are busy.
 ## Input and icon acceptance
 
 The headless input regression tests cover hover delivery and bubbling without
-pointer capture, dragging out of a menu, disabled menu items, keyboard selection
+pointer capture, dragging out of a menu, canceling background capture when a
+modal opens, disabled menu items, keyboard selection
 in ComboBox, modal Tab focus and Escape during IME composition. ComboBox and
 VirtualTree chevrons are now line commands shared by software and Vulkan; no
 arrow glyph is required from the portable font atlas.

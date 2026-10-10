@@ -106,6 +106,33 @@ func TestEscapeCancelsIMEBeforeClosingModal(t *testing.T) {
 	}
 }
 
+func TestOpeningModalCancelsBackgroundPointerCapture(t *testing.T) {
+	manager := New()
+	manager.SetInteractive(true)
+	root := NewPanel()
+	backgroundMoves := 0
+	root.SetEventHandler(func(e Event) bool {
+		if e.Type == PointerMove {
+			backgroundMoves++
+		}
+		return true
+	})
+	manager.SetRoot(root)
+	manager.BeginFrame(320, 240, 0)
+	manager.HandleEvent(Event{Type: PointerDown, Button: MouseLeft, X: 5, Y: 5})
+	if manager.captured != root {
+		t.Fatal("background did not capture the initial drag")
+	}
+	manager.OpenPopup(NewButton("Dialog", nil), Rect{X: 80, Y: 80, W: 160, H: 60}, true)
+	manager.BeginFrame(320, 240, 0)
+	if manager.captured != nil || root.Pressed() {
+		t.Fatal("opening a modal left background capture active")
+	}
+	if !manager.HandleEvent(Event{Type: PointerMove, X: 5, Y: 5}) || backgroundMoves != 0 {
+		t.Fatal("pointer move leaked through the modal to the background")
+	}
+}
+
 func TestEscapeCancelsEmptyCompositionStart(t *testing.T) {
 	manager := New()
 	manager.SetInteractive(true)

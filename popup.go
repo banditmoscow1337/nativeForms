@@ -19,6 +19,10 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	if content == nil {
 		return 0
 	}
+	if modal {
+		manager.CancelPointerCapture()
+		manager.setHovered(nil)
+	}
 	if manager.tooltipID != 0 {
 		manager.ClosePopup(manager.tooltipID)
 		manager.tooltipID = 0
