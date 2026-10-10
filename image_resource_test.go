@@ -28,6 +28,10 @@ func TestImageResourceSnapshotsAndVersion(t *testing.T) {
 		second.RGBAAt(0, 0) != (color.RGBA{G: 255, A: 255}) {
 		t.Fatal("replacing an image changed a frame's old resource or lost its ID/version")
 	}
+	third, err := first.Replace(source)
+	if err != nil || third.Version() != 3 || second.Version() != 2 {
+		t.Fatal("updates from the same old snapshot reused a version number")
+	}
 	if _, err := NewImageResource(nil); err == nil {
 		t.Fatal("nil image was accepted")
 	}

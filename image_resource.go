@@ -17,6 +17,7 @@ type ImageResource struct {
 	id, version   uint64
 	width, height int
 	pixels        []byte
+	versions      *atomic.Uint64
 }
 
 func NewImageResource(source image.Image) (*ImageResource, error) {
@@ -26,20 +27,23 @@ func NewImageResource(source image.Image) (*ImageResource, error) {
 	}
 	resource.id = nextImageID.Add(1)
 	resource.version = 1
+	resource.versions = new(atomic.Uint64)
+	resource.versions.Store(1)
 	return resource, nil
 }
 
 // Replace returns a new version with the same ID. Existing frames keep the
 // old snapshot alive; update widgets via SetImage to show the new version.
 func (resource *ImageResource) Replace(source image.Image) (*ImageResource, error) {
-	if resource == nil {
-		return nil, fmt.Errorf("cannot replace a nil image resource")
+	if resource == nil || resource.versions == nil {
+		return nil, fmt.Errorf("cannot replace an uninitialized image resource")
 	}
 	replacement, err := copyImageResource(source)
 	if err != nil {
 		return nil, err
 	}
-	replacement.id, replacement.version = resource.id, resource.version+1
+	replacement.id, replacement.version = resource.id, resource.versions.Add(1)
+	replacement.versions = resource.versions
 	return replacement, nil
 }
 
