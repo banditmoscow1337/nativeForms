@@ -27,6 +27,18 @@ func registerView() error {
 		return fmt.Errorf("darwin: NSTextInputClient unavailable")
 	}
 	methods := []objc.MethodDef{
+		{Cmd: selector("isFlipped"), Fn: func(objc.ID, objc.SEL) bool { return true }},
+		{Cmd: selector("drawRect:"), Fn: func(self objc.ID, _ objc.SEL, _ rect) {
+			w := viewWindows[self]
+			if w == nil || w.representation == 0 {
+				return
+			}
+			// The framebuffer uses top-left coordinates. Draw its pixels
+			// directly so an image view cannot reinterpret their direction.
+			bounds := objc.Send[rect](self, selector("bounds"))
+			objc.Send[bool](w.representation, selector("drawInRect:fromRect:operation:fraction:respectFlipped:hints:"),
+				bounds, rect{}, uint64(1), float64(1), true, objc.ID(0))
+		}},
 		{Cmd: selector("acceptsFirstResponder"), Fn: func(objc.ID, objc.SEL) bool { return true }},
 		{Cmd: selector("acceptsFirstMouse:"), Fn: func(objc.ID, objc.SEL, objc.ID) bool { return true }},
 		{Cmd: selector("hasMarkedText"), Fn: func(self objc.ID, _ objc.SEL) bool { w := viewWindows[self]; return w != nil && w.marked != "" }},
@@ -133,8 +145,7 @@ func registerView() error {
 			if !ok {
 				return rect{}
 			}
-			bounds := objc.Send[rect](self, selector("bounds"))
-			local := rect{Origin: point{X: float64(r.X), Y: bounds.Size.H - float64(r.Y+r.H)}, Size: size{W: float64(max(float32(1), r.W)), H: float64(r.H)}}
+			local := rect{Origin: point{X: float64(r.X), Y: float64(r.Y)}, Size: size{W: float64(max(float32(1), r.W)), H: float64(r.H)}}
 			inWindow := objc.Send[rect](self, selector("convertRect:toView:"), local, objc.ID(0))
 			return objc.Send[rect](w.window, selector("convertRectToScreen:"), inWindow)
 		}},
@@ -241,7 +252,7 @@ func registerView() error {
 		}},
 	}
 	var err error
-	nativeViewClass, err = objc.RegisterClass("NativeFormsInputImageView", objc.GetClass("NSImageView"), []*objc.Protocol{protocol}, nil, methods)
+	nativeViewClass, err = objc.RegisterClass("NativeFormsInputView", objc.GetClass("NSView"), []*objc.Protocol{protocol}, nil, methods)
 	return err
 }
 func plainString(value objc.ID) string {

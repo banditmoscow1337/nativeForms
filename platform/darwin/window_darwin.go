@@ -46,7 +46,7 @@ type Options struct {
 type Window struct {
 	manager                                   *ui.Manager
 	options                                   Options
-	app, window, view, bitmap, representation objc.ID
+	app, window, view, representation objc.ID
 	framebuffer                               *image.RGBA
 	renderer                                  *software.Renderer
 	width, height                             int
@@ -201,6 +201,8 @@ func (w *Window) Open() error {
 	}
 	viewWindows[w.view] = w
 	app.windows[w.window] = w
+	// Framebuffer coordinates always increase from left to right.
+	w.view.Send(selector("setUserInterfaceLayoutDirection:"), uint64(0)) // NSUserInterfaceLayoutDirectionLeftToRight
 	title := w.options.Title
 	if title == "" {
 		title = "nativeForms"
@@ -308,13 +310,6 @@ func (w *Window) destroy() {
 	if objc.Send[bool](w.window, selector("isVisible")) {
 		w.window.Send(selector("close"))
 	}
-	if w.view != 0 {
-		w.view.Send(selector("setImage:"), objc.ID(0))
-	}
-	if w.bitmap != 0 {
-		w.bitmap.Send(selector("release"))
-		w.bitmap = 0
-	}
 	if w.representation != 0 {
 		w.representation.Send(selector("release"))
 		w.representation = 0
@@ -347,22 +342,12 @@ func (w *Window) paint(width, height int) error {
 			w.representation.Send(selector("release"))
 			w.representation = 0
 		}
-		if w.bitmap != 0 {
-			w.bitmap.Send(selector("release"))
-			w.bitmap = 0
-		}
 		w.representation = class("NSBitmapImageRep").Send(selector("alloc"))
 		w.representation = w.representation.Send(selector("initWithBitmapDataPlanes:pixelsWide:pixelsHigh:bitsPerSample:samplesPerPixel:hasAlpha:isPlanar:colorSpaceName:bytesPerRow:bitsPerPixel:"),
 			uintptr(0), width, height, 8, 4, true, false, nsString("NSDeviceRGBColorSpace"), width*4, 32)
 		if w.representation == 0 {
 			return fmt.Errorf("darwin: bitmap representation failed")
 		}
-		w.bitmap = class("NSImage").Send(selector("alloc")).Send(selector("initWithSize:"), size{W: float64(width), H: float64(height)})
-		if w.bitmap == 0 {
-			return fmt.Errorf("darwin: NSImage initialization failed")
-		}
-		w.bitmap.Send(selector("addRepresentation:"), w.representation)
-		w.view.Send(selector("setImage:"), w.bitmap)
 	}
 	now := time.Now()
 	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
