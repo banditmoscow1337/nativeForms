@@ -22,6 +22,7 @@ type TextField struct {
 	lastPoint                     Vec2
 	clicks                        int
 	caretVisible                  bool
+	composing                     bool
 }
 
 func NewTextField(text string, onChange func(string)) *TextField {
@@ -57,6 +58,7 @@ func (f *TextField) SetText(text string) {
 	}
 	f.Text = text
 	f.editor.SetText(text)
+	f.composing = false
 	f.Cursor = f.editor.Caret
 	f.invalidateLayout()
 	if f.OnChange != nil {
@@ -69,6 +71,7 @@ func (f *TextField) syncExternal() {
 	}
 	if f.editor.Text != f.Text {
 		f.editor.SetText(f.Text)
+		f.composing = false
 	}
 	if f.Cursor != f.editor.Caret {
 		f.editor.Move(f.Cursor, false)
@@ -351,6 +354,7 @@ func (f *TextField) Handle(event Event) bool {
 	switch event.Type {
 	case FocusLost:
 		e.Preedit = ""
+		f.composing = false
 		f.caretVisible = true
 		if f.OnSubmit != nil {
 			f.OnSubmit(f.Text)
@@ -419,12 +423,14 @@ func (f *TextField) Handle(event Event) bool {
 		}
 	case CompositionStart:
 		e.Preedit = ""
+		f.composing = !f.ReadOnly
 		f.invalidatePaint()
 		return true
 	case CompositionUpdate:
 		if f.ReadOnly {
 			return true
 		}
+		f.composing = true
 		e.Preedit = event.Text
 		e.PreeditCaret = len([]rune(event.Text))
 		e.PreeditAnchor = e.PreeditCaret
@@ -435,6 +441,7 @@ func (f *TextField) Handle(event Event) bool {
 		f.invalidatePaint()
 		return true
 	case CompositionEnd:
+		f.composing = false
 		e.Preedit = ""
 		f.invalidatePaint()
 		if event.Text != "" {
@@ -446,6 +453,12 @@ func (f *TextField) Handle(event Event) bool {
 			return f.insert(string(event.Rune))
 		}
 	case KeyDown:
+		if event.Key == KeyEscape && f.composing {
+			f.composing = false
+			e.Preedit = ""
+			f.invalidatePaint()
+			return true
+		}
 		mod := event.Mods&(ModControl|ModSuper) != 0
 		switch {
 		case mod && event.Key == KeyA:

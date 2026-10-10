@@ -383,11 +383,7 @@ func (v *VirtualTree) Paint(c *Canvas) {
 		}
 		indent := float32(row.depth) * 18
 		if row.children {
-			icon := "▸"
-			if v.Expanded[row.id] {
-				icon = "▾"
-			}
-			c.Text(icon, Rect{X: r.X + indent + 5, Y: r.Y, W: 18, H: r.H}, c.theme.FontSize, TextLeft, c.theme.Text)
+			paintChevron(c, Rect{X: r.X + indent + 5, Y: r.Y, W: 18, H: r.H}, v.Expanded[row.id], c.theme.Text)
 		}
 		c.Text(v.Model.Label(row.id), Rect{X: r.X + indent + 26, Y: r.Y, W: maxFloat32(0, r.W-indent-30), H: r.H}, c.theme.FontSize, TextLeft, c.theme.Text)
 	}

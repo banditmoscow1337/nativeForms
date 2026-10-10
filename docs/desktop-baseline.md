@@ -76,6 +76,22 @@ a short notification after a long idle period to observe its full lifetime.
 Repeat on Windows, macOS, X11 and Wayland; also hide/restore the window and
 check the Wayland path when both buffers are busy.
 
+## Input and icon acceptance
+
+The headless input regression tests cover hover delivery and bubbling without
+pointer capture, dragging out of a menu, disabled menu items, keyboard selection
+in ComboBox, modal Tab focus and Escape during IME composition. ComboBox and
+VirtualTree chevrons are now line commands shared by software and Vulkan; no
+arrow glyph is required from the portable font atlas.
+
+For native acceptance, move the pointer between menu rows without pressing a
+button, then drag outside the window and release. In a dialog with a focused
+text field, start a real IME preedit: the first Escape should cancel the
+composition and leave the dialog open; the next Escape should close it. Check
+Tab and Shift+Tab across enabled controls, keyboard opening and selection in a
+ComboBox, and chevrons with a font that has no arrow glyphs. Repeat on Windows,
+macOS, X11 and Wayland; headless tests cannot validate OS IME event ordering.
+
 ## Local checks to run on each target
 
 Use Go 1.27.0 or newer. In a checkout at the commit you want to accept, run:
