@@ -13,7 +13,9 @@ type Renderer struct {
 	scaled []ui.DrawCommand
 }
 
-func New() *Renderer { return &Renderer{atlas: ui.FontAtlas().(*image.NRGBA)} }
+// The atlas is only needed when a frame contains a bitmap font quad. Native
+// text shapers emit masks, so most desktop windows never need its 16 MiB image.
+func New() *Renderer { return &Renderer{} }
 
 func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || frame.Width <= 0 || frame.Height <= 0 {
@@ -98,6 +100,16 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 	visible := intersection(c.Rect, c.Clip)
 	if visible.W <= 0 || visible.H <= 0 || c.Tint.A <= 0 {
 		return
+	}
+	// Canvas.Fill samples the white center of the atlas's first texel. It is
+	// exactly opaque, so software rendering can fill directly without an atlas.
+	const whiteUV = float32(0.5 / 2048) // fontAtlasSize in the UI package
+	if c.UV == (ui.Rect{X: whiteUV, Y: whiteUV}) {
+		renderer.solid(dst, visible, c.Tint, 1)
+		return
+	}
+	if renderer.atlas == nil {
+		renderer.atlas = ui.FontAtlas().(*image.NRGBA)
 	}
 	left, top, right, bottom := pixels(dst, visible)
 	atlasBounds := renderer.atlas.Bounds()
