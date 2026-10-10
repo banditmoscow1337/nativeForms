@@ -14,6 +14,8 @@ import (
 )
 
 func TestBitmapFramebufferSharesNativeBacking(t *testing.T) {
+	runtime.LockOSThread() // AppKit autorelease pools belong to their OS thread.
+	defer runtime.UnlockOSThread()
 	if err := loadAppKit(); err != nil {
 		t.Fatal(err)
 	}
