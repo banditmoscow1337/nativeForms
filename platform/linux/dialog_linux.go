@@ -140,6 +140,9 @@ func (w *X11Window) fileDialog(name string, save, folder bool) (string, error) {
 	if w == nil || w.conn == nil || w.modal {
 		return "", fmt.Errorf("x11: file dialog needs an available running window")
 	}
+	if !w.portal {
+		return "", platform.Unsupported("x11", platform.FeatureFileDialog)
+	}
 	w.modal = true
 	defer func() { w.modal = false }()
 	if w.ime != nil {
@@ -171,6 +174,9 @@ func (w *WaylandWindow) OpenFolder() (string, error)          { return w.fileDia
 func (w *WaylandWindow) fileDialog(name string, save, folder bool) (string, error) {
 	if w == nil || w.wire == nil || w.modal {
 		return "", fmt.Errorf("wayland: file dialog needs an available running window")
+	}
+	if !w.portal {
+		return "", platform.Unsupported("wayland", platform.FeatureFileDialog)
 	}
 	w.modal = true
 	defer func() { w.modal = false }()

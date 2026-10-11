@@ -387,15 +387,31 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 }
 
 func (w *Window) ClipboardText() (string, error) {
+	if w == nil || w.window == 0 {
+		return "", fmt.Errorf("darwin: clipboard needs a running window")
+	}
 	board := class("NSPasteboard").Send(selector("generalPasteboard"))
 	value := board.Send(selector("stringForType:"), nsString("public.utf8-plain-text"))
 	if value == 0 {
 		return "", nil
 	}
-	return stringValue(value), nil
+	if objc.Send[uintptr](value, selector("lengthOfBytesUsingEncoding:"), uint64(4)) > platform.ClipboardTextLimit {
+		return "", fmt.Errorf("darwin: clipboard text is too large")
+	}
+	text := stringValue(value)
+	if err := platform.ValidateClipboardText(text); err != nil {
+		return "", err
+	}
+	return text, nil
 }
 
 func (w *Window) SetClipboardText(value string) error {
+	if w == nil || w.window == 0 {
+		return fmt.Errorf("darwin: clipboard needs a running window")
+	}
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return err
+	}
 	board := class("NSPasteboard").Send(selector("generalPasteboard"))
 	board.Send(selector("clearContents"))
 	if !objc.Send[bool](board, selector("setString:forType:"), nsString(value), nsString("public.utf8-plain-text")) {

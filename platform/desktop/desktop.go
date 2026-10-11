@@ -11,6 +11,7 @@ import (
 // when an application needs methods outside this interface.
 type Window interface {
 	platform.FileDialogs
+	platform.TextClipboard
 	Run() error
 	Close()
 	SetSize(width, height int) error

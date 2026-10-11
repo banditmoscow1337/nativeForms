@@ -1,6 +1,9 @@
 package platform
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestLogicalAndPixelSizes(t *testing.T) {
 	for _, tc := range []struct {
@@ -31,5 +34,18 @@ func TestValidateSize(t *testing.T) {
 	}
 	if err := ValidateSize(1100, 700, 1.5); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateClipboardText(t *testing.T) {
+	for _, value := range []string{"hello 🙂", strings.Repeat("a", ClipboardTextLimit)} {
+		if err := ValidateClipboardText(value); err != nil {
+			t.Fatalf("rejected clipboard text of size %d: %v", len(value), err)
+		}
+	}
+	for _, value := range []string{strings.Repeat("a", ClipboardTextLimit+1), "a\x00b", "\xff"} {
+		if err := ValidateClipboardText(value); err == nil {
+			t.Fatalf("accepted invalid clipboard text of size %d", len(value))
+		}
 	}
 }

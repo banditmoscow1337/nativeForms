@@ -819,9 +819,9 @@ func (w *WaylandWindow) pointerEvent(opcode uint16, p []byte) error {
 			return fmt.Errorf("wayland: short pointer event")
 		}
 		w.pointerPos = ui.Vec2{X: float32(int32(u(offset))) / 256, Y: float32(int32(u(offset+4))) / 256}
-		w.Manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: w.pointerPos.X, Y: w.pointerPos.Y})
+		w.Manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: w.pointerPos.X, Y: w.pointerPos.Y, Mods: w.modifiers()})
 	case 1:
-		w.Manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: -1e6, Y: -1e6})
+		w.Manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: -1e6, Y: -1e6, Mods: w.modifiers()})
 	case 3:
 		if len(p) < 16 {
 			return fmt.Errorf("wayland: short pointer button")
@@ -841,7 +841,7 @@ func (w *WaylandWindow) pointerEvent(opcode uint16, p []byte) error {
 		if u(12) == 0 {
 			kind = ui.PointerUp
 		}
-		w.Manager.HandleEvent(ui.Event{Type: kind, Button: button, X: w.pointerPos.X, Y: w.pointerPos.Y})
+		w.Manager.HandleEvent(ui.Event{Type: kind, Button: button, X: w.pointerPos.X, Y: w.pointerPos.Y, Mods: w.modifiers()})
 	case 4:
 		if len(p) < 12 {
 			return fmt.Errorf("wayland: short pointer axis")
@@ -853,7 +853,7 @@ func (w *WaylandWindow) pointerEvent(opcode uint16, p []byte) error {
 		} else {
 			scroll.X = value
 		}
-		w.Manager.HandleEvent(ui.Event{Type: ui.PointerScroll, X: w.pointerPos.X, Y: w.pointerPos.Y, Scroll: scroll})
+		w.Manager.HandleEvent(ui.Event{Type: ui.PointerScroll, X: w.pointerPos.X, Y: w.pointerPos.Y, Scroll: scroll, Mods: w.modifiers()})
 	}
 	return nil
 }
@@ -1083,11 +1083,16 @@ var waylandUSPunctuationKeys = map[uint32]ui.Key{
 	51: ui.KeyComma, 52: ui.KeyPeriod, 53: ui.KeySlash,
 }
 
-func (w *WaylandWindow) dispatchKey(code uint32, down, repeat bool) {
+func (w *WaylandWindow) modifiers() int {
 	mods := x11Mods(uint16(w.keyMods))
 	if w.pressed[42] || w.pressed[54] {
 		mods |= ui.ModShift
 	}
+	return mods
+}
+
+func (w *WaylandWindow) dispatchKey(code uint32, down, repeat bool) {
+	mods := w.modifiers()
 	key, r := evdevUS(code, mods&ui.ModShift != 0)
 	sym := uint32(r) | 0x1000000
 	if w.keymap != nil {

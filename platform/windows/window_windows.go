@@ -272,10 +272,18 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	case wmDropFiles:
 		w.filesDropped(wp)
 		return 0
-	case wmKeyDown, wmKeyUp:
+	case wmKeyDown, wmKeyUp, wmSysKeyDown, wmSysKeyUp:
 		key := translateKey(uint32(wp))
-		w.manager.HandleEvent(ui.Event{Type: map[bool]ui.EventType{true: ui.KeyDown, false: ui.KeyUp}[msg == wmKeyDown],
-			Key: key, Repeat: msg == wmKeyDown && (lp&(1<<30)) != 0, Mods: w.mods()})
+		down := msg == wmKeyDown || msg == wmSysKeyDown
+		kind := ui.KeyUp
+		if down {
+			kind = ui.KeyDown
+		}
+		handled := w.manager.HandleEvent(ui.Event{Type: kind, Key: key,
+			Repeat: down && (lp&(1<<30)) != 0, Mods: w.mods()})
+		if (msg == wmSysKeyDown || msg == wmSysKeyUp) && !handled {
+			return call(win.defProc, hwnd, uintptr(msg), wp, lp)
+		}
 		return 0
 	case wmChar:
 		w.character(uint16(wp))

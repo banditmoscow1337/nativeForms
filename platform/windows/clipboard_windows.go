@@ -7,12 +7,20 @@ import (
 	"runtime"
 	"unicode/utf16"
 	"unsafe"
+
+	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
 func (w *Window) SetClipboardText(value string) error {
+	if w == nil {
+		return fmt.Errorf("windows: window is not running")
+	}
 	hwnd := w.hwnd.Load()
 	if hwnd == 0 {
 		return fmt.Errorf("windows: window is not running")
+	}
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return err
 	}
 	if call(win.openClipboard, hwnd) == 0 {
 		return fmt.Errorf("windows: OpenClipboard failed")
@@ -49,6 +57,9 @@ func (w *Window) SetClipboardText(value string) error {
 }
 
 func (w *Window) ClipboardText() (string, error) {
+	if w == nil {
+		return "", fmt.Errorf("windows: window is not running")
+	}
 	hwnd := w.hwnd.Load()
 	if hwnd == 0 {
 		return "", fmt.Errorf("windows: window is not running")
@@ -62,7 +73,7 @@ func (w *Window) ClipboardText() (string, error) {
 		return "", nil
 	}
 	size := call(win.globalSize, handle)
-	if size > 64*1024*1024 {
+	if size > platform.ClipboardTextLimit*2+2 {
 		return "", fmt.Errorf("windows: clipboard text is too large")
 	}
 	address := call(win.globalLock, handle)
@@ -75,5 +86,9 @@ func (w *Window) ClipboardText() (string, error) {
 	for end < len(raw) && raw[end] != 0 {
 		end++
 	}
-	return string(utf16.Decode(raw[:end])), nil
+	value := string(utf16.Decode(raw[:end]))
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
