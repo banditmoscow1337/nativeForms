@@ -176,7 +176,7 @@ func (r *RadioGroup) Handle(e Event) bool {
 
 type MenuItem struct {
 	ID, Label string
-	Icon     *ImageResource
+	Icon      *ImageResource
 	Disabled  bool
 	Action    func()
 }
@@ -187,14 +187,15 @@ type Menu struct {
 	OnSelect func(string)
 	// MaxVisibleItems bounds the menu height; the active item scrolls into view.
 	// Zero shows all items.
-	MaxVisibleItems int
-	active   int
-	firstVisible int
-	popup    PopupID
+	MaxVisibleItems     int
+	active              int
+	firstVisible        int
+	ensureActiveVisible bool
+	popup               PopupID
 }
 
 func NewMenu(items []MenuItem, onSelect func(string)) *Menu {
-	m := &Menu{Items: append([]MenuItem(nil), items...), OnSelect: onSelect, active: -1}
+	m := &Menu{Items: append([]MenuItem(nil), items...), OnSelect: onSelect, active: -1, ensureActiveVisible: true}
 	m.owner, m.focusable, m.clip = m, true, true
 	for i, item := range m.Items {
 		if !item.Disabled {
@@ -243,13 +244,16 @@ func (m *Menu) showActive() {
 	if m.active < m.firstVisible {
 		m.firstVisible = m.active
 	} else if m.active >= m.firstVisible+rows {
-		m.firstVisible = m.active-rows+1
+		m.firstVisible = m.active - rows + 1
 	}
 	m.firstVisible = min(m.firstVisible, max(0, len(m.Items)-rows))
 }
 
 func (m *Menu) Paint(c *Canvas) {
-	m.showActive()
+	if m.ensureActiveVisible {
+		m.showActive()
+		m.ensureActiveVisible = false
+	}
 	c.Rect(m.rect, c.theme.PanelAlt)
 	c.Border(m.rect, 1, c.theme.Border)
 	icons := false
@@ -258,7 +262,7 @@ func (m *Menu) Paint(c *Canvas) {
 	}
 	h := c.theme.ControlHeight
 	for row := 0; row < m.visibleRows(); row++ {
-		i := m.firstVisible+row
+		i := m.firstVisible + row
 		if i >= len(m.Items) {
 			break
 		}
@@ -287,7 +291,7 @@ func (m *Menu) indexAt(x, y float32) int {
 	if y < m.rect.Y+4 || row < 0 || row >= m.visibleRows() || m.firstVisible+row >= len(m.Items) {
 		return -1
 	}
-	return m.firstVisible+row
+	return m.firstVisible + row
 }
 
 func (m *Menu) activate() bool {
@@ -309,6 +313,29 @@ func (m *Menu) activate() bool {
 
 func (m *Menu) Handle(e Event) bool {
 	switch e.Type {
+	case PointerScroll:
+		delta := e.Scroll.Y
+		if delta == 0 {
+			delta = e.Scroll.X
+		}
+		rows := m.visibleRows()
+		if delta != 0 && rows > 0 {
+			magnitude := delta
+			if magnitude < 0 {
+				magnitude = -magnitude
+			}
+			step := max(1, int(magnitude))
+			if delta > 0 {
+				step = -step
+			}
+			before := m.firstVisible
+			m.firstVisible = min(max(0, m.firstVisible+step), max(0, len(m.Items)-rows))
+			m.ensureActiveVisible = false
+			if m.firstVisible != before {
+				m.invalidatePaint()
+			}
+			return true
+		}
 	case PointerMove:
 		i := m.indexAt(e.X, e.Y)
 		if i >= 0 && m.Items[i].Disabled {
@@ -455,6 +482,7 @@ func (c *ComboBox) open() bool {
 		items = append(items, MenuItem{ID: option.ID, Label: option.Label, Icon: option.Icon})
 	}
 	m := NewMenu(items, c.SetSelected)
+	m.MaxVisibleItems = 8
 	for i, option := range c.Options {
 		if option.ID == c.SelectedID {
 			m.active = i
@@ -484,6 +512,9 @@ type Tab struct {
 	Icon      *ImageResource
 	Content   Component
 	Dirty     bool
+	// NonClosable hides the close button and prevents Close from removing this tab.
+	// Tabs are closable by default for compatibility with existing applications.
+	NonClosable bool
 }
 
 type Tabs struct {
@@ -601,6 +632,9 @@ func (t *Tabs) Close(id string) bool {
 		if tab.ID != id {
 			continue
 		}
+		if tab.NonClosable {
+			return false
+		}
 		if t.OnCloseRequest != nil && !t.OnCloseRequest(id) {
 			return false
 		}
@@ -681,8 +715,26 @@ func (t *Tabs) SetDirty(id string, dirty bool) bool {
 	return false
 }
 
+func (t *Tabs) SetNonClosable(id string, nonClosable bool) bool {
+	for i := range t.Tabs {
+		if t.Tabs[i].ID == id {
+			if t.Tabs[i].NonClosable == nonClosable {
+				return false
+			}
+			t.Tabs[i].NonClosable = nonClosable
+			t.invalidateLayout()
+			return true
+		}
+	}
+	return false
+}
+
 func (t *Tabs) tabWidth(tab Tab) float32 {
-	return maxFloat32(100, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+50+iconWidth(tab.Icon))
+	width := float32(50)
+	if tab.NonClosable {
+		width = 26
+	}
+	return maxFloat32(100, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+width+iconWidth(tab.Icon))
 }
 
 func (t *Tabs) maxOffset() float32 {
@@ -702,7 +754,7 @@ func (t *Tabs) ScrollTo(id string) {
 			if x < t.Offset {
 				t.Offset = x
 			} else if x+w > t.Offset+t.rect.W {
-				t.Offset = x+w-t.rect.W
+				t.Offset = x + w - t.rect.W
 			}
 			t.Offset = clampFloat32(t.Offset, 0, t.maxOffset())
 			t.invalidatePaint()
@@ -739,7 +791,7 @@ func (t *Tabs) Arrange(r Rect) {
 }
 
 func (t *Tabs) tabAt(x float32) (int, Rect) {
-	left := t.rect.X-t.Offset
+	left := t.rect.X - t.Offset
 	for i, tab := range t.Tabs {
 		w := t.tabWidth(tab)
 		rect := Rect{X: left, Y: t.rect.Y, W: w, H: t.headerHeight}
@@ -755,7 +807,7 @@ func (t *Tabs) Paint(c *Canvas) {
 	header := Rect{X: t.rect.X, Y: t.rect.Y, W: t.rect.W, H: t.headerHeight}
 	c.Rect(header, c.theme.Header)
 	c.PushClip(header)
-	x := t.rect.X-t.Offset
+	x := t.rect.X - t.Offset
 	for _, tab := range t.Tabs {
 		width := t.tabWidth(tab)
 		r := Rect{X: x, Y: t.rect.Y, W: width, H: t.headerHeight}
@@ -767,20 +819,25 @@ func (t *Tabs) Paint(c *Canvas) {
 			c.Rect(r, c.theme.ControlHover)
 			c.Rect(Rect{X: x, Y: r.Y + r.H - 3, W: width, H: 3}, c.theme.Accent)
 		}
-		left := r.X+10
+		left := r.X + 10
 		if tab.Icon != nil {
-			paintIcon(c, tab.Icon, Rect{X: left, Y: r.Y+(r.H-iconSize)*0.5, W: iconSize, H: iconSize}, 1)
-			left += iconSize+iconGap
+			paintIcon(c, tab.Icon, Rect{X: left, Y: r.Y + (r.H-iconSize)*0.5, W: iconSize, H: iconSize}, 1)
+			left += iconSize + iconGap
 		}
-		right := r.X+r.W-26
+		right := r.X + r.W - 12
+		if !tab.NonClosable {
+			right = r.X + r.W - 26
+		}
 		if tab.Dirty {
-			c.RoundedRect(Rect{X: right-10, Y: r.Y+(r.H-7)*0.5, W: 7, H: 7}, 3.5, c.theme.Accent)
+			c.RoundedRect(Rect{X: right - 10, Y: r.Y + (r.H-7)*0.5, W: 7, H: 7}, 3.5, c.theme.Accent)
 			right -= 13
 		}
 		c.Text(tab.Title, Rect{X: left, Y: r.Y, W: maxFloat32(0, right-left), H: r.H},
 			c.theme.FontSize, TextLeft, c.theme.Text)
-		c.Text("×", Rect{X: r.X+r.W-24, Y: r.Y, W: 20, H: r.H},
-			c.theme.FontSize, TextCenter, c.theme.Text)
+		if !tab.NonClosable {
+			c.Text("×", Rect{X: r.X + r.W - 24, Y: r.Y, W: 20, H: r.H},
+				c.theme.FontSize, TextCenter, c.theme.Text)
+		}
 		x += width
 	}
 	c.PopClip()
@@ -794,7 +851,7 @@ func (t *Tabs) Handle(e Event) bool {
 			t.downID, t.downClose, t.dragged, t.downX = "", false, false, e.X
 			if i, r := t.tabAt(e.X); i >= 0 {
 				t.downID = t.Tabs[i].ID
-				t.downClose = e.X >= r.X+r.W-26
+				t.downClose = !t.Tabs[i].NonClosable && e.X >= r.X+r.W-26
 			}
 			return true
 		}

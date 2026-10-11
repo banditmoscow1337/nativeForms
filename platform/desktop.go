@@ -30,6 +30,18 @@ type FileDialogs interface {
 	SaveFile(defaultName string) (string, error)
 }
 
+// ValidateSize checks a requested logical client size against the renderer limit.
+func ValidateSize(width, height int, scale float32) error {
+	if width < 1 || height < 1 || width > 16384 || height > 16384 {
+		return fmt.Errorf("nativeForms: invalid client size %dx%d at scale %g", width, height, scale)
+	}
+	pw, ph := PixelSize(width, scale), PixelSize(height, scale)
+	if pw < 1 || ph < 1 || pw > 16384 || ph > 16384 || int64(pw)*int64(ph) > 64*1024*1024 {
+		return fmt.Errorf("nativeForms: invalid client size %dx%d at scale %g", width, height, scale)
+	}
+	return nil
+}
+
 func (c Capabilities) Supports(feature Feature) bool {
 	switch feature {
 	case FeatureClipboard:

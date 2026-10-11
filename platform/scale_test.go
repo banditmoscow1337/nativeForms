@@ -22,3 +22,14 @@ func TestLogicalAndPixelSizes(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateSize(t *testing.T) {
+	for _, size := range [][3]float32{{0, 100, 1}, {-1, 100, 1}, {9000, 9000, 1}, {9000, 100, 2}} {
+		if err := ValidateSize(int(size[0]), int(size[1]), size[2]); err == nil {
+			t.Errorf("ValidateSize(%g, %g, %g) accepted invalid size", size[0], size[1], size[2])
+		}
+	}
+	if err := ValidateSize(1100, 700, 1.5); err != nil {
+		t.Fatal(err)
+	}
+}

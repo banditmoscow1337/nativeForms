@@ -4,6 +4,49 @@ Go desktop UI with a software renderer and native window adapters for Windows,
 macOS, X11 and Wayland. The optional `vulkan` package is separate from the
 software renderer.
 
+## One desktop entry point
+
+Import `platform/desktop` to select Windows, macOS, X11 or Wayland from one
+`main.go`:
+
+```go
+package main
+
+import (
+    "log"
+    ui "github.com/banditmoscow1337/nativeForms"
+    "github.com/banditmoscow1337/nativeForms/platform/desktop"
+)
+
+func main() {
+    manager := ui.New()
+    window, err := desktop.New(manager, desktop.Options{
+        Title: "My app", Width: 900, Height: 600,
+        OnReady: func(w desktop.Window) {
+            manager.SetRoot(ui.NewLabel("Hello"))
+            // Window methods such as SetSize and OpenFile are available here.
+        },
+    })
+    if err != nil { log.Fatal(err) }
+    if err := window.Run(); err != nil { log.Fatal(err) }
+}
+```
+
+`desktop.New` uses `WAYLAND_DISPLAY` when available, otherwise `DISPLAY`; set
+`Options.Backend` to `"wayland"` or `"x11"` to choose explicitly on Linux.
+On macOS, importing `platform/desktop` locks the startup thread for AppKit.
+See `examples/editor_app` and `examples/goide_app` for complete programs.
+
+`window.SetSize(width, height)` changes the logical client size after the
+window has been created. Call it from `OnReady`, an event callback, or a
+`manager.Post` callback when another goroutine requests a resize. A Wayland
+compositor may choose a different size in a later configure event.
+
+ComboBox menus show at most eight rows and scroll with the mouse wheel; the
+selected option is initially brought into view. Tabs are closable by default.
+Set `Tab.NonClosable: true` to keep a tab open and hide its close button; use
+`Tabs.SetNonClosable(id, value)` to change that later.
+
 ## Images and icons
 
 `Image` displays an immutable `ImageResource`. Build one from an `image.Image`
