@@ -125,9 +125,16 @@ func TestCodeEditorNavigationAndBreakpoints(t *testing.T) {
 	if !e.Breakpoint(3) || e.Breakpoint(2) {
 		t.Fatal("breakpoint did not follow inserted line")
 	}
+	if e.Caret != 1 {
+		t.Fatalf("caret did not move past inserted newline: %d", e.Caret)
+	}
 	e.Handle(Event{Type: KeyDown, Key: KeyF9})
-	if !e.Breakpoint(0) {
-		t.Fatal("F9 did not toggle the current gutter line")
+	if !e.Breakpoint(1) || changedLine != 1 {
+		t.Fatal("F9 did not toggle the line under the caret")
+	}
+	e.Handle(Event{Type: KeyDown, Key: KeyF9})
+	if e.Breakpoint(1) {
+		t.Fatal("second F9 did not clear the breakpoint")
 	}
 	if e.Handle(Event{Type: KeyDown, Key: KeyF5}) {
 		t.Fatal("unassigned function key was swallowed by the editor")
