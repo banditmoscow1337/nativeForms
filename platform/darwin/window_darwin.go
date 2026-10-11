@@ -55,7 +55,7 @@ type Window struct {
 	closing                           atomic.Bool
 	marked                            string
 	markedSelection                   nsRange
-	inputIdentity                     *ui.TextField
+	inputIdentity                     *ui.State
 	currentKey                        ui.Event
 	inputHandled                      bool
 	wasKey                            bool
@@ -519,6 +519,10 @@ func macKey(code uint16) ui.Key {
 		return ui.KeyD
 	case 3:
 		return ui.KeyF
+	case 4:
+		return ui.KeyH
+	case 5:
+		return ui.KeyG
 	case 6:
 		return ui.KeyZ
 	case 7:
@@ -527,6 +531,8 @@ func macKey(code uint16) ui.Key {
 		return ui.KeyC
 	case 9:
 		return ui.KeyV
+	case 11:
+		return ui.KeyB
 	case 12:
 		return ui.KeyQ
 	case 13:
@@ -537,12 +543,74 @@ func macKey(code uint16) ui.Key {
 		return ui.KeyR
 	case 16:
 		return ui.KeyY
+	case 17:
+		return ui.KeyT
+	case 18:
+		return ui.KeyDigit1
+	case 19:
+		return ui.KeyDigit2
+	case 20:
+		return ui.KeyDigit3
+	case 21:
+		return ui.KeyDigit4
+	case 22:
+		return ui.KeyDigit6
+	case 23:
+		return ui.KeyDigit5
+	case 24:
+		return ui.KeyEqual
+	case 25:
+		return ui.KeyDigit9
+	case 26:
+		return ui.KeyDigit7
+	case 27:
+		return ui.KeyMinus
+	case 28:
+		return ui.KeyDigit8
+	case 29:
+		return ui.KeyDigit0
+	case 30:
+		return ui.KeyRightBracket
+	case 31:
+		return ui.KeyO
+	case 32:
+		return ui.KeyU
+	case 33:
+		return ui.KeyLeftBracket
+	case 34:
+		return ui.KeyI
+	case 35:
+		return ui.KeyP
 	case 36:
 		return ui.KeyEnter
+	case 37:
+		return ui.KeyL
+	case 38:
+		return ui.KeyJ
+	case 39:
+		return ui.KeyQuote
+	case 40:
+		return ui.KeyK
+	case 41:
+		return ui.KeySemicolon
+	case 42:
+		return ui.KeyBackslash
+	case 43:
+		return ui.KeyComma
+	case 44:
+		return ui.KeySlash
+	case 45:
+		return ui.KeyN
+	case 46:
+		return ui.KeyM
+	case 47:
+		return ui.KeyPeriod
 	case 48:
 		return ui.KeyTab
 	case 49:
 		return ui.KeySpace
+	case 50:
+		return ui.KeyBackquote
 	case 51:
 		return ui.KeyBackspace
 	case 53:
@@ -551,14 +619,38 @@ func macKey(code uint16) ui.Key {
 		return ui.KeyF5
 	case 97:
 		return ui.KeyF6
+	case 98:
+		return ui.KeyF7
+	case 99:
+		return ui.KeyF3
 	case 100:
 		return ui.KeyF8
+	case 101:
+		return ui.KeyF9
+	case 103:
+		return ui.KeyF11
+	case 109:
+		return ui.KeyF10
+	case 111:
+		return ui.KeyF12
+	case 114:
+		return ui.KeyInsert
 	case 115:
 		return ui.KeyHome
+	case 116:
+		return ui.KeyPageUp
 	case 117:
 		return ui.KeyDelete
+	case 118:
+		return ui.KeyF4
 	case 119:
 		return ui.KeyEnd
+	case 120:
+		return ui.KeyF2
+	case 121:
+		return ui.KeyPageDown
+	case 122:
+		return ui.KeyF1
 	case 123:
 		return ui.KeyLeftArrow
 	case 124:
