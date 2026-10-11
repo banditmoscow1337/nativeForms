@@ -38,6 +38,7 @@ type CodeEditor struct {
 	lastClick time.Time
 	lastPoint Vec2
 	clicks int
+	completionPopup PopupID
 }
 
 var _ Component = (*CodeEditor)(nil)
@@ -60,6 +61,7 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 }
 
 func (e *CodeEditor) SetDocument(document *editor.Document) {
+	e.HideCompletions()
 	if document == nil {
 		document, _ = editor.NewDocument("")
 	}
