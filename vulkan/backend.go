@@ -43,6 +43,7 @@ type Backend struct {
 	pipelineFormat                                  uint32
 	mapped                                          unsafe.Pointer
 	frameStride                                     uint64
+	frameCapacity                                   int
 	atlasTextureID                                  uint32
 	vertices                                        []nativeforms.Vertex
 }
@@ -65,6 +66,7 @@ func New(renderer Renderer, shaders ShaderPaths) (*Backend, error) {
 func (backend *Backend) initSurface() error {
 	backend.device = backend.renderer.Device()
 	backend.pipelineLayout = backend.renderer.QuadPipelineLayout()
+	backend.frameCapacity = maxVertices
 	backend.frameStride = uint64(maxVertices * vertexSize)
 	bufferSize := backend.frameStride * uint64(backend.renderer.FramesInFlight())
 	backend.buffer, _ = backend.renderer.CreateBufferHelper(
@@ -228,8 +230,13 @@ func (backend *Backend) Render(commandBuffer uintptr, frame nativeforms.Frame) e
 		return nil
 	}
 	for _, command := range frame.Commands {
-		if command.Kind == nativeforms.CommandImage || command.Kind == nativeforms.CommandRoundedRect {
-			return fmt.Errorf("Vulkan UI backend does not support paint command %d yet; use software rendering for images and rounded rectangles", command.Kind)
+		switch command.Kind {
+		case nativeforms.CommandQuad, nativeforms.CommandLine,
+			nativeforms.CommandMask, nativeforms.CommandRoundedRect:
+		case nativeforms.CommandImage:
+			return fmt.Errorf("Vulkan UI backend does not support images yet; use software rendering for images and icons")
+		default:
+			return fmt.Errorf("unsupported paint command: %d", command.Kind)
 		}
 	}
 	if err := backend.ensurePipeline(); err != nil {
@@ -242,8 +249,8 @@ func (backend *Backend) Render(commandBuffer uintptr, frame nativeforms.Frame) e
 	if len(backend.vertices) == 0 {
 		return nil
 	}
-	if len(backend.vertices) > maxVertices {
-		return fmt.Errorf("UI frame requires %d vertices; Vulkan capacity is %d", len(backend.vertices), maxVertices)
+	if err := backend.ensureVertexCapacity(len(backend.vertices)); err != nil {
+		return err
 	}
 	if backend.renderer.CurrentFrameIndex() >= backend.renderer.FramesInFlight() {
 		return fmt.Errorf("Vulkan frame index out of range")
@@ -267,6 +274,42 @@ func (backend *Backend) Render(commandBuffer uintptr, frame nativeforms.Frame) e
 	binding.VkCmdSetScissor(commandBuffer, 0, 1, &scissor)
 	binding.VkCmdBindVertexBuffers(commandBuffer, 0, 1, &backend.buffer, &bufferOffset)
 	binding.VkCmdDraw(commandBuffer, uint32(len(backend.vertices)), 1, 0, 0)
+	return nil
+}
+
+// A text mask can produce many small triangles. Grow the buffer when needed,
+// waiting for existing submissions before retiring the old per-frame storage.
+func (backend *Backend) ensureVertexCapacity(required int) error {
+	if required <= backend.frameCapacity {
+		return nil
+	}
+	capacity := required
+	if backend.frameCapacity <= int(^uint(0)>>1)/2 {
+		capacity = max(capacity, backend.frameCapacity*2)
+	}
+	frames := uint64(backend.renderer.FramesInFlight())
+	if uint64(capacity) > ^uint64(0)/uint64(vertexSize)/frames {
+		return fmt.Errorf("UI vertex buffer size overflow: %d vertices", required)
+	}
+	stride := uint64(capacity) * uint64(vertexSize)
+	buffer, _ := backend.renderer.CreateBufferHelper(stride*frames,
+		binding.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+		binding.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|binding.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	if buffer == 0 {
+		return fmt.Errorf("failed to grow UI vertex buffer for %d vertices", required)
+	}
+	mapped := backend.renderer.MapBufferHelper(buffer, 0, stride*frames)
+	if mapped == nil {
+		backend.renderer.DestroyBufferHelper(buffer)
+		return fmt.Errorf("failed to map grown UI vertex buffer")
+	}
+	if result := binding.VkDeviceWaitIdle(backend.device); result != binding.VK_SUCCESS {
+		backend.renderer.DestroyBufferHelper(buffer)
+		return fmt.Errorf("wait for UI vertex buffer resize: %d", result)
+	}
+	backend.renderer.DestroyBufferHelper(backend.buffer)
+	backend.buffer, backend.mapped = buffer, mapped
+	backend.frameStride, backend.frameCapacity = stride, capacity
 	return nil
 }
 
