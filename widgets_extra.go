@@ -713,7 +713,11 @@ func (t *Tabs) ScrollTo(id string) {
 }
 
 func (t *Tabs) Measure(c Constraints) Vec2 {
-	size := Vec2{X: 120, Y: t.headerHeight}
+	width := float32(0)
+	for _, tab := range t.Tabs {
+		width += t.tabWidth(tab)
+	}
+	size := Vec2{X: maxFloat32(120, width), Y: t.headerHeight}
 	for _, tab := range t.Tabs {
 		if tab.ID == t.SelectedID && tab.Content != nil {
 			child := tab.Content.Measure(c)
@@ -822,6 +826,13 @@ func (t *Tabs) Handle(e Event) bool {
 				}
 			}
 			return true
+		}
+		// Keep direct PointerUp selection for callers using the original Tabs API.
+		if e.Button == MouseLeft && inHeader {
+			if i, _ := t.tabAt(e.X); i >= 0 {
+				t.Select(t.Tabs[i].ID)
+				return true
+			}
 		}
 	case PointerScroll:
 		if inHeader {
