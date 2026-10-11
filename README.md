@@ -104,7 +104,11 @@ implement `ListIconModel.Icon(index)`, `TreeIconModel.Icon(id)`, or
 `TableIconModel.CellIcon(row, column)`. Return `nil` for rows without an icon;
 the label column remains aligned. Only visible rows are queried while painting.
 The software renderer supports images at the display scale on all desktop
-adapters. The optional Vulkan backend currently rejects image commands.
+adapters. The optional Vulkan backend renders basic geometry, text masks and
+rounded rectangles, but currently rejects image commands (including icons).
+It needs a separate Vulkan host and shaders; `desktop.New` uses software
+rendering. Vulkan grows its vertex buffer for long text rendered from glyph
+masks; growth waits for in-flight GPU submissions to finish.
 
 ## Desktop integration
 

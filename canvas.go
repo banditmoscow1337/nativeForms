@@ -307,6 +307,10 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 			dst = tessellateMask(c, dst)
 			continue
 		}
+		if c.Kind == CommandRoundedRect {
+			dst = tessellateRoundedRect(c, dst)
+			continue
+		}
 		if c.Kind == CommandQuad {
 			r := intersect(c.Rect, c.Clip)
 			if r.Empty() {
@@ -358,6 +362,61 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 			}
 		}
 	}
+	return dst
+}
+
+// tessellateRoundedRect uses the atlas's opaque texel, just like solid quads.
+// The corner fans are clipped before emitting vertices, so a rounded shape can
+// share a batch with the other UI geometry without a separate shader.
+func tessellateRoundedRect(c DrawCommand, dst []Vertex) []Vertex {
+	if c.Rect.Empty() || c.Clip.Empty() || c.Tint.A <= 0 {
+		return dst
+	}
+	r := c.Rect
+	radius := minFloat32(maxFloat32(0, c.Radius), minFloat32(r.W, r.H)*0.5)
+	uv := float32(0.5 / fontAtlasSize)
+	appendPolygon := func(points []Vec2) {
+		points = clipPolygon(points, c.Clip)
+		vertex := func(p Vec2) Vertex {
+			return Vertex{X: p.X, Y: p.Y, U: uv, V: uv,
+				R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
+		}
+		for i := 1; i+1 < len(points); i++ {
+			dst = append(dst, vertex(points[0]), vertex(points[i]), vertex(points[i+1]))
+		}
+	}
+	appendRect := func(x, y, w, h float32) {
+		if w > 0 && h > 0 {
+			appendPolygon([]Vec2{{X: x, Y: y}, {X: x + w, Y: y},
+				{X: x + w, Y: y + h}, {X: x, Y: y + h}})
+		}
+	}
+	if radius == 0 {
+		appendRect(r.X, r.Y, r.W, r.H)
+		return dst
+	}
+	appendRect(r.X+radius, r.Y, r.W-2*radius, r.H)
+	appendRect(r.X, r.Y+radius, radius, r.H-2*radius)
+	appendRect(r.X+r.W-radius, r.Y+radius, radius, r.H-2*radius)
+	// Approximately one segment per logical pixel along the arc, with a
+	// minimum of eight for small buttons and a bound for large radii.
+	segments := max(8, min(32, int(math.Ceil(float64(radius)*math.Pi/2))))
+	corner := func(cx, cy, start float32) {
+		center := Vec2{X: cx, Y: cy}
+		point := func(angle float32) Vec2 {
+			return Vec2{X: cx + radius*float32(math.Cos(float64(angle))),
+				Y: cy + radius*float32(math.Sin(float64(angle)))}
+		}
+		for i := 0; i < segments; i++ {
+			a := start + float32(i)*float32(math.Pi/2)/float32(segments)
+			b := start + float32(i+1)*float32(math.Pi/2)/float32(segments)
+			appendPolygon([]Vec2{center, point(a), point(b)})
+		}
+	}
+	corner(r.X+radius, r.Y+radius, math.Pi)
+	corner(r.X+r.W-radius, r.Y+radius, 3*math.Pi/2)
+	corner(r.X+r.W-radius, r.Y+r.H-radius, 0)
+	corner(r.X+radius, r.Y+r.H-radius, math.Pi/2)
 	return dst
 }
 
