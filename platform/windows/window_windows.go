@@ -45,6 +45,24 @@ func New(manager *ui.Manager, options Options) *Window {
 	return &Window{manager: manager, options: options}
 }
 
+// SetSize changes the logical client size. Call it on the window's UI goroutine
+// after Run starts (for example from OnReady or Manager.Post).
+func (w *Window) SetSize(width, height int) error {
+	if w == nil || w.manager == nil {
+		return fmt.Errorf("windows: nil window or manager")
+	}
+	if err := platform.ValidateSize(width, height, w.scale()); err != nil {
+		return err
+	}
+	if hwnd := w.hwnd.Load(); hwnd != 0 {
+		if err := w.sizeClient(hwnd, width, height); err != nil {
+			return err
+		}
+	}
+	w.options.Width, w.options.Height = width, height
+	return nil
+}
+
 var creationMu sync.Mutex
 var windowsMu sync.RWMutex
 var windowsByHandle = make(map[uintptr]*Window)

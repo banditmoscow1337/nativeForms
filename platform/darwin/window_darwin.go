@@ -67,6 +67,23 @@ func New(manager *ui.Manager, options Options) *Window {
 	return &Window{manager: manager, options: options}
 }
 
+// SetSize changes the logical client size. Call it on the AppKit UI goroutine
+// after Run starts (for example from OnReady or Manager.Post).
+func (w *Window) SetSize(width, height int) error {
+	if w == nil || w.manager == nil {
+		return fmt.Errorf("darwin: nil window or manager")
+	}
+	if err := platform.ValidateSize(width, height, w.manager.DisplayScale()); err != nil {
+		return err
+	}
+	if w.window != 0 {
+		w.window.Send(selector("setContentSize:"), size{W: float64(width), H: float64(height)})
+		w.manager.InvalidateLayout()
+	}
+	w.options.Width, w.options.Height = width, height
+	return nil
+}
+
 func Capabilities() platform.Capabilities {
 	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, FileDialog: true, IME: true, MultipleWindows: true, DragDrop: true}
 }

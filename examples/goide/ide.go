@@ -98,12 +98,12 @@ func New(manager *ui.Manager, host DesktopHost) *App {
 	}
 	a.variablesView = ui.NewVirtualTable(a.variables)
 	bottom := ui.NewTabs([]ui.Tab{
-		{ID:"problems",Title:"Problems",Content:a.diagnosticsView},
-		{ID:"output",Title:"Output",Content:a.output},
+		{ID:"problems",Title:"Problems",Content:a.diagnosticsView,NonClosable:true},
+		{ID:"output",Title:"Output",Content:a.output,NonClosable:true},
 	},"problems",nil)
 	debugViews := ui.NewTabs([]ui.Tab{
-		{ID:"stack",Title:"Call stack",Content:a.stackView},
-		{ID:"variables",Title:"Variables",Content:a.variablesView},
+		{ID:"stack",Title:"Call stack",Content:a.stackView,NonClosable:true},
+		{ID:"variables",Title:"Variables",Content:a.variablesView,NonClosable:true},
 	},"stack",nil)
 	center := ui.NewSplitPane(ui.Vertical,a.editorTabs,bottom)
 	center.Ratio=0.72

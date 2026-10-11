@@ -76,6 +76,34 @@ func NewX11(manager *ui.Manager, options X11Options) *X11Window {
 	return &X11Window{manager: manager, options: options}
 }
 
+// SetSize requests a new logical client size. Call it on the window's UI
+// goroutine after Run starts (for example from OnReady or Manager.Post).
+func (w *X11Window) SetSize(width, height int) error {
+	if w == nil || w.manager == nil {
+		return fmt.Errorf("x11: nil window or manager")
+	}
+	scale := w.scale
+	if scale == 0 {
+		scale = w.options.Scale
+	}
+	if err := platform.ValidateSize(width, height, scale); err != nil {
+		return err
+	}
+	if w.conn != nil && w.id != 0 {
+		request := make([]byte, 20) // ConfigureWindow: width and height value-list entries.
+		request[0] = 12
+		le.PutUint32(request[4:], w.id)
+		le.PutUint16(request[8:], 1<<2|1<<3)
+		le.PutUint32(request[12:], uint32(platform.PixelSize(width, w.scale)))
+		le.PutUint32(request[16:], uint32(platform.PixelSize(height, w.scale)))
+		if err := w.send(request); err != nil {
+			return err
+		}
+	}
+	w.options.Width, w.options.Height = width, height
+	return nil
+}
+
 func (w *X11Window) Capabilities() platform.Capabilities {
 	c := X11Capabilities()
 	c.FileDialog = w.portal

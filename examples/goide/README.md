@@ -4,17 +4,14 @@ This example composes nativeForms widgets into a small desktop Go IDE. It keeps
 project files, LSP/DAP clients, and subprocesses in the example package. The
 framework itself remains independent of `gopls` and Delve.
 
-Install `gopls` and `dlv` on your `PATH`, then run the entry point for your
-desktop:
+Install `gopls` and `dlv` on your `PATH`, then run the same entry point on
+Windows, macOS or Linux:
 
 ```sh
-go run ./examples/goide_linux /absolute/path/to/module
-go run ./examples/goide_darwin /absolute/path/to/module
-go run ./examples/goide_windows C:\path\to\module
+go run ./examples/goide_app /absolute/path/to/module
 ```
 
-Run only the command matching your operating system. You may omit the module
-argument and use **Open folder**. The directory must contain `go.mod`.
+You may omit the module argument and use **Open folder**. The directory must contain `go.mod`.
 Folders in the left tree expand from the arrow; clicking a Go file opens it.
 Open at least two files to exercise tabs. Ctrl+S (Cmd+S on macOS) saves the
 active file. A dirty file cannot be closed until saved.

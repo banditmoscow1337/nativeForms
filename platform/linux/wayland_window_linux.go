@@ -214,6 +214,23 @@ func NewWayland(manager *ui.Manager, options WaylandOptions) *WaylandWindow {
 	return &WaylandWindow{Manager: manager, Options: options}
 }
 
+// SetSize requests a new logical surface size. Wayland compositors may override
+// this request with a later configure event. Call it on the window's UI goroutine.
+func (w *WaylandWindow) SetSize(width, height int) error {
+	if w == nil || w.Manager == nil {
+		return fmt.Errorf("wayland: nil window or manager")
+	}
+	if err := platform.ValidateSize(width, height, w.scale); err != nil {
+		return err
+	}
+	w.Options.Width, w.Options.Height = width, height
+	if w.wire != nil {
+		w.width, w.height = width, height
+		w.Manager.InvalidateLayout()
+	}
+	return nil
+}
+
 func (w *WaylandWindow) Capabilities() platform.Capabilities {
 	c := WaylandCapabilities()
 	c.Clipboard = w.dataDevice != 0
