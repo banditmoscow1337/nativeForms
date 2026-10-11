@@ -109,6 +109,9 @@ func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32)
 	if cached, ok := s.cache[key]; ok {
 		return cached, true
 	}
+	// Cocoa autorelease pools belong to the OS thread that created them.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	pool := class("NSAutoreleasePool").Send(selector("new"))
 	defer pool.Send(selector("drain"))
 	font := s.font(2, float64(fontSize), 0)
