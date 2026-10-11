@@ -7,9 +7,11 @@ import (
 	"net"
 	"time"
 	"unicode/utf8"
+
+	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
-const x11ClipboardLimit = 16 << 20
+const x11ClipboardLimit = platform.ClipboardTextLimit
 
 type selectionKey struct{ window, property uint32 }
 type selectionTransfer struct {
@@ -29,8 +31,8 @@ func (w *X11Window) SetClipboardText(value string) error {
 	if w == nil || w.conn == nil || w.clipboard == 0 {
 		return fmt.Errorf("x11: clipboard needs a running window")
 	}
-	if !utf8.ValidString(value) || len(value) > x11ClipboardLimit {
-		return fmt.Errorf("x11: clipboard must be UTF-8 and at most 16 MiB")
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return err
 	}
 	request := make([]byte, 16)
 	request[0] = 22
@@ -57,7 +59,11 @@ func (w *X11Window) ClipboardText() (string, error) {
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("x11: clipboard is not UTF-8")
 	}
-	return string(data), nil
+	value := string(data)
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func (w *X11Window) convertSelection(selection, target, timestamp uint32) ([]byte, error) {

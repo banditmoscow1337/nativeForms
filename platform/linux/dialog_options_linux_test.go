@@ -3,9 +3,14 @@
 package linux
 
 import (
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+
+	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
 func TestPortalChooserOptionsForProjectFolder(t *testing.T) {
@@ -39,5 +44,27 @@ func TestSelectedProjectFolderValidation(t *testing.T) {
 	}
 	if validatePortalFolder(file) == nil || validatePortalFolder(filepath.Join(dir, "missing")) == nil {
 		t.Fatal("file or missing path accepted as project folder")
+	}
+}
+
+func TestUnavailablePortalMatchesCapabilities(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer conn.Close()
+	defer peer.Close()
+	x11 := NewX11(ui.New(), X11Options{})
+	x11.conn = conn
+	wayland := NewWayland(ui.New(), WaylandOptions{})
+	wayland.wire = &waylandWire{}
+	for _, window := range []interface {
+		platform.FileDialogs
+		Capabilities() platform.Capabilities
+	}{x11, wayland} {
+		if window.Capabilities().FileDialog {
+			t.Fatalf("%T advertises an unavailable portal", window)
+		}
+		_, err := window.OpenFile()
+		if !errors.Is(err, platform.ErrUnsupported) {
+			t.Fatalf("%T: expected ErrUnsupported, got %v", window, err)
+		}
 	}
 }

@@ -42,6 +42,12 @@ window has been created. Call it from `OnReady`, an event callback, or a
 `manager.Post` callback when another goroutine requests a resize. A Wayland
 compositor may choose a different size in a later configure event.
 
+`desktop.Window` also exposes `ClipboardText()` and
+`SetClipboardText(value)` on every backend. Clipboard text must be valid UTF-8
+without NUL and no larger than 16 MiB. Query `Capabilities().Clipboard`
+before using it: a Wayland session needs a data device, and a clipboard write
+there also needs an input serial from a recent user interaction.
+
 ComboBox menus show at most eight rows and scroll with the mouse wheel; the
 selected option is initially brought into view. Tabs are closable by default.
 Set `Tab.NonClosable: true` to keep a tab open and hide its close button; use

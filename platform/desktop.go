@@ -3,6 +3,8 @@ package platform
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 )
 
 var ErrUnsupported = errors.New("nativeForms: platform feature is unsupported")
@@ -28,6 +30,22 @@ type FileDialogs interface {
 	OpenFile() (string, error)
 	OpenFolder() (string, error)
 	SaveFile(defaultName string) (string, error)
+}
+
+// TextClipboard exposes the same UTF-8 text clipboard operations on every
+// desktop adapter. A backend may require a running window or an input serial.
+type TextClipboard interface {
+	ClipboardText() (string, error)
+	SetClipboardText(value string) error
+}
+
+const ClipboardTextLimit = 16 << 20
+
+func ValidateClipboardText(value string) error {
+	if len(value) > ClipboardTextLimit || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
+		return fmt.Errorf("nativeForms: clipboard text must be UTF-8 without NUL and at most 16 MiB")
+	}
+	return nil
 }
 
 // ValidateSize checks a requested logical client size against the renderer limit.

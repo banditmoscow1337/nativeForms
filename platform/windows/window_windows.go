@@ -27,18 +27,19 @@ type Options struct {
 }
 
 type Window struct {
-	manager       *ui.Manager
-	options       Options
-	hwnd          atomic.Uintptr
-	dpi           uint32
-	renderer      *software.Renderer
-	framebuffer   *image.RGBA
-	dib           []byte
-	lastFrame     time.Time
-	highSurrogate uint16
-	captureButton ui.MouseButton
-	hasCapture    bool
-	err           error
+	manager         *ui.Manager
+	options         Options
+	hwnd            atomic.Uintptr
+	dpi             uint32
+	renderer        *software.Renderer
+	framebuffer     *image.RGBA
+	dib             []byte
+	lastFrame       time.Time
+	highSurrogate   uint16
+	suppressSysChar bool
+	captureButton   ui.MouseButton
+	hasCapture      bool
+	err             error
 }
 
 func New(manager *ui.Manager, options Options) *Window {
@@ -272,11 +273,27 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	case wmDropFiles:
 		w.filesDropped(wp)
 		return 0
-	case wmKeyDown, wmKeyUp:
+	case wmKeyDown, wmKeyUp, wmSysKeyDown, wmSysKeyUp:
 		key := translateKey(uint32(wp))
-		w.manager.HandleEvent(ui.Event{Type: map[bool]ui.EventType{true: ui.KeyDown, false: ui.KeyUp}[msg == wmKeyDown],
-			Key: key, Repeat: msg == wmKeyDown && (lp&(1<<30)) != 0, Mods: w.mods()})
+		down := msg == wmKeyDown || msg == wmSysKeyDown
+		kind := ui.KeyUp
+		if down {
+			kind = ui.KeyDown
+		}
+		handled := w.manager.HandleEvent(ui.Event{Type: kind, Key: key,
+			Repeat: down && (lp&(1<<30)) != 0, Mods: w.mods()})
+		if msg == wmSysKeyDown {
+			w.suppressSysChar = handled
+		}
+		if (msg == wmSysKeyDown || msg == wmSysKeyUp) && !handled {
+			return call(win.defProc, hwnd, uintptr(msg), wp, lp)
+		}
 		return 0
+	case wmSysChar:
+		if w.suppressSysChar {
+			w.suppressSysChar = false
+			return 0
+		}
 	case wmChar:
 		w.character(uint16(wp))
 		return 0

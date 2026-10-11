@@ -12,11 +12,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
 const (
 	waylandClipboardMIME  = "text/plain;charset=utf-8"
-	waylandClipboardLimit = 16 << 20
+	waylandClipboardLimit = platform.ClipboardTextLimit
 )
 
 func wlReadString(payload []byte) (string, error) {
@@ -166,8 +168,8 @@ func (w *WaylandWindow) SetClipboardText(value string) error {
 	if w.serial == 0 {
 		return fmt.Errorf("wayland: clipboard selection needs an input serial")
 	}
-	if len(value) > waylandClipboardLimit || !utf8.ValidString(value) {
-		return fmt.Errorf("wayland: clipboard text is invalid or exceeds 16 MiB")
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return err
 	}
 	id := w.wire.id()
 	if err := w.wire.send(w.dataManager, 0, wlWord(id)); err != nil {
@@ -211,7 +213,11 @@ func (w *WaylandWindow) ClipboardText() (string, error) {
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("wayland: clipboard text is not UTF-8")
 	}
-	return string(data), nil
+	value := string(data)
+	if err := platform.ValidateClipboardText(value); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func (w *WaylandWindow) receiveOffer(offer uint32, mime string) ([]byte, error) {

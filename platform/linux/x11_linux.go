@@ -47,6 +47,9 @@ type X11Window struct {
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
 	keysyms                                                       map[byte][]uint32
+	lastReleaseCode                                               byte
+	lastReleaseTime                                               uint32
+	hadRelease                                                    bool
 	wmDelete, wmProtocols                                         uint32
 	incrAtom                                                      uint32
 	transfers                                                     map[selectionKey]*selectionTransfer
@@ -829,6 +832,16 @@ func x11Key(sym uint32) ui.Key {
 
 func (w *X11Window) handle(message []byte) bool {
 	typ := message[0] & 0x7f
+	// X11 autorepeat sends an adjacent KeyRelease/KeyPress pair with the same
+	// keycode and timestamp. Preserve repeat information for controls and
+	// shortcuts that should activate only once per held key.
+	repeat := typ == 2 && w.hadRelease && message[1] == w.lastReleaseCode &&
+		le.Uint32(message[4:]) == w.lastReleaseTime
+	w.hadRelease = typ == 3
+	if w.hadRelease {
+		w.lastReleaseCode = message[1]
+		w.lastReleaseTime = le.Uint32(message[4:])
+	}
 	if w.modal && typ >= 2 && typ <= 8 {
 		return false
 	}
@@ -889,7 +902,7 @@ func (w *X11Window) handle(message []byte) bool {
 				key, _ = evdevUS(uint32(message[1]-8), false)
 			}
 		}
-		w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods})
+		w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods, Repeat: repeat})
 		if typ == 2 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
 			w.compose.input(w.manager, sym)
 		}
@@ -901,8 +914,9 @@ func (w *X11Window) handle(message []byte) bool {
 		w.screenX = int(int16(le.Uint16(message[20:]))) - int(int16(le.Uint16(message[24:])))
 		w.screenY = int(int16(le.Uint16(message[22:]))) - int(int16(le.Uint16(message[26:])))
 		x, y := float32(int16(le.Uint16(message[24:])))/w.scale, float32(int16(le.Uint16(message[26:])))/w.scale
+		mods := x11Mods(le.Uint16(message[28:]))
 		if typ == 6 {
-			w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: x, Y: y})
+			w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: x, Y: y, Mods: mods})
 			break
 		}
 		button := message[1]
@@ -919,7 +933,7 @@ func (w *X11Window) handle(message []byte) bool {
 				case 7:
 					scroll.X = -1
 				}
-				w.manager.HandleEvent(ui.Event{Type: ui.PointerScroll, X: x, Y: y, Scroll: scroll})
+				w.manager.HandleEvent(ui.Event{Type: ui.PointerScroll, X: x, Y: y, Scroll: scroll, Mods: mods})
 			}
 			break
 		}
@@ -934,7 +948,7 @@ func (w *X11Window) handle(message []byte) bool {
 		if typ == 5 {
 			kind = ui.PointerUp
 		}
-		w.manager.HandleEvent(ui.Event{Type: kind, Button: mouse, X: x, Y: y, Mods: x11Mods(le.Uint16(message[28:]))})
+		w.manager.HandleEvent(ui.Event{Type: kind, Button: mouse, X: x, Y: y, Mods: mods})
 	case 10:
 		w.compose.reset(w.manager)
 		if w.ime != nil {
