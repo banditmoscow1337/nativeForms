@@ -659,6 +659,12 @@ func x11Key(sym uint32) ui.Key {
 		return ui.KeyHome
 	case 0xff57:
 		return ui.KeyEnd
+	case 0xff55:
+		return ui.KeyPageUp
+	case 0xff56:
+		return ui.KeyPageDown
+	case 0xff63:
+		return ui.KeyInsert
 	case 0xff51:
 		return ui.KeyLeftArrow
 	case 0xff52:
@@ -667,18 +673,80 @@ func x11Key(sym uint32) ui.Key {
 		return ui.KeyRightArrow
 	case 0xff54:
 		return ui.KeyDownArrow
+	case 0xffbe:
+		return ui.KeyF1
+	case 0xffbf:
+		return ui.KeyF2
+	case 0xffc0:
+		return ui.KeyF3
+	case 0xffc1:
+		return ui.KeyF4
 	case 0xffc2:
 		return ui.KeyF5
 	case 0xffc3:
 		return ui.KeyF6
+	case 0xffc4:
+		return ui.KeyF7
 	case 0xffc5:
 		return ui.KeyF8
+	case 0xffc6:
+		return ui.KeyF9
+	case 0xffc7:
+		return ui.KeyF10
+	case 0xffc8:
+		return ui.KeyF11
+	case 0xffc9:
+		return ui.KeyF12
 	case 0x20:
 		return ui.KeySpace
+	case '0', ')':
+		return ui.KeyDigit0
+	case '1', '!':
+		return ui.KeyDigit1
+	case '2', '@':
+		return ui.KeyDigit2
+	case '3', '#':
+		return ui.KeyDigit3
+	case '4', '$':
+		return ui.KeyDigit4
+	case '5', '%':
+		return ui.KeyDigit5
+	case '6', '^':
+		return ui.KeyDigit6
+	case '7', '&':
+		return ui.KeyDigit7
+	case '8', '*':
+		return ui.KeyDigit8
+	case '9', '(':
+		return ui.KeyDigit9
+	case '-', '_':
+		return ui.KeyMinus
+	case '=', '+':
+		return ui.KeyEqual
+	case '[', '{':
+		return ui.KeyLeftBracket
+	case ']', '}':
+		return ui.KeyRightBracket
+	case '\\', '|':
+		return ui.KeyBackslash
+	case ';', ':':
+		return ui.KeySemicolon
+	case '\'', '"':
+		return ui.KeyQuote
+	case '`', '~':
+		return ui.KeyBackquote
+	case ',', '<':
+		return ui.KeyComma
+	case '.', '>':
+		return ui.KeyPeriod
+	case '/', '?':
+		return ui.KeySlash
 	}
 	switch unicode.ToLower(rune(sym)) {
 	case 'a':
 		return ui.KeyA
+	case 'b':
+		return ui.KeyB
 	case 'c':
 		return ui.KeyC
 	case 'd':
@@ -687,12 +755,36 @@ func x11Key(sym uint32) ui.Key {
 		return ui.KeyE
 	case 'f':
 		return ui.KeyF
+	case 'g':
+		return ui.KeyG
+	case 'h':
+		return ui.KeyH
+	case 'i':
+		return ui.KeyI
+	case 'j':
+		return ui.KeyJ
+	case 'k':
+		return ui.KeyK
+	case 'l':
+		return ui.KeyL
+	case 'm':
+		return ui.KeyM
+	case 'n':
+		return ui.KeyN
+	case 'o':
+		return ui.KeyO
+	case 'p':
+		return ui.KeyP
 	case 'q':
 		return ui.KeyQ
 	case 'r':
 		return ui.KeyR
 	case 's':
 		return ui.KeyS
+	case 't':
+		return ui.KeyT
+	case 'u':
+		return ui.KeyU
 	case 'v':
 		return ui.KeyV
 	case 'w':
