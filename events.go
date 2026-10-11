@@ -49,6 +49,52 @@ const (
 	KeyC
 	KeyV
 	KeyX
+	KeyPageUp
+	KeyPageDown
+	KeyInsert
+	KeyF1
+	KeyF2
+	KeyF3
+	KeyF4
+	KeyF7
+	KeyF9
+	KeyF10
+	KeyF11
+	KeyF12
+	KeyB
+	KeyG
+	KeyH
+	KeyI
+	KeyJ
+	KeyK
+	KeyL
+	KeyM
+	KeyN
+	KeyO
+	KeyP
+	KeyT
+	KeyU
+	KeyDigit0
+	KeyDigit1
+	KeyDigit2
+	KeyDigit3
+	KeyDigit4
+	KeyDigit5
+	KeyDigit6
+	KeyDigit7
+	KeyDigit8
+	KeyDigit9
+	KeyMinus
+	KeyEqual
+	KeyLeftBracket
+	KeyRightBracket
+	KeyBackslash
+	KeySemicolon
+	KeyQuote
+	KeyBackquote
+	KeyComma
+	KeyPeriod
+	KeySlash
 )
 
 type MouseButton uint8
