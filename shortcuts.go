@@ -5,6 +5,9 @@ type ShortcutID uint64
 type Shortcut struct {
 	Key          Key
 	Mods         int
+	// Scope limits the shortcut to a focused component and its descendants.
+	// A nil Scope registers an application shortcut.
+	Scope        Component
 	AllowInModal bool
 	Repeat       bool
 	Action       func()
@@ -24,10 +27,11 @@ func (manager *Manager) AddShortcut(shortcut Shortcut) ShortcutID {
 
 func (manager *Manager) RemoveShortcut(id ShortcutID) { delete(manager.shortcuts, id) }
 
-func (manager *Manager) handleShortcut(event Event) bool {
+func (manager *Manager) handleShortcut(event Event, scope Component) bool {
 	for id := ShortcutID(1); id <= manager.nextShortcut; id++ {
 		shortcut, ok := manager.shortcuts[id]
-		if !ok || shortcut.Key != event.Key || shortcut.Mods != event.Mods || (event.Repeat && !shortcut.Repeat) {
+		if !ok || shortcut.Key != event.Key || shortcut.Mods != event.Mods || (event.Repeat && !shortcut.Repeat) ||
+			!sameComponent(shortcut.Scope, scope) {
 			continue
 		}
 		if manager.topModal() != nil && !shortcut.AllowInModal {
