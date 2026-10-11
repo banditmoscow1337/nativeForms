@@ -3,6 +3,7 @@ package nativeforms
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type TextField struct {
@@ -74,6 +75,72 @@ func (f *TextField) syncExternal() {
 		f.editor.Move(f.Cursor, false)
 	}
 }
+
+func (f *TextField) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
+	if f.ReadOnly {
+		return TextInputState{}, false
+	}
+	e := f.Editor()
+	state := TextInputState{Password: f.Password, Multiline: f.Multiline}
+	if f.Password {
+		return state, true
+	}
+	cursor := textByteOffset(e.Text, e.Caret)
+	anchor := textByteOffset(e.Text, e.Anchor)
+	state.Text, state.Base = surroundingWindow(e.Text, cursor, anchor, maxBytes)
+	state.Cursor = cursor - state.Base
+	state.Anchor = anchor - state.Base
+	state.UTF16Base = utf16Units(e.Text[:state.Base])
+	return state, true
+}
+
+func (f *TextField) ReplaceTextRange(start, end int, value string) bool {
+	if f.ReadOnly || !utf8.ValidString(value) {
+		return false
+	}
+	e := f.Editor()
+	if start < 0 || end < start || end > len(e.Text) || !utf8.ValidString(e.Text[:start]) || !utf8.ValidString(e.Text[:end]) {
+		return false
+	}
+	if !f.Multiline {
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", "")
+	}
+	next := e.Text[:start] + value + e.Text[end:]
+	if f.Validate != nil && !f.Validate(next) {
+		return false
+	}
+	e.Anchor = utf8.RuneCountInString(e.Text[:start])
+	e.Caret = utf8.RuneCountInString(e.Text[:end])
+	e.Preedit = ""
+	if e.Replace(value) {
+		f.changed()
+		return true
+	}
+	f.invalidatePaint()
+	return false
+}
+
+func (f *TextField) SelectTextRange(start, end int) bool {
+	if f.ReadOnly {
+		return false
+	}
+	e := f.Editor()
+	if start < 0 || end < start || end > len(e.Text) || !utf8.ValidString(e.Text[:start]) || !utf8.ValidString(e.Text[:end]) {
+		return false
+	}
+	e.Anchor = utf8.RuneCountInString(e.Text[:start])
+	e.Caret = utf8.RuneCountInString(e.Text[:end])
+	f.moved()
+	return true
+}
+
+func (f *TextField) TextInputComposing() bool { return f.composing }
+
+func (f *TextField) ResetCaretBlink() {
+	f.caretVisible = true
+	f.invalidatePaint()
+}
+
 func (f *TextField) changed() {
 	f.Text = f.editor.Text
 	f.Cursor = f.editor.Caret
