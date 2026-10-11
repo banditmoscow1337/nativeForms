@@ -119,6 +119,34 @@ func (d *Document) UTF16Position(offset int) (Position, error) {
 	return Position{Line: line, Character: column}, nil
 }
 
+// UTF16Offset returns the absolute UTF-16 code-unit offset at a UTF-8 rune
+// boundary. It is used by native text input APIs whose ranges cover the whole
+// document rather than one line.
+func (d *Document) UTF16Offset(offset int) (int, error) {
+	if !validBoundary(d.root, offset) {
+		return 0, ErrRange
+	}
+	count := 0
+	n := d.root
+	for n != nil {
+		left := pieceBytes(n.left)
+		if offset < left {
+			n = n.left
+			continue
+		}
+		count += pieceUTF16(n.left)
+		offset -= left
+		within := min(offset, len(n.text))
+		count += utf16Count(n.text[:within])
+		if offset <= len(n.text) {
+			break
+		}
+		offset -= len(n.text)
+		n = n.right
+	}
+	return count, nil
+}
+
 // ByteOffset converts an LSP position to an offset. A column inside a UTF-16
 // surrogate pair or beyond the line's text is rejected.
 func (d *Document) ByteOffset(pos Position) (int, error) {
@@ -261,7 +289,7 @@ type piece struct {
 	left, right *piece
 	text        string
 	priority    uint64
-	bytes, lines int
+	bytes, lines, utf16 int
 }
 
 func pieceBytes(n *piece) int {
@@ -278,9 +306,28 @@ func pieceLines(n *piece) int {
 	return n.lines
 }
 
+func pieceUTF16(n *piece) int {
+	if n == nil {
+		return 0
+	}
+	return n.utf16
+}
+
+func utf16Count(text string) int {
+	count := 0
+	for _, r := range text {
+		count++
+		if r > 0xffff {
+			count++
+		}
+	}
+	return count
+}
+
 func update(n *piece) {
 	n.bytes = pieceBytes(n.left) + len(n.text) + pieceBytes(n.right)
 	n.lines = pieceLines(n.left) + strings.Count(n.text, "\n") + pieceLines(n.right)
+	n.utf16 = pieceUTF16(n.left) + utf16Count(n.text) + pieceUTF16(n.right)
 }
 
 func node(text string, priority uint64) *piece {
