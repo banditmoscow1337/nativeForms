@@ -26,6 +26,7 @@ type Capabilities struct {
 
 type FileDialogs interface {
 	OpenFile() (string, error)
+	OpenFolder() (string, error)
 	SaveFile(defaultName string) (string, error)
 }
 
