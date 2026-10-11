@@ -5,6 +5,7 @@ package linux
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 
 const portalName = "org.freedesktop.portal.Desktop"
 const portalPath = "/org/freedesktop/portal/desktop"
+
+var _ platform.FileDialogs = (*X11Window)(nil)
+var _ platform.FileDialogs = (*WaylandWindow)(nil)
 
 func portalAvailable() bool {
 	b, err := openDBus(sessionBusAddress())
@@ -23,7 +27,28 @@ func portalAvailable() bool {
 	_, err = b.call(portalName, portalPath, "org.freedesktop.DBus.Properties", "Get", []dbValue{{"s", "org.freedesktop.portal.FileChooser"}, {"s", "version"}}, nil, 2*time.Second)
 	return err == nil
 }
-func portalFile(parent, name string, save bool, pump func() error) (string, error) {
+func portalChooserOptions(token, name string, save, folder bool) (string, string, map[string]dbValue) {
+	options := map[string]dbValue{"handle_token": {"s", token}, "modal": {"b", true}}
+	method, title := "OpenFile", "Open file"
+	if folder {
+		title = "Open project folder"
+		options["directory"] = dbValue{"b", true}
+	} else if save {
+		method, title = "SaveFile", "Save file"
+		options["current_name"] = dbValue{"s", name}
+	}
+	return method, title, options
+}
+
+func validatePortalFolder(path string) error {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("portal: selected path is not a local folder")
+	}
+	return nil
+}
+
+func portalFile(parent, name string, save, folder bool, pump func() error) (string, error) {
 	b, err := openDBus(sessionBusAddress())
 	if err != nil {
 		return "", fmt.Errorf("linux: desktop portal unavailable: %w (%v)", platform.ErrUnsupported, err)
@@ -41,12 +66,7 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 			responses[m.path] = m
 		}
 	}
-	options := map[string]dbValue{"handle_token": {"s", token}, "modal": {"b", true}}
-	method, title := "OpenFile", "Open file"
-	if save {
-		method, title = "SaveFile", "Save file"
-		options["current_name"] = dbValue{"s", name}
-	}
+	method, title, options := portalChooserOptions(token, name, save, folder)
 
 	completed := false
 	defer func() {
@@ -98,6 +118,11 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 			if len(files) != 1 {
 				return "", fmt.Errorf("portal: selected URI is not a local file")
 			}
+			if folder {
+				if err := validatePortalFolder(files[0]); err != nil {
+					return "", err
+				}
+			}
 			return files[0], nil
 		}
 		if err = b.poll(); err != nil {
@@ -108,9 +133,10 @@ func portalFile(parent, name string, save bool, pump func() error) (string, erro
 		}
 	}
 }
-func (w *X11Window) OpenFile() (string, error)            { return w.fileDialog("", false) }
-func (w *X11Window) SaveFile(name string) (string, error) { return w.fileDialog(name, true) }
-func (w *X11Window) fileDialog(name string, save bool) (string, error) {
+func (w *X11Window) OpenFile() (string, error)            { return w.fileDialog("", false, false) }
+func (w *X11Window) SaveFile(name string) (string, error) { return w.fileDialog(name, true, false) }
+func (w *X11Window) OpenFolder() (string, error)          { return w.fileDialog("", false, true) }
+func (w *X11Window) fileDialog(name string, save, folder bool) (string, error) {
 	if w == nil || w.conn == nil || w.modal {
 		return "", fmt.Errorf("x11: file dialog needs an available running window")
 	}
@@ -120,7 +146,7 @@ func (w *X11Window) fileDialog(name string, save bool) (string, error) {
 		w.ime.focusOut()
 	}
 	w.compose.reset(w.manager)
-	return portalFile(fmt.Sprintf("x11:%x", w.id), name, save, func() error {
+	return portalFile(fmt.Sprintf("x11:%x", w.id), name, save, folder, func() error {
 		if w.closeRequested.Load() {
 			return fmt.Errorf("x11: window closed")
 		}
@@ -139,9 +165,10 @@ func (w *X11Window) fileDialog(name string, save bool) (string, error) {
 		return w.clipboardDispatch(packet)
 	})
 }
-func (w *WaylandWindow) OpenFile() (string, error)            { return w.fileDialog("", false) }
-func (w *WaylandWindow) SaveFile(name string) (string, error) { return w.fileDialog(name, true) }
-func (w *WaylandWindow) fileDialog(name string, save bool) (string, error) {
+func (w *WaylandWindow) OpenFile() (string, error)            { return w.fileDialog("", false, false) }
+func (w *WaylandWindow) SaveFile(name string) (string, error) { return w.fileDialog(name, true, false) }
+func (w *WaylandWindow) OpenFolder() (string, error)          { return w.fileDialog("", false, true) }
+func (w *WaylandWindow) fileDialog(name string, save, folder bool) (string, error) {
 	if w == nil || w.wire == nil || w.modal {
 		return "", fmt.Errorf("wayland: file dialog needs an available running window")
 	}
@@ -152,7 +179,7 @@ func (w *WaylandWindow) fileDialog(name string, save bool) (string, error) {
 	if err := w.syncTextInput(false); err != nil {
 		return "", err
 	}
-	return portalFile("", name, save, func() error {
+	return portalFile("", name, save, folder, func() error {
 		if w.closing.Load() {
 			return fmt.Errorf("wayland: window closed")
 		}
