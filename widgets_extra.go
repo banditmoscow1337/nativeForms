@@ -483,14 +483,23 @@ type Tab struct {
 	ID, Title string
 	Icon      *ImageResource
 	Content   Component
+	Dirty     bool
 }
 
 type Tabs struct {
 	State
-	Tabs         []Tab
-	SelectedID   string
-	OnChange     func(string)
+	Tabs           []Tab
+	SelectedID     string
+	OnChange       func(string)
+	OnCloseRequest func(string) bool
+	OnReorder      func(id string, index int)
+	Offset         float32
+
 	headerHeight float32
+	downID       string
+	downX        float32
+	downClose    bool
+	dragged      bool
 }
 
 func NewTabs(tabs []Tab, selected string, onChange func(string)) *Tabs {
@@ -505,6 +514,31 @@ func NewTabs(tabs []Tab, selected string, onChange func(string)) *Tabs {
 	return t
 }
 
+func (t *Tabs) selectedContent() Component {
+	for _, tab := range t.Tabs {
+		if tab.ID == t.SelectedID {
+			return tab.Content
+		}
+	}
+	return nil
+}
+
+func (t *Tabs) ownsFocus(content Component) bool {
+	return t.manager != nil && t.manager.focused != nil &&
+		componentContainsState(content, t.manager.focused.UIState())
+}
+
+func (t *Tabs) focusSelected() {
+	if t.manager == nil {
+		return
+	}
+	var focusables []Component
+	collectFocusable(t.selectedContent(), &focusables)
+	if len(focusables) > 0 {
+		t.manager.setFocus(focusables[0])
+	}
+}
+
 func (t *Tabs) selectTab(id string, notify bool) {
 	found := false
 	for _, tab := range t.Tabs {
@@ -513,47 +547,186 @@ func (t *Tabs) selectTab(id string, notify bool) {
 			break
 		}
 	}
-	if !found && len(t.Tabs) > 0 {
-		id = t.Tabs[0].ID
+	if !found {
+		id = ""
+		if len(t.Tabs) > 0 {
+			id = t.Tabs[0].ID
+		}
 	}
 	if id == t.SelectedID && notify {
 		return
 	}
+	focusContent := t.manager != nil && (sameComponent(t.manager.focused, t) ||
+		t.ownsFocus(t.selectedContent()))
+	changed := id != t.SelectedID
 	t.SelectedID = id
 	for _, tab := range t.Tabs {
 		if tab.Content != nil {
 			tab.Content.UIState().SetVisible(tab.ID == id)
 		}
 	}
+	t.ScrollTo(id)
 	t.invalidateLayout()
-	if notify && t.OnChange != nil {
+	if focusContent {
+		t.focusSelected()
+	}
+	if notify && changed && t.OnChange != nil {
 		t.OnChange(id)
 	}
 }
 
 func (t *Tabs) Select(id string) { t.selectTab(id, true) }
 
+// Open adds a tab and selects it. IDs must be unique and nonempty.
+func (t *Tabs) Open(tab Tab) bool {
+	if tab.ID == "" {
+		return false
+	}
+	for _, existing := range t.Tabs {
+		if existing.ID == tab.ID {
+			return false
+		}
+	}
+	t.Tabs = append(t.Tabs, tab)
+	if tab.Content != nil {
+		t.Add(tab.Content)
+	}
+	t.selectTab(tab.ID, true)
+	return true
+}
+
+// Close removes a tab after OnCloseRequest, if set, allows it.
+func (t *Tabs) Close(id string) bool {
+	for index, tab := range t.Tabs {
+		if tab.ID != id {
+			continue
+		}
+		if t.OnCloseRequest != nil && !t.OnCloseRequest(id) {
+			return false
+		}
+		selected := id == t.SelectedID
+		focused := selected && t.manager != nil && t.ownsFocus(tab.Content)
+		if tab.Content != nil {
+			t.Remove(tab.Content)
+		}
+		t.Tabs = append(t.Tabs[:index], t.Tabs[index+1:]...)
+		if selected {
+			t.SelectedID = ""
+			next := ""
+			if len(t.Tabs) > 0 {
+				next = t.Tabs[min(index, len(t.Tabs)-1)].ID
+			}
+			if next == "" {
+				t.Offset = 0
+				t.invalidateLayout()
+				if t.OnChange != nil {
+					t.OnChange("")
+				}
+			} else {
+				t.selectTab(next, true)
+			}
+			if focused {
+				t.focusSelected()
+			}
+		} else {
+			t.Offset = clampFloat32(t.Offset, 0, t.maxOffset())
+			t.invalidateLayout()
+		}
+		return true
+	}
+	return false
+}
+
+// Move places an existing tab at index; it is also used by header dragging.
+func (t *Tabs) Move(id string, index int) bool {
+	if index < 0 || index >= len(t.Tabs) {
+		return false
+	}
+	from := -1
+	for i := range t.Tabs {
+		if t.Tabs[i].ID == id {
+			from = i
+			break
+		}
+	}
+	if from < 0 || from == index {
+		return false
+	}
+	tab := t.Tabs[from]
+	if from < index {
+		copy(t.Tabs[from:index], t.Tabs[from+1:index+1])
+	} else {
+		copy(t.Tabs[index+1:from+1], t.Tabs[index:from])
+	}
+	t.Tabs[index] = tab
+	t.ScrollTo(id)
+	t.invalidatePaint()
+	if t.OnReorder != nil {
+		t.OnReorder(id, index)
+	}
+	return true
+}
+
+func (t *Tabs) SetDirty(id string, dirty bool) bool {
+	for i := range t.Tabs {
+		if t.Tabs[i].ID == id {
+			if t.Tabs[i].Dirty == dirty {
+				return false
+			}
+			t.Tabs[i].Dirty = dirty
+			t.invalidatePaint()
+			return true
+		}
+	}
+	return false
+}
+
 func (t *Tabs) tabWidth(tab Tab) float32 {
-	return maxFloat32(80, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+24+iconWidth(tab.Icon))
+	return maxFloat32(100, t.measureText(tab.Title, FontSpec{Size: t.Theme().FontSize}).X+50+iconWidth(tab.Icon))
+}
+
+func (t *Tabs) maxOffset() float32 {
+	width := float32(0)
+	for _, tab := range t.Tabs {
+		width += t.tabWidth(tab)
+	}
+	return maxFloat32(0, width-t.rect.W)
+}
+
+// ScrollTo makes a tab's header visible in the current viewport.
+func (t *Tabs) ScrollTo(id string) {
+	x := float32(0)
+	for _, tab := range t.Tabs {
+		w := t.tabWidth(tab)
+		if tab.ID == id {
+			if x < t.Offset {
+				t.Offset = x
+			} else if x+w > t.Offset+t.rect.W {
+				t.Offset = x+w-t.rect.W
+			}
+			t.Offset = clampFloat32(t.Offset, 0, t.maxOffset())
+			t.invalidatePaint()
+			return
+		}
+		x += w
+	}
 }
 
 func (t *Tabs) Measure(c Constraints) Vec2 {
 	size := Vec2{X: 120, Y: t.headerHeight}
-	stripWidth := float32(0)
 	for _, tab := range t.Tabs {
-		stripWidth += t.tabWidth(tab)
 		if tab.ID == t.SelectedID && tab.Content != nil {
 			child := tab.Content.Measure(c)
 			size.X = maxFloat32(size.X, child.X)
 			size.Y += child.Y
 		}
 	}
-	size.X = maxFloat32(size.X, stripWidth)
 	return measureWithState(&t.State, size, c)
 }
 
 func (t *Tabs) Arrange(r Rect) {
 	t.rect = r
+	t.Offset = clampFloat32(t.Offset, 0, t.maxOffset())
 	for _, tab := range t.Tabs {
 		if tab.ID == t.SelectedID && tab.Content != nil {
 			tab.Content.Arrange(Rect{X: r.X, Y: r.Y + t.headerHeight, W: r.W, H: maxFloat32(0, r.H-t.headerHeight)})
@@ -561,47 +734,107 @@ func (t *Tabs) Arrange(r Rect) {
 	}
 }
 
+func (t *Tabs) tabAt(x float32) (int, Rect) {
+	left := t.rect.X-t.Offset
+	for i, tab := range t.Tabs {
+		w := t.tabWidth(tab)
+		rect := Rect{X: left, Y: t.rect.Y, W: w, H: t.headerHeight}
+		if x >= left && x < left+w && x >= t.rect.X && x < t.rect.X+t.rect.W {
+			return i, rect
+		}
+		left += w
+	}
+	return -1, Rect{}
+}
+
 func (t *Tabs) Paint(c *Canvas) {
-	c.Rect(Rect{X: t.rect.X, Y: t.rect.Y, W: t.rect.W, H: t.headerHeight}, c.theme.Header)
-	x := t.rect.X
+	header := Rect{X: t.rect.X, Y: t.rect.Y, W: t.rect.W, H: t.headerHeight}
+	c.Rect(header, c.theme.Header)
+	c.PushClip(header)
+	x := t.rect.X-t.Offset
 	for _, tab := range t.Tabs {
 		width := t.tabWidth(tab)
 		r := Rect{X: x, Y: t.rect.Y, W: width, H: t.headerHeight}
+		if r.X+r.W <= t.rect.X || r.X >= t.rect.X+t.rect.W {
+			x += width
+			continue
+		}
 		if tab.ID == t.SelectedID {
 			c.Rect(r, c.theme.ControlHover)
 			c.Rect(Rect{X: x, Y: r.Y + r.H - 3, W: width, H: 3}, c.theme.Accent)
 		}
-		if tab.Icon == nil {
-			c.Text(tab.Title, r, c.theme.FontSize, TextCenter, c.theme.Text)
-		} else {
-			gap := float32(0)
-			if tab.Title != "" {
-				gap = iconGap
-			}
-			labelWidth := t.measureText(tab.Title, FontSpec{Size: c.theme.FontSize}).X
-			left := r.X + maxFloat32(0, (r.W-iconSize-gap-labelWidth)*0.5)
-			paintIcon(c, tab.Icon, Rect{X: left, Y: r.Y + (r.H-iconSize)*0.5, W: iconSize, H: iconSize}, 1)
-			if tab.Title != "" {
-				c.Text(tab.Title, Rect{X: left + iconSize + gap, Y: r.Y, W: maxFloat32(0, r.X+r.W-left-iconSize-gap), H: r.H}, c.theme.FontSize, TextLeft, c.theme.Text)
-			}
+		left := r.X+10
+		if tab.Icon != nil {
+			paintIcon(c, tab.Icon, Rect{X: left, Y: r.Y+(r.H-iconSize)*0.5, W: iconSize, H: iconSize}, 1)
+			left += iconSize+iconGap
 		}
+		right := r.X+r.W-26
+		if tab.Dirty {
+			c.RoundedRect(Rect{X: right-10, Y: r.Y+(r.H-7)*0.5, W: 7, H: 7}, 3.5, c.theme.Accent)
+			right -= 13
+		}
+		c.Text(tab.Title, Rect{X: left, Y: r.Y, W: maxFloat32(0, right-left), H: r.H},
+			c.theme.FontSize, TextLeft, c.theme.Text)
+		c.Text("×", Rect{X: r.X+r.W-24, Y: r.Y, W: 20, H: r.H},
+			c.theme.FontSize, TextCenter, c.theme.Text)
 		x += width
 	}
+	c.PopClip()
 }
 
 func (t *Tabs) Handle(e Event) bool {
-	if e.Type == PointerDown && e.Button == MouseLeft && e.Y < t.rect.Y+t.headerHeight {
-		return true
-	}
-	if e.Type == PointerUp && e.Button == MouseLeft && e.Y < t.rect.Y+t.headerHeight {
-		x := t.rect.X
-		for _, tab := range t.Tabs {
-			w := t.tabWidth(tab)
-			if e.X >= x && e.X < x+w {
-				t.Select(tab.ID)
+	inHeader := t.rect.Contains(e.X, e.Y) && e.Y < t.rect.Y+t.headerHeight
+	switch e.Type {
+	case PointerDown:
+		if e.Button == MouseLeft && inHeader {
+			t.downID, t.downClose, t.dragged, t.downX = "", false, false, e.X
+			if i, r := t.tabAt(e.X); i >= 0 {
+				t.downID = t.Tabs[i].ID
+				t.downClose = e.X >= r.X+r.W-26
+			}
+			return true
+		}
+	case PointerMove:
+		if t.downID != "" && t.Pressed() && !t.downClose {
+			if e.X < t.downX-5 || e.X > t.downX+5 {
+				t.dragged = true
+			}
+			if t.dragged && inHeader {
+				if i, _ := t.tabAt(e.X); i >= 0 {
+					t.Move(t.downID, i)
+				}
+			}
+			return true
+		}
+	case PointerUp:
+		if t.downID != "" && e.Button == MouseLeft {
+			id, closing, dragged := t.downID, t.downClose, t.dragged
+			t.downID = ""
+			if inHeader {
+				if i, r := t.tabAt(e.X); i >= 0 && t.Tabs[i].ID == id {
+					if closing && e.X >= r.X+r.W-26 {
+						t.Close(id)
+					} else if !closing && !dragged {
+						t.Select(id)
+					} else if dragged {
+						t.Select(id)
+					}
+				}
+			}
+			return true
+		}
+	case PointerScroll:
+		if inHeader {
+			delta := e.Scroll.X
+			if delta == 0 {
+				delta = e.Scroll.Y
+			}
+			before := t.Offset
+			t.Offset = clampFloat32(t.Offset-delta*40, 0, t.maxOffset())
+			if before != t.Offset {
+				t.invalidatePaint()
 				return true
 			}
-			x += w
 		}
 	}
 	return t.State.Handle(e)
