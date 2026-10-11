@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
+
+	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
 type openFilename struct {
@@ -23,6 +25,67 @@ type openFilename struct {
 	FileOffset, FileExtension                              uint16
 	DefaultExtension, CustomData, Hook, Template, Reserved uintptr
 	ReservedFlags, FlagsEx                                 uint32
+}
+
+var _ platform.FileDialogs = (*Window)(nil)
+
+type browseInfo struct {
+	Owner, Root, DisplayName, Title uintptr
+	Flags                           uint32
+	Callback, Param                 uintptr
+	Image                           int32
+}
+
+// OpenFolder selects a filesystem directory for a project.
+func (w *Window) OpenFolder() (string, error) {
+	if w == nil || w.hwnd.Load() == 0 {
+		return "", fmt.Errorf("windows: folder dialog needs a running window")
+	}
+	shell, err := syscall.LoadLibrary("shell32.dll")
+	if err != nil {
+		return "", err
+	}
+	defer syscall.FreeLibrary(shell)
+	ole, err := syscall.LoadLibrary("ole32.dll")
+	if err != nil {
+		return "", err
+	}
+	defer syscall.FreeLibrary(ole)
+	browse, err := syscall.GetProcAddress(shell, "SHBrowseForFolderW")
+	if err != nil {
+		return "", err
+	}
+	pathForID, err := syscall.GetProcAddress(shell, "SHGetPathFromIDListW")
+	if err != nil {
+		return "", err
+	}
+	freeID, err := syscall.GetProcAddress(ole, "CoTaskMemFree")
+	if err != nil {
+		return "", err
+	}
+	display := make([]uint16, 260)
+	title := utf16.Encode([]rune("Select project folder\x00"))
+	info := browseInfo{Owner: w.hwnd.Load(), DisplayName: ptr16(display),
+		Title: ptr16(title), Flags: 0x0001} // BIF_RETURNONLYFSDIRS.
+	id := call(uintptr(browse), pointer(&info))
+	runtime.KeepAlive(display)
+	runtime.KeepAlive(title)
+	runtime.KeepAlive(&info)
+	if id == 0 {
+		return "", nil
+	}
+	defer call(uintptr(freeID), id)
+	path := make([]uint16, 32768)
+	// Windows 8.1 and newer expose the long-path variant.
+	if longPath, err := syscall.GetProcAddress(shell, "SHGetPathFromIDListEx"); err == nil {
+		if call(uintptr(longPath), id, ptr16(path), uintptr(len(path)), 0) == 0 {
+			return "", fmt.Errorf("windows: selected folder has no filesystem path")
+		}
+	} else if call(uintptr(pathForID), id, ptr16(path)) == 0 {
+		return "", fmt.Errorf("windows: selected folder has no filesystem path")
+	}
+	runtime.KeepAlive(path)
+	return syscall.UTF16ToString(path), nil
 }
 
 func (w *Window) OpenFile() (string, error) { return w.fileDialog(false, "") }
