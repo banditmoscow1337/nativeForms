@@ -116,12 +116,14 @@ func registerView() error {
 				a, b := min(state.Cursor, state.Anchor), max(state.Cursor, state.Anchor)
 				value = value[:a] + w.marked + value[b:]
 			}
-			n := utf16Length(value)
-			if requested.Location > n {
+			n := uint64(state.UTF16Base) + utf16Length(value)
+			if requested.Location < uint64(state.UTF16Base) || requested.Location > n {
 				return 0
 			}
 			requested.Length = min(requested.Length, n-requested.Location)
-			start, end, ok := utf16RangeBytes(value, requested)
+			local := requested
+			local.Location -= uint64(state.UTF16Base)
+			start, end, ok := utf16RangeBytes(value, local)
 			if !ok {
 				return 0
 			}
@@ -164,6 +166,9 @@ func registerView() error {
 				{"moveLeft:", ui.KeyLeftArrow, false}, {"moveRight:", ui.KeyRightArrow, false}, {"moveUp:", ui.KeyUpArrow, false}, {"moveDown:", ui.KeyDownArrow, false},
 				{"moveLeftAndModifySelection:", ui.KeyLeftArrow, true}, {"moveRightAndModifySelection:", ui.KeyRightArrow, true}, {"moveUpAndModifySelection:", ui.KeyUpArrow, true}, {"moveDownAndModifySelection:", ui.KeyDownArrow, true},
 				{"moveToBeginningOfLine:", ui.KeyHome, false}, {"moveToEndOfLine:", ui.KeyEnd, false},
+				{"pageUp:", ui.KeyPageUp, false}, {"pageDown:", ui.KeyPageDown, false},
+				{"movePageUp:", ui.KeyPageUp, false}, {"movePageDown:", ui.KeyPageDown, false},
+				{"movePageUpAndModifySelection:", ui.KeyPageUp, true}, {"movePageDownAndModifySelection:", ui.KeyPageDown, true},
 			} {
 				if command == selector(m.name) {
 					e.Key = m.key
@@ -302,7 +307,7 @@ func (w *Window) committedSelection() nsRange {
 		return nsRange{Location: nsNotFound}
 	}
 	a, b := min(s.Cursor, s.Anchor), max(s.Cursor, s.Anchor)
-	return nsRange{Location: utf16Length(s.Text[:a]), Length: utf16Length(s.Text[a:b])}
+	return nsRange{Location: uint64(s.UTF16Base) + utf16Length(s.Text[:a]), Length: utf16Length(s.Text[a:b])}
 }
 func (w *Window) nativeReplacement(r nsRange) {
 	if r.Location == nsNotFound {
@@ -316,8 +321,12 @@ func (w *Window) nativeReplacement(r nsRange) {
 	if w.marked != "" && r.Location >= base.Location && r.Location <= base.Location+utf16Length(w.marked) {
 		return
 	}
-	if a, b, ok := utf16RangeBytes(s.Text, r); ok {
-		w.manager.SelectTextRange(a, b)
+	if r.Location >= uint64(s.UTF16Base) {
+		local := r
+		local.Location -= uint64(s.UTF16Base)
+		if a, b, ok := utf16RangeBytes(s.Text, local); ok {
+			w.manager.SelectTextRange(s.Base+a, s.Base+b)
+		}
 	}
 }
 func (w *Window) cancelMarked() {
@@ -334,7 +343,7 @@ func (w *Window) cancelMarked() {
 }
 func (w *Window) syncInputFocus() {
 	s, ok := w.manager.TextInputState()
-	var id *ui.TextField
+	var id *ui.State
 	if ok {
 		id = s.Identity
 	}
