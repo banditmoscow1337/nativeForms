@@ -228,3 +228,31 @@ func BenchmarkDocumentInsertMiddle(b *testing.B) {
 		}
 	}
 }
+
+func TestDocumentAbsoluteUTF16OffsetAcrossPieces(t *testing.T) {
+	prefix := strings.Repeat("a", 4095)
+	d := testDocument(t, prefix+"🙂\r\nz")
+	for _, tc := range []struct{ bytes, units int }{
+		{0, 0}, {4095, 4095}, {4099, 4097}, {4101, 4099}, {4102, 4100},
+	} {
+		got, err := d.UTF16Offset(tc.bytes)
+		if err != nil || got != tc.units {
+			t.Fatalf("offset %d: units=%d, err=%v", tc.bytes, got, err)
+		}
+	}
+	if _, err := d.UTF16Offset(4097); !errors.Is(err, ErrRange) {
+		t.Fatalf("UTF-8 continuation byte was accepted: %v", err)
+	}
+	if _, err := d.Apply([]Edit{{Start: 4095, End: 4099, Text: "β"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.UTF16Offset(4097); err != nil || got != 4096 {
+		t.Fatalf("offset after edit: %d, %v", got, err)
+	}
+	if _, ok := d.Undo(); !ok {
+		t.Fatal("undo failed")
+	}
+	if got, err := d.UTF16Offset(4099); err != nil || got != 4097 {
+		t.Fatalf("offset after undo: %d, %v", got, err)
+	}
+}
