@@ -194,6 +194,7 @@ const (
 	wmChar             = 0x0102
 	wmSysKeyDown       = 0x0104
 	wmSysKeyUp         = 0x0105
+	wmSysChar          = 0x0106
 	wmIMEStart         = 0x010D
 	wmIMEEnd           = 0x010E
 	wmIMEComposition   = 0x010F
