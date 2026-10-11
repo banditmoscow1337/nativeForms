@@ -298,6 +298,7 @@ func (e *CodeEditor) Handle(event Event) bool {
 	e.syncDocument()
 	switch event.Type {
 	case FocusLost:
+		e.HideCompletions()
 		e.composing, e.preedit = false, ""
 		e.caretVisible = true
 		e.invalidatePaint()
@@ -352,11 +353,13 @@ func (e *CodeEditor) Handle(event Event) bool {
 			return true
 		}
 	case CompositionStart:
+		e.HideCompletions()
 		e.composing = !e.ReadOnly
 		e.preedit = ""
 		e.invalidatePaint()
 		return true
 	case CompositionUpdate:
+		e.HideCompletions()
 		if !e.ReadOnly {
 			e.composing = true
 			e.preedit = event.Text

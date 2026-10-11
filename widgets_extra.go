@@ -185,13 +185,17 @@ type Menu struct {
 	State
 	Items    []MenuItem
 	OnSelect func(string)
+	// MaxVisibleItems bounds the menu height; the active item scrolls into view.
+	// Zero shows all items.
+	MaxVisibleItems int
 	active   int
+	firstVisible int
 	popup    PopupID
 }
 
 func NewMenu(items []MenuItem, onSelect func(string)) *Menu {
 	m := &Menu{Items: append([]MenuItem(nil), items...), OnSelect: onSelect, active: -1}
-	m.owner, m.focusable = m, true
+	m.owner, m.focusable, m.clip = m, true, true
 	for i, item := range m.Items {
 		if !item.Disabled {
 			m.active = i
@@ -213,10 +217,39 @@ func (m *Menu) Measure(c Constraints) Vec2 {
 	for _, item := range m.Items {
 		w = maxFloat32(w, m.measureText(item.Label, FontSpec{Size: m.Theme().FontSize}).X+32+iconSpace)
 	}
-	return measureWithState(&m.State, Vec2{X: w, Y: float32(len(m.Items))*m.Theme().ControlHeight + 8}, c)
+	rows := len(m.Items)
+	if m.MaxVisibleItems > 0 {
+		rows = min(rows, m.MaxVisibleItems)
+	}
+	return measureWithState(&m.State, Vec2{X: w, Y: float32(rows)*m.Theme().ControlHeight + 8}, c)
+}
+
+func (m *Menu) visibleRows() int {
+	rows := len(m.Items)
+	if m.MaxVisibleItems > 0 {
+		rows = min(rows, m.MaxVisibleItems)
+	}
+	if m.rect.H > 0 {
+		rows = min(rows, max(1, int((m.rect.H-8)/m.Theme().ControlHeight)))
+	}
+	return rows
+}
+
+func (m *Menu) showActive() {
+	rows := m.visibleRows()
+	if rows == 0 || m.active < 0 {
+		return
+	}
+	if m.active < m.firstVisible {
+		m.firstVisible = m.active
+	} else if m.active >= m.firstVisible+rows {
+		m.firstVisible = m.active-rows+1
+	}
+	m.firstVisible = min(m.firstVisible, max(0, len(m.Items)-rows))
 }
 
 func (m *Menu) Paint(c *Canvas) {
+	m.showActive()
 	c.Rect(m.rect, c.theme.PanelAlt)
 	c.Border(m.rect, 1, c.theme.Border)
 	icons := false
@@ -224,11 +257,13 @@ func (m *Menu) Paint(c *Canvas) {
 		icons = icons || item.Icon != nil
 	}
 	h := c.theme.ControlHeight
-	for i, item := range m.Items {
-		r := Rect{X: m.rect.X + 4, Y: m.rect.Y + 4 + float32(i)*h, W: m.rect.W - 8, H: h}
-		if r.Y >= m.rect.Y+m.rect.H {
+	for row := 0; row < m.visibleRows(); row++ {
+		i := m.firstVisible+row
+		if i >= len(m.Items) {
 			break
 		}
+		item := m.Items[i]
+		r := Rect{X: m.rect.X + 4, Y: m.rect.Y + 4 + float32(row)*h, W: m.rect.W - 8, H: h}
 		if i == m.active {
 			c.Rect(r, c.theme.Selection)
 		}
@@ -248,11 +283,11 @@ func (m *Menu) indexAt(x, y float32) int {
 	if !m.rect.Contains(x, y) {
 		return -1
 	}
-	i := int((y - m.rect.Y - 4) / m.Theme().ControlHeight)
-	if y < m.rect.Y+4 || i < 0 || i >= len(m.Items) {
+	row := int((y - m.rect.Y - 4) / m.Theme().ControlHeight)
+	if y < m.rect.Y+4 || row < 0 || row >= m.visibleRows() || m.firstVisible+row >= len(m.Items) {
 		return -1
 	}
-	return i
+	return m.firstVisible+row
 }
 
 func (m *Menu) activate() bool {
@@ -310,6 +345,7 @@ func (m *Menu) Handle(e Event) bool {
 				index = (index + step + len(m.Items)) % len(m.Items)
 				if !m.Items[index].Disabled {
 					m.active = index
+					m.showActive()
 					m.invalidatePaint()
 					break
 				}
@@ -323,6 +359,7 @@ func (m *Menu) Handle(e Event) bool {
 			for i := start; i >= 0 && i < len(m.Items); i += step {
 				if !m.Items[i].Disabled {
 					m.active = i
+					m.showActive()
 					m.invalidatePaint()
 					break
 				}

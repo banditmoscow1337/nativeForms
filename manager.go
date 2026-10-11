@@ -107,6 +107,7 @@ func (manager *Manager) SetVisible(visible bool) {
 	manager.mu.Unlock()
 	if blurred != nil {
 		blurred.Handle(Event{Type: FocusLost})
+		manager.closeUnfocusedPopupsOutside(nil)
 	}
 	manager.InvalidatePaint()
 }
@@ -127,6 +128,7 @@ func (manager *Manager) SetInteractive(interactive bool) {
 	manager.mu.Unlock()
 	if blurred != nil {
 		blurred.Handle(Event{Type: FocusLost})
+		manager.closeUnfocusedPopupsOutside(nil)
 	}
 	manager.InvalidatePaint()
 }
@@ -524,10 +526,12 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 			}
 			return blocked
 		}
-		if target.UIState().Focusable() {
-			manager.setFocus(target)
-		} else {
-			manager.setFocus(nil)
+		if manager.unfocusedPopupFor(target) == nil {
+			if target.UIState().Focusable() {
+				manager.setFocus(target)
+			} else {
+				manager.setFocus(nil)
+			}
 		}
 		manager.captured = target
 		manager.capturedButton = event.Button
@@ -561,17 +565,30 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 			if client, ok := manager.textInputClient(); ok && client.TextInputComposing() && dispatchEvent(manager.focused, event) {
 				return true
 			}
+		}
+		if event.Type == KeyDown && manager.popupKey(event) {
+			return true
+		}
+		if event.Type == KeyDown && event.Key == KeyEscape {
 			for i := len(manager.popups) - 1; i >= 0; i-- {
 				if !manager.popups[i].passive {
 					return manager.ClosePopup(manager.popups[i].id)
 				}
 			}
 		}
-		if manager.focused != nil && dispatchEvent(manager.focused, event) {
-			return true
+		for target := manager.focused; target != nil; target = target.UIState().parent {
+			if !target.UIState().Enabled() {
+				continue
+			}
+			if target.Handle(event) {
+				return true
+			}
+			if event.Type == KeyDown && manager.handleShortcut(event, target) {
+				return true
+			}
 		}
 		if event.Type == KeyDown {
-			if manager.handleShortcut(event) {
+			if manager.handleShortcut(event, nil) {
 				return true
 			}
 			if modal := manager.topModal(); modal != nil {
@@ -700,6 +717,7 @@ func (manager *Manager) setFocus(component Component) {
 			}
 		}
 	}
+	manager.closeUnfocusedPopupsOutside(component)
 	manager.caretDue = time.Time{}
 	if client, ok := manager.textInputClient(); ok {
 		client.ResetCaretBlink()
@@ -780,6 +798,7 @@ func (manager *Manager) ClearInteraction() {
 	manager.mu.Unlock()
 	if blurred != nil {
 		blurred.Handle(Event{Type: FocusLost})
+		manager.closeUnfocusedPopupsOutside(nil)
 	}
 	manager.InvalidatePaint()
 }
