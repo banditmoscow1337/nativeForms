@@ -61,6 +61,8 @@ type Window struct {
 	wasKey                            bool
 }
 
+var _ platform.FileDialogs = (*Window)(nil)
+
 func New(manager *ui.Manager, options Options) *Window {
 	return &Window{manager: manager, options: options}
 }
@@ -393,6 +395,27 @@ func (w *Window) OpenFile() (string, error) {
 	if panel == 0 {
 		return "", fmt.Errorf("darwin: NSOpenPanel unavailable")
 	}
+	panel.Send(selector("setCanChooseDirectories:"), false)
+	panel.Send(selector("setCanChooseFiles:"), true)
+	panel.Send(selector("setAllowsMultipleSelection:"), false)
+	if objc.Send[int64](panel, selector("runModal")) != 1 {
+		return "", nil
+	}
+	return stringValue(panel.Send(selector("URL")).Send(selector("path"))), nil
+}
+
+// OpenFolder chooses a project directory with a native macOS panel.
+func (w *Window) OpenFolder() (string, error) {
+	if w == nil || w.window == 0 {
+		return "", fmt.Errorf("darwin: folder dialog needs a running window")
+	}
+	panel := class("NSOpenPanel").Send(selector("openPanel"))
+	if panel == 0 {
+		return "", fmt.Errorf("darwin: NSOpenPanel unavailable")
+	}
+	panel.Send(selector("setCanChooseDirectories:"), true)
+	panel.Send(selector("setCanChooseFiles:"), false)
+	panel.Send(selector("setAllowsMultipleSelection:"), false)
 	if objc.Send[int64](panel, selector("runModal")) != 1 {
 		return "", nil
 	}

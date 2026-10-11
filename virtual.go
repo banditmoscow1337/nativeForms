@@ -56,6 +56,13 @@ func (v *VirtualList) Arrange(r Rect) {
 	v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(v.count())*v.rowHeight()-r.H))
 }
 
+// ModelChanged invalidates rows after the backing model changes.
+// It clamps the scroll position immediately so a shortened model remains usable.
+func (v *VirtualList) ModelChanged() {
+	v.Arrange(v.rect)
+	v.invalidateLayout()
+}
+
 func (v *VirtualList) Paint(c *Canvas) {
 	c.Rect(v.rect, c.theme.Panel)
 	icons, hasIcons := v.Model.(ListIconModel)
@@ -215,6 +222,12 @@ func (v *VirtualTable) Arrange(r Rect) {
 	rows, cols, h, header, w := v.dimensions()
 	v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(rows)*h-maxFloat32(0, r.H-header)))
 	v.OffsetX = clampFloat32(v.OffsetX, 0, maxFloat32(0, float32(cols)*w-r.W))
+}
+
+// ModelChanged refreshes the table after rows, columns, or cell values change.
+func (v *VirtualTable) ModelChanged() {
+	v.Arrange(v.rect)
+	v.invalidateLayout()
 }
 
 func (v *VirtualTable) Paint(c *Canvas) {
@@ -395,6 +408,13 @@ func (v *VirtualTree) Arrange(r Rect) {
 	v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(len(v.rows))*h-r.H))
 }
 
+// ModelChanged rebuilds visible nodes after the model changes, including child
+// counts and labels. Expanded IDs and the selected ID are preserved.
+func (v *VirtualTree) ModelChanged() {
+	v.Arrange(v.rect)
+	v.invalidateLayout()
+}
+
 func (v *VirtualTree) Paint(c *Canvas) {
 	c.Rect(v.rect, c.theme.Panel)
 	icons, hasIcons := v.Model.(TreeIconModel)
@@ -430,7 +450,7 @@ func (v *VirtualTree) SetExpanded(id string, expanded bool) {
 		v.Expanded = make(map[string]bool)
 	}
 	v.Expanded[id] = expanded
-	v.invalidateLayout()
+	v.ModelChanged()
 }
 
 func (v *VirtualTree) SetSelected(id string) {
