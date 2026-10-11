@@ -2,6 +2,18 @@ package nativeforms
 
 type PopupID uint64
 
+// PopupOptions configures an overlay that stays owned by the focused component.
+// Anchor is evaluated during layout, so a popup follows a moving caret. Bounds
+// supplies the size; when either dimension is zero the content is measured.
+// Passive popups let pointer events reach the content underneath them.
+type PopupOptions struct {
+	Owner Component
+	Anchor func() Rect
+	Bounds Rect
+	Passive bool
+	OnKeyDown func(Event) bool
+}
+
 type popupEntry struct {
 	id       PopupID
 	content  Component
@@ -9,6 +21,10 @@ type popupEntry struct {
 	modal    bool
 	previous Component
 	passive  bool
+	keepFocus bool
+	owner Component
+	anchor func() Rect
+	onKeyDown func(Event) bool
 }
 
 func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) PopupID {
@@ -43,6 +59,32 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	return id
 }
 
+// OpenUnfocusedPopup keeps keyboard and text input focus on options.Owner.
+// The overlay may still receive pointer events and selected keyboard commands.
+func (manager *Manager) OpenUnfocusedPopup(content Component, options PopupOptions) PopupID {
+	if content == nil || options.Owner == nil || options.Owner.UIState().manager != manager ||
+		!manager.visible || !manager.interactive || !containsComponent(options.Owner, manager.focused) {
+		return 0
+	}
+	if manager.tooltipID != 0 {
+		manager.ClosePopup(manager.tooltipID)
+		manager.tooltipID = 0
+	}
+	manager.nextPopup++
+	id := manager.nextPopup
+	bindTree(content, nil, manager)
+	applyTheme(content, manager.theme)
+	manager.popups = append(manager.popups, popupEntry{
+		id: id, content: content, bounds: options.Bounds, passive: options.Passive,
+		keepFocus: true, owner: options.Owner, anchor: options.Anchor, onKeyDown: options.OnKeyDown,
+	})
+	if menu, ok := content.(*Menu); ok {
+		menu.popup = id
+	}
+	manager.InvalidateLayout()
+	return id
+}
+
 func (manager *Manager) ClosePopup(id PopupID) bool {
 	for i := len(manager.popups) - 1; i >= 0; i-- {
 		if manager.popups[i].id != id {
@@ -56,9 +98,9 @@ func (manager *Manager) ClosePopup(id PopupID) bool {
 		manager.clearSubtreeInteraction(entry.content.UIState())
 		bindTree(entry.content, nil, nil)
 		previous := entry.previous
-		if previous != nil && previous.UIState().manager == manager && previous.UIState().Visible() && previous.UIState().Enabled() {
+		if !entry.keepFocus && previous != nil && previous.UIState().manager == manager && previous.UIState().Visible() && previous.UIState().Enabled() {
 			manager.setFocus(previous)
-		} else if manager.topModal() != nil {
+		} else if !entry.keepFocus && manager.topModal() != nil {
 			var focusables []Component
 			collectFocusable(manager.topModal().content, &focusables)
 			if len(focusables) > 0 {
@@ -136,6 +178,35 @@ func containsComponent(root, target Component) bool {
 	return false
 }
 
+func (manager *Manager) unfocusedPopupFor(target Component) *popupEntry {
+	for i := len(manager.popups) - 1; i >= 0; i-- {
+		entry := &manager.popups[i]
+		if entry.keepFocus && containsComponent(entry.content, target) {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) popupKey(event Event) bool {
+	for i := len(manager.popups) - 1; i >= 0; i-- {
+		entry := manager.popups[i]
+		if entry.keepFocus && entry.onKeyDown != nil && containsComponent(entry.owner, manager.focused) {
+			return entry.onKeyDown(event)
+		}
+	}
+	return false
+}
+
+func (manager *Manager) closeUnfocusedPopupsOutside(focused Component) {
+	for i := len(manager.popups) - 1; i >= 0; i-- {
+		entry := manager.popups[i]
+		if entry.keepFocus && !containsComponent(entry.owner, focused) {
+			manager.ClosePopup(entry.id)
+		}
+	}
+}
+
 func (manager *Manager) popupHit(x, y float32) (Component, bool) {
 	for i := len(manager.popups) - 1; i >= 0; i-- {
 		entry := &manager.popups[i]
@@ -156,6 +227,11 @@ func (manager *Manager) layoutPopups(viewport Rect) {
 	for i := range manager.popups {
 		entry := &manager.popups[i]
 		bounds := entry.bounds
+		var anchor Rect
+		if entry.anchor != nil {
+			anchor = entry.anchor()
+			bounds.X, bounds.Y = anchor.X, anchor.Y+anchor.H
+		}
 		maxWidth := maxFloat32(0, viewport.W)
 		maxHeight := maxFloat32(0, viewport.H)
 		if bounds.W <= 0 || bounds.H <= 0 {
@@ -169,6 +245,10 @@ func (manager *Manager) layoutPopups(viewport Rect) {
 		}
 		bounds.W = minFloat32(maxWidth, maxFloat32(0, bounds.W))
 		bounds.H = minFloat32(maxHeight, maxFloat32(0, bounds.H))
+		if entry.anchor != nil && bounds.Y+bounds.H > viewport.Y+viewport.H &&
+			anchor.Y-bounds.H >= viewport.Y {
+			bounds.Y = anchor.Y-bounds.H
+		}
 		bounds.X = clampFloat32(bounds.X, viewport.X, viewport.X+viewport.W-bounds.W)
 		bounds.Y = clampFloat32(bounds.Y, viewport.Y, viewport.Y+viewport.H-bounds.H)
 		entry.content.Arrange(bounds)
