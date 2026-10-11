@@ -935,8 +935,14 @@ func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 		return ui.KeySpace, ' '
 	case 102:
 		return ui.KeyHome, 0
+	case 104:
+		return ui.KeyPageUp, 0
 	case 107:
 		return ui.KeyEnd, 0
+	case 109:
+		return ui.KeyPageDown, 0
+	case 110:
+		return ui.KeyInsert, 0
 	case 111:
 		return ui.KeyDelete, 0
 	case 103:
@@ -947,18 +953,38 @@ func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 		return ui.KeyRightArrow, 0
 	case 108:
 		return ui.KeyDownArrow, 0
+	case 59:
+		return ui.KeyF1, 0
+	case 60:
+		return ui.KeyF2, 0
+	case 61:
+		return ui.KeyF3, 0
+	case 62:
+		return ui.KeyF4, 0
 	case 63:
 		return ui.KeyF5, 0
 	case 64:
 		return ui.KeyF6, 0
+	case 65:
+		return ui.KeyF7, 0
 	case 66:
 		return ui.KeyF8, 0
+	case 67:
+		return ui.KeyF9, 0
+	case 68:
+		return ui.KeyF10, 0
+	case 87:
+		return ui.KeyF11, 0
+	case 88:
+		return ui.KeyF12, 0
 	}
 	if letter := waylandUSLetters[code]; letter != 0 {
 		key := ui.KeyUnknown
 		switch letter {
 		case 'a':
 			key = ui.KeyA
+		case 'b':
+			key = ui.KeyB
 		case 'c':
 			key = ui.KeyC
 		case 'd':
@@ -967,12 +993,36 @@ func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 			key = ui.KeyE
 		case 'f':
 			key = ui.KeyF
+		case 'g':
+			key = ui.KeyG
+		case 'h':
+			key = ui.KeyH
+		case 'i':
+			key = ui.KeyI
+		case 'j':
+			key = ui.KeyJ
+		case 'k':
+			key = ui.KeyK
+		case 'l':
+			key = ui.KeyL
+		case 'm':
+			key = ui.KeyM
+		case 'n':
+			key = ui.KeyN
+		case 'o':
+			key = ui.KeyO
+		case 'p':
+			key = ui.KeyP
 		case 'q':
 			key = ui.KeyQ
 		case 'r':
 			key = ui.KeyR
 		case 's':
 			key = ui.KeyS
+		case 't':
+			key = ui.KeyT
+		case 'u':
+			key = ui.KeyU
 		case 'v':
 			key = ui.KeyV
 		case 'w':
@@ -990,10 +1040,11 @@ func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 		return key, letter
 	}
 	if pair, ok := waylandUSPunctuation[code]; ok {
+		key := waylandUSPunctuationKeys[code]
 		if shift {
-			return ui.KeyUnknown, pair[1]
+			return key, pair[1]
 		}
-		return ui.KeyUnknown, pair[0]
+		return key, pair[0]
 	}
 	return ui.KeyUnknown, 0
 }
@@ -1005,6 +1056,14 @@ var waylandUSPunctuation = map[uint32][2]rune{
 	7: {'6', '^'}, 8: {'7', '&'}, 9: {'8', '*'}, 10: {'9', '('}, 11: {'0', ')'},
 	12: {'-', '_'}, 13: {'=', '+'}, 26: {'[', '{'}, 27: {']', '}'}, 39: {';', ':'},
 	40: {'\'', '"'}, 41: {'`', '~'}, 43: {'\\', '|'}, 51: {',', '<'}, 52: {'.', '>'}, 53: {'/', '?'},
+}
+
+var waylandUSPunctuationKeys = map[uint32]ui.Key{
+	2: ui.KeyDigit1, 3: ui.KeyDigit2, 4: ui.KeyDigit3, 5: ui.KeyDigit4, 6: ui.KeyDigit5,
+	7: ui.KeyDigit6, 8: ui.KeyDigit7, 9: ui.KeyDigit8, 10: ui.KeyDigit9, 11: ui.KeyDigit0,
+	12: ui.KeyMinus, 13: ui.KeyEqual, 26: ui.KeyLeftBracket, 27: ui.KeyRightBracket,
+	39: ui.KeySemicolon, 40: ui.KeyQuote, 41: ui.KeyBackquote, 43: ui.KeyBackslash,
+	51: ui.KeyComma, 52: ui.KeyPeriod, 53: ui.KeySlash,
 }
 
 func (w *WaylandWindow) dispatchKey(code uint32, down, repeat bool) {

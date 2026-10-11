@@ -96,10 +96,10 @@ func (w *WaylandWindow) syncTextInput(fromIME bool) error {
 }
 func surroundingText(s ui.TextInputState, limit int) (string, int, int, bool) {
 	a, b := min(s.Cursor, s.Anchor), max(s.Cursor, s.Anchor)
-	if b-a > limit {
+	if limit < 0 || b-a > limit {
 		return "", 0, 0, false
 	}
-	start := max(0, a-(limit-(b-a))/2)
+	start := min(max(0, a-(limit-(b-a))/2), max(0, len(s.Text)-limit))
 	end := min(len(s.Text), start+limit)
 	for start < a && !utf8.RuneStart(s.Text[start]) {
 		start++

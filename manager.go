@@ -265,8 +265,8 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.ProcessPending()
 	now := manager.now()
 	if !manager.caretDue.IsZero() && !now.Before(manager.caretDue) {
-		if field, ok := manager.focused.(*TextField); ok {
-			field.BlinkCaret()
+		if client, ok := manager.textInputClient(); ok {
+			client.BlinkCaret()
 			manager.caretDue = now.Add(500 * time.Millisecond)
 		} else {
 			manager.caretDue = time.Time{}
@@ -558,7 +558,7 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 		return dispatchEvent(manager.focused, event)
 	case KeyDown, KeyUp:
 		if event.Type == KeyDown && event.Key == KeyEscape {
-			if field, ok := manager.focused.(*TextField); ok && field.composing && dispatchEvent(field, event) {
+			if client, ok := manager.textInputClient(); ok && client.TextInputComposing() && dispatchEvent(manager.focused, event) {
 				return true
 			}
 			for i := len(manager.popups) - 1; i >= 0; i-- {
@@ -701,8 +701,8 @@ func (manager *Manager) setFocus(component Component) {
 		}
 	}
 	manager.caretDue = time.Time{}
-	if field, ok := component.(*TextField); ok {
-		field.caretVisible = true
+	if client, ok := manager.textInputClient(); ok {
+		client.ResetCaretBlink()
 		manager.caretDue = manager.now().Add(500 * time.Millisecond)
 	}
 	manager.InvalidatePaint()
@@ -814,20 +814,20 @@ func (manager *Manager) clearSubtreeInteraction(root *State) {
 }
 
 func (manager *Manager) TextInputFocused() bool {
-	_, ok := manager.focused.(*TextField)
+	_, ok := manager.textInputClient()
 	return ok
 }
 
 func (manager *Manager) FocusedCaretRect() (Rect, bool) {
-	field, ok := manager.focused.(*TextField)
+	client, ok := manager.textInputClient()
 	if !ok {
 		return Rect{}, false
 	}
-	return field.CaretRect(), true
+	return client.CaretRect(), true
 }
 
 func (manager *Manager) HoveredTextInput() bool {
-	_, ok := manager.hovered.(*TextField)
+	_, ok := manager.hovered.(TextInputClient)
 	return ok
 }
 

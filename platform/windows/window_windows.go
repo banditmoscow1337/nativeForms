@@ -514,12 +514,78 @@ func translateKey(key uint32) ui.Key {
 		return ui.KeyHome
 	case 0x23:
 		return ui.KeyEnd
+	case 0x21:
+		return ui.KeyPageUp
+	case 0x22:
+		return ui.KeyPageDown
+	case 0x2D:
+		return ui.KeyInsert
+	case 0x70:
+		return ui.KeyF1
+	case 0x71:
+		return ui.KeyF2
+	case 0x72:
+		return ui.KeyF3
+	case 0x73:
+		return ui.KeyF4
 	case 0x74:
 		return ui.KeyF5
 	case 0x75:
 		return ui.KeyF6
+	case 0x76:
+		return ui.KeyF7
 	case 0x77:
 		return ui.KeyF8
+	case 0x78:
+		return ui.KeyF9
+	case 0x79:
+		return ui.KeyF10
+	case 0x7A:
+		return ui.KeyF11
+	case 0x7B:
+		return ui.KeyF12
+	case '0':
+		return ui.KeyDigit0
+	case '1':
+		return ui.KeyDigit1
+	case '2':
+		return ui.KeyDigit2
+	case '3':
+		return ui.KeyDigit3
+	case '4':
+		return ui.KeyDigit4
+	case '5':
+		return ui.KeyDigit5
+	case '6':
+		return ui.KeyDigit6
+	case '7':
+		return ui.KeyDigit7
+	case '8':
+		return ui.KeyDigit8
+	case '9':
+		return ui.KeyDigit9
+	case 0xBD:
+		return ui.KeyMinus
+	case 0xBB:
+		return ui.KeyEqual
+	case 0xDB:
+		return ui.KeyLeftBracket
+	case 0xDD:
+		return ui.KeyRightBracket
+	case 0xDC:
+		return ui.KeyBackslash
+	case 0xBA:
+		return ui.KeySemicolon
+	case 0xDE:
+		return ui.KeyQuote
+	case 0xC0:
+		return ui.KeyBackquote
+	case 0xBC:
+		return ui.KeyComma
+	case 0xBE:
+		return ui.KeyPeriod
+	case 0xBF:
+		return ui.KeySlash
 	case 'W':
 		return ui.KeyW
 	case 'A':
@@ -546,6 +612,32 @@ func translateKey(key uint32) ui.Key {
 		return ui.KeyV
 	case 'X':
 		return ui.KeyX
+	case 'B':
+		return ui.KeyB
+	case 'G':
+		return ui.KeyG
+	case 'H':
+		return ui.KeyH
+	case 'I':
+		return ui.KeyI
+	case 'J':
+		return ui.KeyJ
+	case 'K':
+		return ui.KeyK
+	case 'L':
+		return ui.KeyL
+	case 'M':
+		return ui.KeyM
+	case 'N':
+		return ui.KeyN
+	case 'O':
+		return ui.KeyO
+	case 'P':
+		return ui.KeyP
+	case 'T':
+		return ui.KeyT
+	case 'U':
+		return ui.KeyU
 	default:
 		return ui.KeyUnknown
 	}
