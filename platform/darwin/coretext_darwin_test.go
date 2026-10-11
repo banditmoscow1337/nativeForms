@@ -2,7 +2,10 @@
 
 package darwin
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCoreTextMaskOrientation(t *testing.T) {
 	mask := coreTextMask([]byte{
@@ -48,5 +51,16 @@ func TestCoreTextGlyphUpright(t *testing.T) {
 		if bottom <= top {
 			t.Fatalf("CoreText L is upside down at scale %g: upper-right=%d lower-right=%d", scale, top, bottom)
 		}
+	}
+}
+
+// Exercise the long native shaping path that can run during IME selection.
+func TestCoreTextLongLineAutoreleasePool(t *testing.T) {
+	if err := EnableCoreText(); err != nil {
+		t.Fatal(err)
+	}
+	shaped, ok := systemShaper.ShapeAtScale(strings.Repeat("🙂", 9000)+"xy", 18, 1)
+	if ok && len(shaped.Carets) != 9003 {
+		t.Fatalf("long line has %d carets, want 9003", len(shaped.Carets))
 	}
 }
