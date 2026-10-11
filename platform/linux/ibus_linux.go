@@ -28,6 +28,9 @@ type linuxIME struct {
 	screenX, screenY                    int
 	scale                               float32
 	preedit                             string
+	surrounding                        string
+	surroundingBase, surroundingCursor int
+	surroundingValid                  bool
 }
 
 func openLinuxIME(m *ui.Manager) *linuxIME {
@@ -80,6 +83,8 @@ func (i *linuxIME) focusOut() {
 	i.focused = false
 	i.state = ui.TextInputState{}
 	i.preedit = ""
+	i.surrounding = ""
+	i.surroundingValid = false
 }
 func (i *linuxIME) sync() error {
 	if i.failed != nil {
@@ -115,12 +120,17 @@ func (i *linuxIME) sync() error {
 		}
 
 		text, c, a, valid := surroundingText(s, 16000)
+		i.surroundingValid = false
 		if valid {
 			attrs := dbValue{"(sa{sv}av)", []any{"IBusAttrList", []any{}, []any{}}}
 			serialized := dbValue{"(sa{sv}sv)", []any{"IBusText", []any{}, text, attrs}}
 			if err := i.send("SetSurroundingText", dbValue{"v", serialized}, dbValue{"u", uint32(utf8.RuneCountInString(text[:c]))}, dbValue{"u", uint32(utf8.RuneCountInString(text[:a]))}); err != nil {
 				return err
 			}
+			i.surrounding = text
+			i.surroundingBase = s.Base + s.Cursor - c
+			i.surroundingCursor = c
+			i.surroundingValid = true
 		}
 	}
 	return nil
@@ -197,7 +207,9 @@ func (i *linuxIME) signal(m dbMessage) {
 	case "RequireSurroundingText":
 		i.needSurrounding = true
 	case "DeleteSurroundingText":
-		if len(m.args) != 2 || s.Password {
+		if len(m.args) != 2 || s.Password || !i.surroundingValid ||
+			s.Text != i.state.Text || s.Base != i.state.Base ||
+			s.Cursor != i.state.Cursor || s.Anchor != i.state.Anchor {
 			return
 		}
 		offset, ok := m.args[0].(int32)
@@ -208,12 +220,13 @@ func (i *linuxIME) signal(m dbMessage) {
 		if !ok {
 			return
 		}
-		runes := []rune(s.Text)
-		a := utf8.RuneCountInString(s.Text[:s.Cursor]) + int(offset)
+		runes := []rune(i.surrounding)
+		a := utf8.RuneCountInString(i.surrounding[:i.surroundingCursor]) + int(offset)
 		b := int64(a) + int64(count)
 		if a >= 0 && b >= int64(a) && b <= int64(len(runes)) {
-			i.manager.ReplaceTextRange(len(string(runes[:a])), len(string(runes[:int(b)])), "")
-			i.delivered = true
+			if i.manager.ReplaceTextRange(i.surroundingBase+len(string(runes[:a])), i.surroundingBase+len(string(runes[:int(b)])), "") {
+				i.delivered = true
+			}
 		}
 	}
 }
