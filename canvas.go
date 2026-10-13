@@ -4,6 +4,7 @@ import (
 	"image"
 	"math"
 	"strings"
+	"unicode/utf8"
 )
 
 type CommandKind uint8
@@ -45,6 +46,7 @@ type Canvas struct {
 	theme        *Theme
 	fonts        *FontContext
 	displayScale float32
+	trace        *FrameTrace
 }
 
 func (canvas *Canvas) Theme() *Theme { return canvas.theme }
@@ -69,13 +71,18 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		spec.Scale = min(spec.Scale*canvas.displayScale, 8)
 	}
 	text = normalizeTextBreaks(text)
+	if canvas.trace != nil {
+		canvas.trace.sample.TextRunes += utf8.RuneCountInString(text)
+	}
 	lines := strings.Split(text, "\n")
 	layouts := make([]TextLayout, len(lines))
 	height := float32(0)
+	textStart := canvas.trace.Start()
 	for i, line := range lines {
 		layouts[i] = canvas.fonts.Layout(line, spec)
 		height += layouts[i].Height()
 	}
+	canvas.trace.Record(PhaseTextLayout, textStart)
 	y := bounds.Y + (bounds.H-height)*0.5
 	for _, line := range layouts {
 		x := bounds.X
@@ -236,6 +243,9 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		return
 	}
 	text = normalizeTextBreaks(text)
+	if canvas.trace != nil {
+		canvas.trace.sample.TextRunes += utf8.RuneCountInString(text)
+	}
 	lineCount := strings.Count(text, "\n") + 1
 	lineHeight := size * 1.2
 	y := bounds.Y + (bounds.H-lineHeight*float32(lineCount))*0.5
@@ -247,7 +257,9 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 			lastLine = false
 		}
 		line := text[lineStart:lineEnd]
+		textStart := canvas.trace.Start()
 		lineWidth := measureTextLine(line, size)
+		canvas.trace.Record(PhaseTextLayout, textStart)
 		x := bounds.X
 		switch align {
 		case TextCenter:
@@ -259,7 +271,10 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		if !(pixelScale > 0 && pixelScale <= 8) {
 			pixelScale = 1
 		}
-		if shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale); ok {
+		shapeStart := canvas.trace.Start()
+		shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale)
+		canvas.trace.Record(PhaseTextLayout, shapeStart)
+		if ok {
 			if mask := shaped.Mask; mask != nil {
 				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
 			}

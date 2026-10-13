@@ -373,16 +373,25 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	now := time.Now()
 	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale); err != nil {
+	trace := w.manager.FrameTrace()
+	rasterStart := trace.Start()
+	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale)
+	trace.Record(ui.PhaseRaster, rasterStart)
+	if err != nil {
 		return err
 	}
+	uploadStart := trace.Start()
 	pointer := objc.Send[uintptr](w.representation, selector("bitmapData"))
 	if pointer == 0 {
 		return fmt.Errorf("darwin: bitmapData is nil")
 	}
 	dst := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), len(w.framebuffer.Pix))
 	copy(dst, w.framebuffer.Pix)
+	trace.Record(ui.PhaseUpload, uploadStart)
+	presentStart := trace.Start()
 	w.view.Send(selector("setNeedsDisplay:"), true)
+	trace.Record(ui.PhasePresent, presentStart)
+	trace.Finish("software/appkit", "")
 	return nil
 }
 
