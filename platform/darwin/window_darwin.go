@@ -47,7 +47,6 @@ type Window struct {
 	manager                           *ui.Manager
 	options                           Options
 	app, window, view, representation objc.ID
-	framebuffer                       *image.RGBA
 	renderer                          *software.Renderer
 	width, height                     int
 	pixelWidth, pixelHeight           int
@@ -337,7 +336,6 @@ func (w *Window) destroy() {
 		w.view.Send(selector("release"))
 		w.view = 0
 	}
-	w.framebuffer = nil
 	w.inputIdentity = nil
 }
 
@@ -351,8 +349,8 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	if pixelWidth > 16384 || pixelHeight > 16384 || int64(pixelWidth)*int64(pixelHeight) > 64*1024*1024 {
 		return fmt.Errorf("darwin: framebuffer exceeds 64 megapixels")
 	}
-	if w.framebuffer == nil || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight {
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
+	resized := w.representation == 0 || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight
+	if resized {
 		w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
 		if w.representation != 0 {
 			w.representation.Send(selector("release"))
@@ -374,20 +372,22 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
 	trace := w.manager.FrameTrace()
-	rasterStart := trace.Start()
-	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale)
-	trace.Record(ui.PhaseRaster, rasterStart)
-	if err != nil {
-		return err
-	}
-	uploadStart := trace.Start()
 	pointer := objc.Send[uintptr](w.representation, selector("bitmapData"))
 	if pointer == 0 {
 		return fmt.Errorf("darwin: bitmapData is nil")
 	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), len(w.framebuffer.Pix))
-	copy(dst, w.framebuffer.Pix)
-	trace.Record(ui.PhaseUpload, uploadStart)
+	pixels := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), pixelWidth*pixelHeight*4)
+	target := &image.RGBA{Pix: pixels, Stride: pixelWidth * 4, Rect: image.Rect(0, 0, pixelWidth, pixelHeight)}
+	damage := platform.PixelDamage(w.manager.Frame().Damage, scale, pixelWidth, pixelHeight)
+	if resized {
+		damage = target.Bounds()
+	}
+	rasterStart := trace.Start()
+	err := w.renderer.RenderAtScaleDamage(w.manager.Frame(), target, scale, damage)
+	trace.Record(ui.PhaseRaster, rasterStart)
+	if err != nil {
+		return err
+	}
 	presentStart := trace.Start()
 	w.view.Send(selector("setNeedsDisplay:"), true)
 	trace.Record(ui.PhasePresent, presentStart)

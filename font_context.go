@@ -10,7 +10,6 @@ import (
 	"unicode"
 )
 
-
 type FontSpec struct {
 	Family   string
 	Weight   int
@@ -59,6 +58,18 @@ type cachedGlyph struct {
 }
 
 const defaultGlyphCacheBytes = 8 << 20
+const defaultLayoutCacheBytes = 4 << 20
+
+type layoutKey struct {
+	text string
+	spec FontSpec
+}
+
+type cachedLayout struct {
+	key   layoutKey
+	line  TextLayout
+	bytes int
+}
 
 type FontContext struct {
 	mu           sync.Mutex
@@ -66,10 +77,18 @@ type FontContext struct {
 	cache        map[glyphKey]*list.Element
 	lru          list.List
 	bytes, limit int
+	layouts      map[layoutKey]*list.Element
+	layoutLRU    list.List
+	layoutBytes  int
+	layoutLimit  int
+	revision     uint64
 }
 
 func NewFontContext() *FontContext {
-	return &FontContext{cache: make(map[glyphKey]*list.Element), limit: defaultGlyphCacheBytes}
+	return &FontContext{
+		cache: make(map[glyphKey]*list.Element), limit: defaultGlyphCacheBytes,
+		layouts: make(map[layoutKey]*list.Element), layoutLimit: defaultLayoutCacheBytes,
+	}
 }
 
 func NewSystemFontContext() *FontContext {
@@ -86,6 +105,8 @@ func (ctx *FontContext) AddSystemFallbacks() {
 	for _, face := range defaultSystemFaces() {
 		ctx.faces = append(ctx.faces, registeredFace{weight: 400, face: face})
 	}
+	ctx.resetLayouts()
+	ctx.revision++
 	ctx.mu.Unlock()
 }
 
@@ -102,6 +123,8 @@ func (ctx *FontContext) AddFont(family string, weight int, italic bool, data []b
 	}
 	ctx.mu.Lock()
 	ctx.faces = append(ctx.faces, registeredFace{family: strings.ToLower(strings.TrimSpace(family)), weight: weight, italic: italic, face: face})
+	ctx.resetLayouts()
+	ctx.revision++
 	ctx.mu.Unlock()
 	return nil
 }
@@ -113,7 +136,53 @@ func (ctx *FontContext) SetCacheLimit(bytes int) {
 	ctx.mu.Lock()
 	ctx.limit = max(0, bytes)
 	ctx.evict()
+	ctx.resetLayouts() // Cached layouts can otherwise retain evicted glyph masks.
 	ctx.mu.Unlock()
+}
+
+// SetLayoutCacheLimit bounds cached shaping data independently of glyph masks.
+func (ctx *FontContext) SetLayoutCacheLimit(bytes int) {
+	if ctx == nil {
+		return
+	}
+	ctx.mu.Lock()
+	ctx.layoutLimit = max(0, bytes)
+	ctx.evictLayouts()
+	ctx.mu.Unlock()
+}
+
+func (ctx *FontContext) LayoutCacheUsage() (bytes, entries int) {
+	if ctx == nil {
+		return 0, 0
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.layoutBytes, len(ctx.layouts)
+}
+
+func (ctx *FontContext) Revision() uint64 {
+	if ctx == nil {
+		return 0
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.revision
+}
+
+func (ctx *FontContext) resetLayouts() {
+	ctx.layouts = make(map[layoutKey]*list.Element)
+	ctx.layoutLRU.Init()
+	ctx.layoutBytes = 0
+}
+
+func (ctx *FontContext) evictLayouts() {
+	for ctx.layoutBytes > ctx.layoutLimit && ctx.layoutLRU.Len() > 0 {
+		entry := ctx.layoutLRU.Back()
+		cached := entry.Value.(cachedLayout)
+		ctx.layoutBytes -= cached.bytes
+		delete(ctx.layouts, cached.key)
+		ctx.layoutLRU.Remove(entry)
+	}
 }
 
 func (ctx *FontContext) CacheUsage() (bytes, entries int) {
@@ -126,12 +195,17 @@ func (ctx *FontContext) CacheUsage() (bytes, entries int) {
 }
 
 func (ctx *FontContext) evict() {
+	evicted := false
 	for ctx.bytes > ctx.limit && ctx.lru.Len() > 0 {
 		entry := ctx.lru.Back()
 		g := entry.Value.(cachedGlyph)
 		ctx.bytes -= g.bytes
 		delete(ctx.cache, g.key)
 		ctx.lru.Remove(entry)
+		evicted = true
+	}
+	if evicted {
+		ctx.resetLayouts()
 	}
 }
 
@@ -267,16 +341,53 @@ func (ctx *FontContext) fallbackMaskFor(character rune, spec FontSpec) (*image.A
 	return mask, offset
 }
 
+// Layout returns caller-owned slices; mutating them never changes cached data.
 func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
-	spec := normalFontSpec(request)
-	r := []rune(text)
-	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	if ctx == nil {
+		spec := normalFontSpec(request)
+		line := TextLayout{Carets: make([]float32, len([]rune(text))+1)}
 		line.Ascent, line.Descent, line.LineGap = spec.Size*0.85, spec.Size*0.25, spec.Size*0.1
 		return line
 	}
+	line := ctx.layoutShared(text, request)
+	line.Carets = append([]float32(nil), line.Carets...)
+	line.Glyphs = append([]PositionedGlyph(nil), line.Glyphs...)
+	return line
+}
+
+// layoutShared is for internal read-only consumers on the UI thread. Entries
+// are immutable even after eviction, so returned slice headers remain valid.
+func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
+	if ctx == nil {
+		return ctx.Layout(text, request)
+	}
+	spec := normalFontSpec(request)
+	key := layoutKey{text: text, spec: spec}
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
+	if entry := ctx.layouts[key]; entry != nil {
+		ctx.layoutLRU.MoveToFront(entry)
+		return entry.Value.(cachedLayout).line
+	}
+	line := ctx.layoutUncachedLocked(text, spec)
+	if len(text) <= 4096 && ctx.layoutLimit > 0 && ctx.limit > 0 {
+		cost := len(text) + len(line.Carets)*4 + len(line.Glyphs)*32 + 64
+		for _, glyph := range line.Glyphs {
+			cost += len(glyph.Mask.Pix) // Conservative upper bound on retained masks.
+		}
+		if cost <= ctx.layoutLimit {
+			entry := ctx.layoutLRU.PushFront(cachedLayout{key: key, line: line, bytes: cost})
+			ctx.layouts[key] = entry
+			ctx.layoutBytes += cost
+			ctx.evictLayouts()
+		}
+	}
+	return line
+}
+
+func (ctx *FontContext) layoutUncachedLocked(text string, spec FontSpec) TextLayout {
+	r := []rune(text)
+	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	order := ctx.orderedFaces(spec)
 	for _, index := range order {
 		hhea := ctx.faces[index].face.tables["hhea"]
@@ -474,7 +585,7 @@ func accentMask(mark rune, physical float32) (*image.Alpha, Vec2) {
 }
 
 func (ctx *FontContext) CaretX(text string, spec FontSpec, at int) float32 {
-	line := ctx.Layout(text, spec)
+	line := ctx.layoutShared(text, spec)
 	return line.Carets[min(max(0, at), len(line.Carets)-1)]
 }
 
@@ -482,7 +593,7 @@ func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 	spec = normalFontSpec(spec)
 	maxWidth, height := float32(0), float32(0)
 	for _, s := range strings.Split(normalizeTextBreaks(text), "\n") {
-		line := ctx.Layout(s, spec)
+		line := ctx.layoutShared(s, spec)
 		maxWidth = maxFloat32(maxWidth, line.Advance)
 		height += line.Height()
 	}
@@ -491,8 +602,8 @@ func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 
 func (ctx *FontContext) Ellipsize(text string, width float32, spec FontSpec) string {
 	ellipsis := "…"
-	if glyphs := ctx.Layout(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {
+	if glyphs := ctx.layoutShared(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {
 		ellipsis = "..."
 	}
-	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.Layout(s, spec).Advance }, ellipsis)
+	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.layoutShared(s, spec).Advance }, ellipsis)
 }

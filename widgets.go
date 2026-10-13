@@ -62,7 +62,7 @@ func (label *Label) fontSpec() FontSpec {
 
 func (label *Label) Baseline() float32 {
 	if fonts := label.fontContext(); fonts != nil {
-		return fonts.Layout("", label.fontSpec()).Ascent
+		return fonts.layoutShared("", label.fontSpec()).Ascent
 	}
 	return label.fontSpec().Size * 0.85
 }

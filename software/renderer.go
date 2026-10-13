@@ -11,6 +11,7 @@ import (
 type Renderer struct {
 	atlas  *image.NRGBA
 	scaled []ui.DrawCommand
+	bgra   bool
 }
 
 // The atlas is only needed when a frame contains a bitmap font quad. Native
@@ -26,7 +27,7 @@ func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	}
 	sx := float32(dst.Bounds().Dx()) / float32(frame.Width)
 	sy := float32(dst.Bounds().Dy()) / float32(frame.Height)
-	return renderer.renderScaled(frame, dst, sx, sy)
+	return renderer.renderScaledDamage(frame, dst, sx, sy, dst.Bounds())
 }
 
 // RenderAtScale rasterizes a logical UI frame at the display's pixel scale.
@@ -39,10 +40,22 @@ func (renderer *Renderer) RenderAtScale(frame ui.Frame, dst *image.RGBA, scale f
 	if scale == 1 && dst.Bounds().Dx() == frame.Width && dst.Bounds().Dy() == frame.Height {
 		return renderer.Render(frame, dst)
 	}
-	return renderer.renderScaled(frame, dst, scale, scale)
+	return renderer.renderScaledDamage(frame, dst, scale, scale, dst.Bounds())
 }
 
-func (renderer *Renderer) renderScaled(frame ui.Frame, dst *image.RGBA, sx, sy float32) error {
+// RenderAtScaleDamage repaints only damage pixels. Pixels outside damage are
+// preserved, so the target must already contain the previous complete frame.
+func (renderer *Renderer) RenderAtScaleDamage(frame ui.Frame, dst *image.RGBA, scale float32, damage image.Rectangle) error {
+	if dst == nil || frame.Width <= 0 || frame.Height <= 0 || !(scale > 0 && scale <= 8) {
+		return fmt.Errorf("invalid scaled UI target")
+	}
+	if scale == 1 && dst.Bounds().Dx() == frame.Width && dst.Bounds().Dy() == frame.Height {
+		return renderer.RenderDamage(frame, dst, damage)
+	}
+	return renderer.renderScaledDamage(frame, dst, scale, scale, damage)
+}
+
+func (renderer *Renderer) renderScaledDamage(frame ui.Frame, dst *image.RGBA, sx, sy float32, damage image.Rectangle) error {
 	scaleRect := func(r ui.Rect) ui.Rect {
 		return ui.Rect{X: r.X * sx, Y: r.Y * sy, W: r.W * sx, H: r.H * sy}
 	}
@@ -59,22 +72,39 @@ func (renderer *Renderer) renderScaled(frame ui.Frame, dst *image.RGBA, sx, sy f
 		c.Radius *= min(sx, sy)
 		renderer.scaled[i] = c
 	}
-	err := renderer.Render(ui.Frame{Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
-		Commands: renderer.scaled}, dst)
+	err := renderer.RenderDamage(ui.Frame{Width: dst.Bounds().Dx(), Height: dst.Bounds().Dy(),
+		Commands: renderer.scaled}, dst, damage)
 	clear(renderer.scaled)
 	return err
 }
 
 func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
+	if dst == nil {
+		return fmt.Errorf("software target is nil")
+	}
+	return renderer.RenderDamage(frame, dst, dst.Bounds())
+}
+
+// RenderDamage clears and composites only the requested pixel rectangle.
+func (renderer *Renderer) RenderDamage(frame ui.Frame, dst *image.RGBA, damage image.Rectangle) error {
 	if dst == nil || dst.Bounds().Min != (image.Point{}) || frame.Width <= 0 || frame.Height <= 0 ||
 		dst.Bounds().Dx() != frame.Width || dst.Bounds().Dy() != frame.Height {
 		return fmt.Errorf("software target dimensions do not match the UI frame")
 	}
-	for y := 0; y < frame.Height; y++ {
-		offset := dst.PixOffset(0, y)
-		clear(dst.Pix[offset : offset+4*frame.Width])
+	damage = damage.Intersect(dst.Bounds())
+	if damage.Empty() {
+		return nil
 	}
+	for y := damage.Min.Y; y < damage.Max.Y; y++ {
+		offset := dst.PixOffset(damage.Min.X, y)
+		clear(dst.Pix[offset : offset+4*damage.Dx()])
+	}
+	clip := ui.Rect{X: float32(damage.Min.X), Y: float32(damage.Min.Y), W: float32(damage.Dx()), H: float32(damage.Dy())}
 	for _, command := range frame.Commands {
+		command.Clip = intersection(command.Clip, clip)
+		if command.Clip.Empty() {
+			continue
+		}
 		switch command.Kind {
 		case ui.CommandMask:
 			renderer.mask(dst, command)
@@ -94,6 +124,23 @@ func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
 		}
 	}
 	return nil
+}
+
+// RenderBGRAAtScale paints directly into native premultiplied BGRA staging
+// memory, avoiding an RGBA framebuffer and a full-frame channel-swap pass.
+func (renderer *Renderer) RenderBGRAAtScale(frame ui.Frame, pixels []byte, width, height, stride int, scale float32) error {
+	return renderer.RenderBGRAAtScaleDamage(frame, pixels, width, height, stride, scale, image.Rect(0, 0, width, height))
+}
+
+func (renderer *Renderer) RenderBGRAAtScaleDamage(frame ui.Frame, pixels []byte, width, height, stride int, scale float32, damage image.Rectangle) error {
+	if width <= 0 || height <= 0 || width > 16384 || height > 16384 || stride < width*4 ||
+		stride <= 0 || height > len(pixels)/stride {
+		return fmt.Errorf("invalid BGRA target")
+	}
+	target := &image.RGBA{Pix: pixels, Stride: stride, Rect: image.Rect(0, 0, width, height)}
+	renderer.bgra = true
+	defer func() { renderer.bgra = false }()
+	return renderer.RenderAtScaleDamage(frame, target, scale, damage)
 }
 
 func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
@@ -146,7 +193,7 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 				continue
 			}
 			alpha := renderer.atlas.Pix[renderer.atlas.PixOffset(tx, ty)+3]
-			blend(dst, x, y, c.Tint, coverage*float32(alpha)/255)
+			renderer.blend(dst, x, y, c.Tint, coverage*float32(alpha)/255)
 		}
 	}
 }
@@ -156,6 +203,9 @@ func (renderer *Renderer) solid(dst *image.RGBA, visible ui.Rect, tint ui.Color,
 	if tint.A >= 1 && mask >= 1 && float32(left) >= visible.X && float32(top) >= visible.Y &&
 		float32(right) <= visible.X+visible.W && float32(bottom) <= visible.Y+visible.H {
 		r, g, b := byte255(clamp(tint.R, 0, 1)*255), byte255(clamp(tint.G, 0, 1)*255), byte255(clamp(tint.B, 0, 1)*255)
+		if renderer.bgra {
+			r, b = b, r
+		}
 		for y := top; y < bottom; y++ {
 			for x := left; x < right; x++ {
 				i := dst.PixOffset(x, y)
@@ -168,7 +218,7 @@ func (renderer *Renderer) solid(dst *image.RGBA, visible ui.Rect, tint ui.Color,
 		for x := left; x < right; x++ {
 			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) *
 				overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
-			blend(dst, x, y, tint, mask*coverage)
+			renderer.blend(dst, x, y, tint, mask*coverage)
 		}
 	}
 }
@@ -206,7 +256,7 @@ func (renderer *Renderer) roundedRect(dst *image.RGBA, c ui.DrawCommand) {
 				}
 			}
 			if coverage > 0 {
-				blend(dst, x, y, c.Tint, coverage)
+				renderer.blend(dst, x, y, c.Tint, coverage)
 			}
 		}
 	}
@@ -267,14 +317,14 @@ func (renderer *Renderer) image(dst *image.RGBA, c ui.DrawCommand) {
 			}
 			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) *
 				overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
-			blendImage(dst, x, y, pixel, c.Tint, coverage)
+			renderer.blendImage(dst, x, y, pixel, c.Tint, coverage)
 		}
 	}
 }
 
 func clampInt(value, low, high int) int { return min(max(value, low), high) }
 
-func blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, coverage float32) {
+func (renderer *Renderer) blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, coverage float32) {
 	factor := clamp(tint.A, 0, 1) * clamp(coverage, 0, 1)
 	alpha := source.a * factor / 255
 	if alpha <= 0 {
@@ -282,9 +332,13 @@ func blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, co
 	}
 	inverse := 1 - alpha
 	i := dst.PixOffset(x, y)
-	dst.Pix[i+0] = byte255(source.r*clamp(tint.R, 0, 1)*factor + float32(dst.Pix[i+0])*inverse)
+	red, blue := 0, 2
+	if renderer.bgra {
+		red, blue = 2, 0
+	}
+	dst.Pix[i+red] = byte255(source.r*clamp(tint.R, 0, 1)*factor + float32(dst.Pix[i+red])*inverse)
 	dst.Pix[i+1] = byte255(source.g*clamp(tint.G, 0, 1)*factor + float32(dst.Pix[i+1])*inverse)
-	dst.Pix[i+2] = byte255(source.b*clamp(tint.B, 0, 1)*factor + float32(dst.Pix[i+2])*inverse)
+	dst.Pix[i+blue] = byte255(source.b*clamp(tint.B, 0, 1)*factor + float32(dst.Pix[i+blue])*inverse)
 	dst.Pix[i+3] = byte255(source.a*factor + float32(dst.Pix[i+3])*inverse)
 }
 
@@ -332,7 +386,7 @@ func (renderer *Renderer) line(dst *image.RGBA, c ui.DrawCommand) {
 				}
 			}
 			if coverage > 0 {
-				blend(dst, x, y, c.Tint, coverage)
+				renderer.blend(dst, x, y, c.Tint, coverage)
 			}
 		}
 	}
@@ -362,16 +416,20 @@ func abs(v float32) float32 {
 	return v
 }
 
-func blend(dst *image.RGBA, x, y int, tint ui.Color, mask float32) {
+func (renderer *Renderer) blend(dst *image.RGBA, x, y int, tint ui.Color, mask float32) {
 	alpha := clamp(tint.A, 0, 1) * clamp(mask, 0, 1)
 	if alpha <= 0 {
 		return
 	}
 	i := dst.PixOffset(x, y)
 	inverse := 1 - alpha
-	dst.Pix[i+0] = byte255(clamp(tint.R, 0, 1)*alpha*255 + float32(dst.Pix[i+0])*inverse)
+	red, blue := 0, 2
+	if renderer.bgra {
+		red, blue = 2, 0
+	}
+	dst.Pix[i+red] = byte255(clamp(tint.R, 0, 1)*alpha*255 + float32(dst.Pix[i+red])*inverse)
 	dst.Pix[i+1] = byte255(clamp(tint.G, 0, 1)*alpha*255 + float32(dst.Pix[i+1])*inverse)
-	dst.Pix[i+2] = byte255(clamp(tint.B, 0, 1)*alpha*255 + float32(dst.Pix[i+2])*inverse)
+	dst.Pix[i+blue] = byte255(clamp(tint.B, 0, 1)*alpha*255 + float32(dst.Pix[i+blue])*inverse)
 	dst.Pix[i+3] = byte255(alpha*255 + float32(dst.Pix[i+3])*inverse)
 }
 func byte255(v float32) uint8 { return uint8(min(float32(255), v+0.5)) }
@@ -391,7 +449,7 @@ func (renderer *Renderer) mask(dst *image.RGBA, c ui.DrawCommand) {
 		for x := left; x < right; x++ {
 			sx := min(b.Max.X-1, max(b.Min.X, b.Min.X+int((float32(x)+0.5-c.Rect.X)*float32(b.Dx())/c.Rect.W)))
 			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) * overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
-			blend(dst, x, y, c.Tint, coverage*float32(c.Mask.Pix[c.Mask.PixOffset(sx, sy)])/255)
+			renderer.blend(dst, x, y, c.Tint, coverage*float32(c.Mask.Pix[c.Mask.PixOffset(sx, sy)])/255)
 		}
 	}
 }

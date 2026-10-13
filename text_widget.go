@@ -22,6 +22,7 @@ type TextField struct {
 	clicks                        int
 	caretVisible                  bool
 	composing                     bool
+	layout                        textFieldLayout
 }
 
 func NewTextField(text string, onChange func(string)) *TextField {
@@ -218,6 +219,27 @@ type textLine struct {
 	width      float32
 }
 
+type textParagraph struct {
+	start, end          int
+	firstLine, lastLine int
+}
+
+// textFieldLayout owns the rune/line index for the last text and wrap width.
+// It is reused by paint, hit-testing, scrolling and measure. FontContext's
+// generation invalidates it if faces change without replacing the context.
+type textFieldLayout struct {
+	text       string
+	runes      []rune
+	lines      []textLine
+	paragraphs []textParagraph
+	width      float32
+	spec       FontSpec
+	fonts      *FontContext
+	revision   uint64
+	password   bool
+	valid      bool
+}
+
 func (f *TextField) displayRunes() []rune {
 	r := []rune(f.editor.Text)
 	if f.Password {
@@ -259,35 +281,121 @@ func (f *TextField) fontSpec() FontSpec {
 
 func (f *TextField) lineHeight(spec FontSpec) float32 {
 	if fonts := f.fontContext(); fonts != nil {
-		return fonts.Layout("", spec).Height()
+		return fonts.layoutShared("", spec).Height()
 	}
 	return spec.Size * 1.2
 }
 
 func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 	var result []textLine
-	measure := func(s string, _ float32) float32 { return f.textWidth(s, spec) }
+	for _, paragraph := range f.scanParagraphs(r) {
+		result = f.appendParagraph(result, r, paragraph, width, spec)
+	}
+	return result
+}
+
+func (f *TextField) scanParagraphs(r []rune) []textParagraph {
+	var paragraphs []textParagraph
 	for start := 0; ; {
 		end := start
 		for end < len(r) && !(f.Multiline && hardTextBreak(r, end) != 0) {
 			end++
 		}
-		at := start
-		for at < end {
-			limit := end
-			if f.Multiline {
-				limit = wrappedLineEndWith(r, at, end, width, spec.Size, measure)
-			}
-			result = append(result, textLine{at, limit, f.textWidth(string(r[at:limit]), spec)})
-			at = limit
-		}
-		if start == end {
-			result = append(result, textLine{start, end, 0})
-		}
+		paragraphs = append(paragraphs, textParagraph{start: start, end: end})
 		if end == len(r) {
 			break
 		}
 		start = end + hardTextBreak(r, end)
+	}
+	return paragraphs
+}
+
+func (f *TextField) appendParagraph(result []textLine, r []rune, paragraph textParagraph, width float32, spec FontSpec) []textLine {
+	measure := func(s string, _ float32) float32 { return f.textWidth(s, spec) }
+	for at := paragraph.start; at < paragraph.end; {
+		limit := paragraph.end
+		if f.Multiline {
+			limit = wrappedLineEndWith(r, at, paragraph.end, width, spec.Size, measure)
+		}
+		result = append(result, textLine{at, limit, f.textWidth(string(r[at:limit]), spec)})
+		at = limit
+	}
+	if paragraph.start == paragraph.end {
+		result = append(result, textLine{paragraph.start, paragraph.end, 0})
+	}
+	return result
+}
+
+func (f *TextField) cachedLines(width float32, spec FontSpec) ([]rune, []textLine) {
+	fonts := f.fontContext()
+	revision := fonts.Revision()
+	cache := &f.layout
+	text := f.editor.Text
+	if cache.valid && cache.text == text && cache.width == width && cache.spec == spec &&
+		cache.fonts == fonts && cache.revision == revision && cache.password == f.Password {
+		return cache.runes, cache.lines
+	}
+	r := []rune(text)
+	if f.Password {
+		maskPasswordRunes(r, fonts != nil)
+	}
+	paragraphs := f.scanParagraphs(r)
+	canReuse := cache.valid && cache.width == width && cache.spec == spec && cache.fonts == fonts &&
+		cache.revision == revision && cache.password == f.Password && !f.Password
+	cache.lines = f.rewrapParagraphs(cache, r, paragraphs, width, spec, canReuse)
+	cache.paragraphs = paragraphs
+	cache.text, cache.runes, cache.width, cache.spec = text, r, width, spec
+	cache.fonts, cache.revision, cache.password, cache.valid = fonts, revision, f.Password, true
+	return r, cache.lines
+}
+
+func sameParagraph(a []rune, old textParagraph, b []rune, current textParagraph) bool {
+	if old.end-old.start != current.end-current.start {
+		return false
+	}
+	for i := 0; i < old.end-old.start; i++ {
+		if a[old.start+i] != b[current.start+i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (f *TextField) rewrapParagraphs(cache *textFieldLayout, r []rune, paragraphs []textParagraph, width float32, spec FontSpec, reuse bool) []textLine {
+	prefix, suffix := 0, 0
+	old := cache.paragraphs
+	if reuse {
+		for prefix < len(old) && prefix < len(paragraphs) &&
+			sameParagraph(cache.runes, old[prefix], r, paragraphs[prefix]) {
+			prefix++
+		}
+		for suffix < len(old)-prefix && suffix < len(paragraphs)-prefix &&
+			sameParagraph(cache.runes, old[len(old)-1-suffix], r, paragraphs[len(paragraphs)-1-suffix]) {
+			suffix++
+		}
+	}
+	result := make([]textLine, 0, max(len(cache.lines), len(paragraphs)))
+	for i := range paragraphs {
+		paragraph := &paragraphs[i]
+		paragraph.firstLine = len(result)
+		oldIndex := -1
+		if i < prefix {
+			oldIndex = i
+		} else if i >= len(paragraphs)-suffix {
+			oldIndex = len(old) - (len(paragraphs) - i)
+		}
+		if oldIndex >= 0 {
+			prior := old[oldIndex]
+			shift := paragraph.start - prior.start
+			for _, line := range cache.lines[prior.firstLine:prior.lastLine] {
+				line.start += shift
+				line.end += shift
+				result = append(result, line)
+			}
+		} else {
+			result = f.appendParagraph(result, r, *paragraph, width, spec)
+		}
+		paragraph.lastLine = len(result)
 	}
 	return result
 }
@@ -299,7 +407,7 @@ func (f *TextField) Measure(c Constraints) Vec2 {
 	if c.Max.X <= 0 {
 		width = 240
 	}
-	lines := f.lines(f.displayRunes(), width, spec)
+	_, lines := f.cachedLines(width, spec)
 	height := f.Theme().ControlHeight
 	if f.Multiline {
 		height = maxFloat32(height, float32(len(lines))*f.lineHeight(spec)+12)
@@ -316,28 +424,36 @@ func (f *TextField) textGeometry() (Rect, []rune, []textLine, float32) {
 		inner.Y = f.rect.Y + (f.rect.H-lineHeight)*0.5
 		inner.H = lineHeight
 	}
-	r := f.displayRunes()
 	width := float32(0)
 	if f.Multiline {
 		width = inner.W
 	}
-	return inner, r, f.lines(r, width, spec), lineHeight
+	r, lines := f.cachedLines(width, spec)
+	return inner, r, lines, lineHeight
 }
 
 func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeight float32) Vec2 {
+	if len(lines) == 0 {
+		return Vec2{X: inner.X, Y: inner.Y}
+	}
 	caret := f.editor.Caret
 	if f.editor.Preedit != "" {
 		a, _ := f.editor.selection()
 		caret = a + max(0, f.editor.PreeditCaret)
 	}
-	for i, line := range lines {
-		if caret <= line.end || i == len(lines)-1 {
-			end := min(max(caret, line.start), line.end)
-			return Vec2{X: inner.X + f.caretX(string(r[line.start:line.end]), f.fontSpec(), end-line.start) - f.scrollX,
-				Y: inner.Y + float32(i)*lineHeight - f.scrollY}
+	lo, hi := 0, len(lines)-1
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		if caret <= lines[mid].end {
+			hi = mid
+		} else {
+			lo = mid + 1
 		}
 	}
-	return Vec2{X: inner.X, Y: inner.Y}
+	line := lines[lo]
+	end := min(max(caret, line.start), line.end)
+	return Vec2{X: inner.X + f.caretX(string(r[line.start:line.end]), f.fontSpec(), end-line.start) - f.scrollX,
+		Y: inner.Y + float32(lo)*lineHeight - f.scrollY}
 }
 
 func (f *TextField) CaretRect() Rect {
@@ -347,7 +463,7 @@ func (f *TextField) CaretRect() Rect {
 }
 func (f *TextField) Baseline() float32 {
 	if fonts := f.fontContext(); fonts != nil {
-		return fonts.Layout("", f.fontSpec()).Ascent + 4
+		return fonts.layoutShared("", f.fontSpec()).Ascent + 4
 	}
 	return f.fontSpec().Size*0.85 + 4
 }
@@ -395,7 +511,13 @@ func (f *TextField) Paint(c *Canvas) {
 		a = preeditStart + max(0, min(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 		b = preeditStart + max(0, max(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 	}
-	for i, line := range lines {
+	startRow, endRow := 0, len(lines)
+	if f.Multiline && lineHeight > 0 {
+		startRow = max(0, int(f.scrollY/lineHeight)-1)
+		endRow = min(len(lines), int((f.scrollY+inner.H)/lineHeight)+2)
+	}
+	for i := startRow; i < endRow; i++ {
+		line := lines[i]
 		y := inner.Y + float32(i)*lineHeight - f.scrollY
 		if y+lineHeight < inner.Y || y > inner.Y+inner.H {
 			continue
@@ -413,7 +535,8 @@ func (f *TextField) Paint(c *Canvas) {
 		}
 	}
 	if f.Focused() && composing {
-		for row, line := range lines {
+		for row := startRow; row < endRow; row++ {
+			line := lines[row]
 			from, to := max(preeditStart, line.start), min(preeditEnd, line.end)
 			if from >= to {
 				continue

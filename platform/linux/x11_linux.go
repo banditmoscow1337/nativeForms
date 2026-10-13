@@ -42,7 +42,7 @@ type X11Window struct {
 	maxRequest                                                    int
 	width, height                                                 int
 	scale                                                         float32
-	framebuffer                                                   *image.RGBA
+	framebuffer                                                   *image.RGBA // Pix is BGRA for X11 ZPixmap; do not use RGBAAt.
 	renderer                                                      *software.Renderer
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
@@ -564,7 +564,7 @@ func (w *X11Window) Run() error {
 			}
 		}
 		if paint || w.manager.NeedsFrame() {
-			if err = w.paint(); err != nil {
+			if err = w.paint(paint); err != nil {
 				return err
 			}
 			paint = false
@@ -610,22 +610,27 @@ func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
 	return packet, nil
 }
 
-func (w *X11Window) paint() error {
+func (w *X11Window) paint(forceFull bool) error {
 	if w.width <= 0 || w.height <= 0 {
 		return nil
 	}
 	if int64(w.width)*int64(w.height) > 64*1024*1024 {
 		return fmt.Errorf("x11: framebuffer exceeds 64 megapixels")
 	}
-	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != w.width || w.framebuffer.Bounds().Dy() != w.height {
+	resized := w.framebuffer == nil || w.framebuffer.Bounds().Dx() != w.width || w.framebuffer.Bounds().Dy() != w.height
+	if resized {
 		w.framebuffer = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
 	}
 	now := time.Now()
 	w.manager.BeginFrame(platform.LogicalSize(w.width, w.scale), platform.LogicalSize(w.height, w.scale), now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
 	trace := w.manager.FrameTrace()
+	damage := platform.PixelDamage(w.manager.Frame().Damage, w.scale, w.width, w.height)
+	if resized || forceFull {
+		damage = w.framebuffer.Bounds()
+	}
 	rasterStart := trace.Start()
-	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale)
+	err := w.renderer.RenderBGRAAtScaleDamage(w.manager.Frame(), w.framebuffer.Pix, w.width, w.height, w.framebuffer.Stride, w.scale, damage)
 	trace.Record(ui.PhaseRaster, rasterStart)
 	if err != nil {
 		return err
@@ -648,11 +653,8 @@ func (w *X11Window) paint() error {
 		le.PutUint16(request[18:], uint16(y))
 		request[21] = w.depth
 		for row := 0; row < n; row++ {
-			for x := 0; x < w.width; x++ {
-				i := w.framebuffer.PixOffset(x, y+row)
-				j := 24 + row*rowBytes + x*4
-				request[j], request[j+1], request[j+2] = w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i]
-			}
+			i := w.framebuffer.PixOffset(0, y+row)
+			copy(request[24+row*rowBytes:24+(row+1)*rowBytes], w.framebuffer.Pix[i:i+rowBytes])
 		}
 		trace.Record(ui.PhaseUpload, uploadStart)
 		presentStart := trace.Start()

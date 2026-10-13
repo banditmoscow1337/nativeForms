@@ -84,3 +84,33 @@ func BenchmarkRenderImageHiDPI(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkRenderImageHiDPIDamage(b *testing.B) {
+	source := image.NewNRGBA(image.Rect(0, 0, 512, 512))
+	for y := 0; y < 512; y++ {
+		for x := 0; x < 512; x++ {
+			source.SetNRGBA(x, y, color.NRGBA{R: uint8(x), G: uint8(y), B: 180, A: 255})
+		}
+	}
+	resource, err := ui.NewImageResource(source)
+	if err != nil {
+		b.Fatal(err)
+	}
+	frame := ui.Frame{Width: 800, Height: 600, Commands: []ui.DrawCommand{{
+		Kind: ui.CommandImage, Image: resource, Rect: ui.Rect{W: 800, H: 600},
+		Clip: ui.Rect{W: 800, H: 600}, Tint: ui.RGBA(255, 255, 255, 255), Filter: ui.FilterBilinear,
+	}}}
+	pixels := make([]byte, 1600*1200*4)
+	renderer := New()
+	if err := renderer.RenderBGRAAtScale(frame, pixels, 1600, 1200, 1600*4, 2); err != nil {
+		b.Fatal(err)
+	}
+	damage := image.Rect(200, 200, 300, 300)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := renderer.RenderBGRAAtScaleDamage(frame, pixels, 1600, 1200, 1600*4, 2, damage); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

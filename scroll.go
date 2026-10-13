@@ -69,7 +69,11 @@ func (p *ScrollPanel) ScrollBy(dx, dy float32) Vec2 {
 	p.OffsetX = clampFloat32(p.OffsetX+dx, 0, maxFloat32(0, p.width-p.rect.W))
 	p.Offset = clampFloat32(p.Offset+dy, 0, maxFloat32(0, p.height-p.rect.H))
 	if beforeX != p.OffsetX || beforeY != p.Offset {
-		p.Arrange(p.rect)
+		if p.Content != nil {
+			// The content extent was measured at the last layout. Scrolling
+			// changes only its origin, not its intrinsic size.
+			p.Content.Arrange(Rect{X: p.rect.X - p.OffsetX, Y: p.rect.Y - p.Offset, W: p.width, H: p.height})
+		}
 		p.invalidatePaint()
 	}
 	return Vec2{X: dx - (p.OffsetX - beforeX), Y: dy - (p.Offset - beforeY)}

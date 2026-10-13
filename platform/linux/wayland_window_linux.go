@@ -163,6 +163,7 @@ func (wire *waylandWire) bind(global WaylandGlobal, version uint32) (uint32, err
 type wlBuffer struct {
 	id            uint32
 	pixels        []byte
+	dirty         image.Rectangle
 	busy, retired bool
 }
 
@@ -181,7 +182,7 @@ type WaylandWindow struct {
 	compositorVersion                                                    int
 	scale, preferredScale                                                float32
 	viewporter, viewport, fractionalManager, fractional                  uint32
-	framebuffer                                                          *image.RGBA
+	pixelWidth, pixelHeight                                              int
 	renderer                                                             *software.Renderer
 	buffers                                                              map[uint32]*wlBuffer
 	current                                                              [2]*wlBuffer
@@ -310,7 +311,7 @@ func (w *WaylandWindow) Run() error {
 			w.dispatchKey(w.repeatCode, true, true)
 			w.repeatAt = time.Now().Add(time.Second / time.Duration(max(1, w.repeatRate)))
 		}
-		if w.paintAvailable() && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
+		if w.paintAvailable() && (w.Manager.NeedsFrame() || w.pixelWidth == 0) {
 			if err = w.paint(); err != nil {
 				return err
 			}
@@ -497,7 +498,7 @@ func (w *WaylandWindow) setup() error {
 }
 
 func (w *WaylandWindow) createBuffer() (*wlBuffer, error) {
-	pw, ph := w.framebuffer.Bounds().Dx(), w.framebuffer.Bounds().Dy()
+	pw, ph := w.pixelWidth, w.pixelHeight
 	count := int64(pw) * int64(ph) * 4
 	if count <= 0 || count > 256<<20 {
 		return nil, fmt.Errorf("wayland: framebuffer exceeds 64 megapixels")
@@ -539,7 +540,7 @@ func (w *WaylandWindow) createBuffer() (*wlBuffer, error) {
 		_ = syscall.Munmap(pixels)
 		return nil, err
 	}
-	buffer := &wlBuffer{id: id, pixels: pixels}
+	buffer := &wlBuffer{id: id, pixels: pixels, dirty: image.Rect(0, 0, pw, ph)}
 	w.buffers[id] = buffer
 	return buffer, nil
 }
@@ -580,9 +581,9 @@ func (w *WaylandWindow) paint() error {
 	if pw < 1 || ph < 1 || pw > 16384 || ph > 16384 || int64(pw)*int64(ph) > 64*1024*1024 {
 		return fmt.Errorf("wayland: invalid window dimensions")
 	}
-	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != pw || w.framebuffer.Bounds().Dy() != ph {
+	if w.pixelWidth != pw || w.pixelHeight != ph {
 		w.retireBuffers()
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pw, ph))
+		w.pixelWidth, w.pixelHeight = pw, ph
 	}
 	var buffer *wlBuffer
 	for i := range w.current {
@@ -604,22 +605,15 @@ func (w *WaylandWindow) paint() error {
 	w.Manager.BeginFrame(w.width, w.height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
 	trace := w.Manager.FrameTrace()
+	damage := platform.PixelDamage(w.Manager.Frame().Damage, w.scale, pw, ph)
+	repaint := buffer.dirty.Union(damage).Intersect(image.Rect(0, 0, pw, ph))
 	rasterStart := trace.Start()
-	err := w.renderer.RenderAtScale(w.Manager.Frame(), w.framebuffer, w.scale)
+	err := w.renderer.RenderBGRAAtScaleDamage(w.Manager.Frame(), buffer.pixels, pw, ph, pw*4, w.scale, repaint)
 	trace.Record(ui.PhaseRaster, rasterStart)
 	if err != nil {
 		return err
 	}
-	uploadStart := trace.Start()
-	for y := 0; y < ph; y++ {
-		for x := 0; x < pw; x++ {
-			i := w.framebuffer.PixOffset(x, y)
-			j := (y*pw + x) * 4
-			buffer.pixels[j], buffer.pixels[j+1], buffer.pixels[j+2], buffer.pixels[j+3] =
-				w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
-		}
-	}
-	trace.Record(ui.PhaseUpload, uploadStart)
+	w.advanceBufferDamage(buffer, damage)
 	presentStart := trace.Start()
 	args := append(wlWord(buffer.id), wlWord(0)...)
 	args = append(args, wlWord(0)...)
@@ -632,10 +626,10 @@ func (w *WaylandWindow) paint() error {
 	if err := w.wire.send(w.surface, 1, args); err != nil {
 		return err
 	}
-	damage := make([]byte, 16)
-	binary.LittleEndian.PutUint32(damage[8:], uint32(w.width))
-	binary.LittleEndian.PutUint32(damage[12:], uint32(w.height))
-	if err := w.wire.send(w.surface, 2, damage); err != nil {
+	surfaceDamage := make([]byte, 16)
+	binary.LittleEndian.PutUint32(surfaceDamage[8:], uint32(w.width))
+	binary.LittleEndian.PutUint32(surfaceDamage[12:], uint32(w.height))
+	if err := w.wire.send(w.surface, 2, surfaceDamage); err != nil {
 		return err
 	}
 	if err := w.wire.send(w.surface, 6, nil); err != nil {
@@ -645,6 +639,15 @@ func (w *WaylandWindow) paint() error {
 	trace.Record(ui.PhasePresent, presentStart)
 	trace.Finish("software/wayland", "")
 	return nil
+}
+
+func (w *WaylandWindow) advanceBufferDamage(rendered *wlBuffer, change image.Rectangle) {
+	rendered.dirty = image.Rectangle{}
+	for _, candidate := range w.current {
+		if candidate != nil && candidate != rendered {
+			candidate.dirty = candidate.dirty.Union(change)
+		}
+	}
 }
 
 func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) error {

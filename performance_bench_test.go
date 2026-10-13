@@ -101,3 +101,17 @@ func BenchmarkFrameResizeHiDPI(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkVirtualStackScroll10k(b *testing.B) {
+	model := newVirtualForm(10000)
+	stack := NewVirtualStack(model)
+	manager := New()
+	manager.SetRoot(stack)
+	manager.BeginFrame(1024, 768, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stack.ScrollBy(35)
+		manager.BeginFrame(1024, 768, 0)
+	}
+}

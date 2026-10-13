@@ -1,9 +1,22 @@
 package platform
 
 import (
+	"image"
 	"strings"
 	"testing"
+
+	ui "github.com/banditmoscow1337/nativeForms"
 )
+
+func TestPixelDamageExpandsAndClips(t *testing.T) {
+	got := PixelDamage(ui.Rect{X: 1.25, Y: 2.25, W: 3, H: 4}, 2, 10, 10)
+	if want := image.Rect(1, 3, 10, 10); got != want {
+		t.Fatalf("damage = %v, want %v", got, want)
+	}
+	if got := PixelDamage(ui.Rect{}, 2, 10, 10); !got.Empty() {
+		t.Fatalf("empty damage = %v", got)
+	}
+}
 
 func TestLogicalAndPixelSizes(t *testing.T) {
 	for _, tc := range []struct {

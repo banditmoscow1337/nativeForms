@@ -79,7 +79,7 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	height := float32(0)
 	textStart := canvas.trace.Start()
 	for i, line := range lines {
-		layouts[i] = canvas.fonts.Layout(line, spec)
+		layouts[i] = canvas.fonts.layoutShared(line, spec)
 		height += layouts[i].Height()
 	}
 	canvas.trace.Record(PhaseTextLayout, textStart)

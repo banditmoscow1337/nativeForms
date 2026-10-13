@@ -5,6 +5,11 @@ assertion that the current renderer meets the v1 budgets. Record actual numbers
 on both target machines before declaring this stage complete.
 An initial headless sandbox run is recorded in
 `docs/performance-snapshot-2026-10-13.md`; it is not a target-device baseline.
+User-supplied Apple M1 software-renderer numbers are preserved in
+`docs/performance-snapshot-m1-2026-10-13.md` with the missing run metadata
+called out explicitly.
+The same-sandbox stage-1 CPU comparison is in
+`docs/performance-snapshot-stage1-2026-10-13.md`.
 
 ## Repeatable run
 
@@ -46,6 +51,8 @@ of `Paint` only. Text measurement inside widget `Measure` is counted in
 `Layout`, not `TextLayout`. `Present` measures submission, not scan-out:
 `StretchDIBits` on Windows, `setNeedsDisplay` on macOS, X11 request writes,
 and Wayland attach/damage/commit writes. It is not a GPU time measurement.
+For the stage-1 direct staging paths, `Upload` can be zero on Windows, macOS
+and Wayland; X11 still copies the rendered BGRA rows into wire requests.
 `AllocBytes` is opt-in with `FrameObserverOptions{TrackAllocations: true}`;
 `runtime.ReadMemStats` is intrusive, so use separate runs for allocations and
 latency. A headless `BeginFrame` must call `FrameTrace().Finish("headless", "")`

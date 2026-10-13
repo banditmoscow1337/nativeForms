@@ -154,7 +154,7 @@ func (w *X11Window) fileDialog(name string, save, folder bool) (string, error) {
 			return fmt.Errorf("x11: window closed")
 		}
 		if w.manager.NeedsFrame() {
-			if err := w.paint(); err != nil {
+			if err := w.paint(false); err != nil {
 				return err
 			}
 		}

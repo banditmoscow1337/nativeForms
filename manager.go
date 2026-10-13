@@ -14,6 +14,7 @@ type notification struct {
 type Frame struct {
 	Width, Height int
 	Commands      []DrawCommand
+	Damage        Rect // Logical region changed since the previous frame.
 }
 
 type Manager struct {
@@ -34,6 +35,8 @@ type Manager struct {
 	gameNavigation       bool
 	dirtyLayout          bool
 	dirtyPaint           bool
+	fullDamage           bool
+	damage               Rect
 	wake                 func()
 	clipboardRead        func() (string, error)
 	clipboardWrite       func(string) error
@@ -63,7 +66,7 @@ func New() *Manager {
 	return &Manager{
 		visible: true, theme: DefaultTheme(),
 		displayScale: 1,
-		dirtyLayout:  true, dirtyPaint: true,
+		dirtyLayout:  true, dirtyPaint: true, fullDamage: true,
 		clock: time.Now,
 		frame: Frame{Commands: make([]DrawCommand, 0, 1024)},
 		clips: make([]Rect, 0, 16),
@@ -287,6 +290,8 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	fonts := manager.fonts
 	displayScale := manager.displayScale
 	layoutNeeded := manager.dirtyLayout || width != manager.layoutWidth || height != manager.layoutHeight
+	fullDamage, damage := manager.fullDamage || layoutNeeded, manager.damage
+	manager.fullDamage, manager.damage = false, Rect{}
 	manager.dirtyLayout, manager.dirtyPaint = false, false
 	manager.mu.Unlock()
 	manager.frameTrace = newFrameTrace(observer, observerOptions, width, height)
@@ -294,6 +299,12 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	buildStart := trace.Start()
 
 	manager.frame.Width, manager.frame.Height = width, height
+	viewport := Rect{W: float32(width), H: float32(height)}
+	if fullDamage {
+		manager.frame.Damage = viewport
+	} else {
+		manager.frame.Damage = intersect(damage, viewport)
+	}
 	clear(manager.frame.Commands)
 	manager.frame.Commands = manager.frame.Commands[:0]
 	if !visible || width <= 0 || height <= 0 {
@@ -301,7 +312,6 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 		trace.Record(PhaseBuild, buildStart)
 		return
 	}
-	viewport := Rect{W: float32(width), H: float32(height)}
 	manager.clips = append(manager.clips[:0], viewport)
 	canvas := Canvas{
 		commands:     &manager.frame.Commands,
@@ -345,6 +355,7 @@ func (manager *Manager) Frame() Frame { return manager.frame }
 func (manager *Manager) InvalidateLayout() {
 	manager.mu.Lock()
 	manager.dirtyLayout, manager.dirtyPaint = true, true
+	manager.fullDamage = true
 	wake := manager.wake
 	manager.mu.Unlock()
 	if wake != nil {
@@ -355,6 +366,33 @@ func (manager *Manager) InvalidateLayout() {
 func (manager *Manager) InvalidatePaint() {
 	manager.mu.Lock()
 	manager.dirtyPaint = true
+	manager.fullDamage = true
+	wake := manager.wake
+	manager.mu.Unlock()
+	if wake != nil {
+		wake()
+	}
+}
+
+// InvalidateRect marks a logical component region dirty. Resizes, tree/layout
+// changes and explicit InvalidatePaint still repaint the complete viewport.
+func (manager *Manager) InvalidateRect(rect Rect) {
+	if rect.Empty() {
+		manager.InvalidatePaint()
+		return
+	}
+	manager.mu.Lock()
+	manager.dirtyPaint = true
+	if !manager.fullDamage {
+		if manager.damage.Empty() {
+			manager.damage = rect
+		} else {
+			a, b := manager.damage, rect
+			x0, y0 := minFloat32(a.X, b.X), minFloat32(a.Y, b.Y)
+			x1, y1 := maxFloat32(a.X+a.W, b.X+b.W), maxFloat32(a.Y+a.H, b.Y+b.H)
+			manager.damage = Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+		}
+	}
 	wake := manager.wake
 	manager.mu.Unlock()
 	if wake != nil {
@@ -441,6 +479,13 @@ func paintComponent(component Component, canvas *Canvas) {
 	}
 	state := component.UIState()
 	if !state.Visible() || state.rect.Empty() {
+		return
+	}
+	// A component and its descendants cannot affect pixels outside the active
+	// clip when it is clipped itself. Unclipped containers may have children
+	// beyond their own bounds, so only cull them if they have no children.
+	if len(canvas.clips) > 0 && intersect(state.rect, canvas.clips[len(canvas.clips)-1]).Empty() &&
+		(state.clip || len(state.children) == 0) {
 		return
 	}
 	if state.clip {
