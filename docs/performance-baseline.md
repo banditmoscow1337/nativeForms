@@ -3,6 +3,8 @@
 The benchmark suite and optional frame samples are measurement tools, not an
 assertion that the current renderer meets the v1 budgets. Record actual numbers
 on both target machines before declaring this stage complete.
+An initial headless sandbox run is recorded in
+`docs/performance-snapshot-2026-10-13.md`; it is not a target-device baseline.
 
 ## Repeatable run
 

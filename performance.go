@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// FramePhase names non-overlapping work in the renderer pipeline. Text layout
-// happens during paint-list construction and is therefore a subset of Paint.
+// FramePhase names measured work in the renderer pipeline. Build includes
+// Layout and Paint, and TextLayout is a subset of Paint.
 type FramePhase uint8
 
 const (
@@ -23,12 +23,12 @@ const (
 // TextLayout is a subset of Paint. Present is the time spent submitting the
 // frame to the window system, not the time until it appears on the display.
 type FrameSample struct {
-	Width, Height                     int
-	Build, Layout, Paint, TextLayout time.Duration
-	Raster, Upload, Present          time.Duration
+	Width, Height                      int
+	Build, Layout, Paint, TextLayout   time.Duration
+	Raster, Upload, Present            time.Duration
 	Commands, Masks, Images, TextRunes int
 	AllocBytes                         uint64
-	Backend, FallbackReason           string
+	Backend, FallbackReason            string
 }
 
 // FrameObserverOptions controls potentially intrusive profiling features.

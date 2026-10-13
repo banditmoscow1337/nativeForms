@@ -17,38 +17,38 @@ type Frame struct {
 }
 
 type Manager struct {
-	mu               sync.RWMutex
-	root             Component
-	visible          bool
-	interactive      bool
-	unhandled        func(Event) bool
-	theme            Theme
-	fonts            *FontContext
-	displayScale     float32
-	focused          Component
-	hovered          Component
-	captured         Component
-	capturedButton   MouseButton
-	pointer          Vec2
-	consumeUnhandled bool
-	gameNavigation   bool
-	dirtyLayout      bool
-	dirtyPaint       bool
-	wake             func()
-	clipboardRead    func() (string, error)
-	clipboardWrite   func(string) error
-	clock            func() time.Time
-	frameObserver    func(FrameSample)
+	mu                   sync.RWMutex
+	root                 Component
+	visible              bool
+	interactive          bool
+	unhandled            func(Event) bool
+	theme                Theme
+	fonts                *FontContext
+	displayScale         float32
+	focused              Component
+	hovered              Component
+	captured             Component
+	capturedButton       MouseButton
+	pointer              Vec2
+	consumeUnhandled     bool
+	gameNavigation       bool
+	dirtyLayout          bool
+	dirtyPaint           bool
+	wake                 func()
+	clipboardRead        func() (string, error)
+	clipboardWrite       func(string) error
+	clock                func() time.Time
+	frameObserver        func(FrameSample)
 	frameObserverOptions FrameObserverOptions
-	frameTrace       *FrameTrace
-	caretDue         time.Time
-	popups           []popupEntry
-	nextPopup        PopupID
-	tooltipID        PopupID
-	shortcuts        map[ShortcutID]Shortcut
-	nextShortcut     ShortcutID
-	postMu           sync.Mutex
-	pending          []func()
+	frameTrace           *FrameTrace
+	caretDue             time.Time
+	popups               []popupEntry
+	nextPopup            PopupID
+	tooltipID            PopupID
+	shortcuts            map[ShortcutID]Shortcut
+	nextShortcut         ShortcutID
+	postMu               sync.Mutex
+	pending              []func()
 
 	notificationMu sync.Mutex
 	notifications  []notification

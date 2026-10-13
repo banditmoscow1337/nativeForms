@@ -259,6 +259,7 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		line := text[lineStart:lineEnd]
 		textStart := canvas.trace.Start()
 		lineWidth := measureTextLine(line, size)
+		canvas.trace.Record(PhaseTextLayout, textStart)
 		x := bounds.X
 		switch align {
 		case TextCenter:
@@ -270,7 +271,10 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		if !(pixelScale > 0 && pixelScale <= 8) {
 			pixelScale = 1
 		}
-		if shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale); ok {
+		shapeStart := canvas.trace.Start()
+		shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale)
+		canvas.trace.Record(PhaseTextLayout, shapeStart)
+		if ok {
 			if mask := shaped.Mask; mask != nil {
 				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
 			}
@@ -285,7 +289,6 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 				)
 			})
 		}
-		canvas.trace.Record(PhaseTextLayout, textStart)
 		if lastLine {
 			break
 		}

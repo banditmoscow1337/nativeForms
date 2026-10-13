@@ -64,13 +64,15 @@ func BenchmarkFrameBuildTextArea(b *testing.B) {
 		lines int
 	}{{"1k", 1000}, {"10k", 10000}, {"100k", 100000}} {
 		b.Run(scenario.name, func(b *testing.B) {
-			benchmarkManagerFrame(b, NewTextArea(strings.Repeat("A long line of editable text 0123456789\n", scenario.lines), nil), false, 1)
+			text := strings.TrimSuffix(strings.Repeat("A long line of editable text 0123456789\n", scenario.lines), "\n")
+			benchmarkManagerFrame(b, NewTextArea(text, nil), false, 1)
 		})
 	}
 }
 
 func BenchmarkFrameBuildCodeEditor100k(b *testing.B) {
-	document, err := editor.NewDocument(strings.Repeat("const x = 12345; // an editor line\n", 100000))
+	text := strings.TrimSuffix(strings.Repeat("const x = 12345; // an editor line\n", 100000), "\n")
+	document, err := editor.NewDocument(text)
 	if err != nil {
 		b.Fatal(err)
 	}
