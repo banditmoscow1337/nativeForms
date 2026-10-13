@@ -1,0 +1,146 @@
+package nativeforms
+
+import (
+	"runtime"
+	"time"
+)
+
+// FramePhase names non-overlapping work in the renderer pipeline. Text layout
+// happens during paint-list construction and is therefore a subset of Paint.
+type FramePhase uint8
+
+const (
+	PhaseBuild FramePhase = iota
+	PhaseLayout
+	PhasePaint
+	PhaseTextLayout
+	PhaseRaster
+	PhaseUpload
+	PhasePresent
+)
+
+// FrameSample reports one completed frame. Build includes Layout and Paint;
+// TextLayout is a subset of Paint. Present is the time spent submitting the
+// frame to the window system, not the time until it appears on the display.
+type FrameSample struct {
+	Width, Height                     int
+	Build, Layout, Paint, TextLayout time.Duration
+	Raster, Upload, Present          time.Duration
+	Commands, Masks, Images, TextRunes int
+	AllocBytes                         uint64
+	Backend, FallbackReason           string
+}
+
+// FrameObserverOptions controls potentially intrusive profiling features.
+// Allocation sampling calls runtime.ReadMemStats twice per frame and should
+// only be enabled for diagnosis, not when measuring render latency.
+type FrameObserverOptions struct {
+	TrackAllocations bool
+}
+
+// FrameTrace is only used from the window's frame/render goroutine. A nil
+// trace is safe: adapters can call its methods without separate branches.
+type FrameTrace struct {
+	sample           FrameSample
+	observer         func(FrameSample)
+	trackAllocations bool
+	startAlloc       uint64
+	finished         bool
+}
+
+// SetFrameObserver enables or disables opt-in per-frame measurements. The
+// callback runs synchronously after FrameTrace.Finish, on the render goroutine.
+// It must not retain DrawCommand data or block the UI loop.
+func (manager *Manager) SetFrameObserver(observer func(FrameSample), options ...FrameObserverOptions) {
+	manager.mu.Lock()
+	manager.frameObserver = observer
+	manager.frameObserverOptions = FrameObserverOptions{}
+	if len(options) > 0 {
+		manager.frameObserverOptions = options[0]
+	}
+	manager.mu.Unlock()
+}
+
+// FrameTrace returns the trace created by the most recent BeginFrame. The
+// caller must finish it after presentation, before the next BeginFrame.
+// It is nil when no observer is installed.
+func (manager *Manager) FrameTrace() *FrameTrace { return manager.frameTrace }
+
+func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
+	if observer == nil {
+		return nil
+	}
+	trace := &FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
+	trace.sample.Width, trace.sample.Height = width, height
+	if trace.trackAllocations {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		trace.startAlloc = mem.TotalAlloc
+	}
+	return trace
+}
+
+// Start returns a timestamp only when tracing is enabled.
+func (trace *FrameTrace) Start() time.Time {
+	if trace == nil {
+		return time.Time{}
+	}
+	return time.Now()
+}
+
+// Record adds the elapsed time to one phase. Adapters may use Raster, Upload,
+// and Present to instrument the same logical frame across the pipeline.
+func (trace *FrameTrace) Record(phase FramePhase, start time.Time) {
+	if trace == nil || trace.finished || start.IsZero() {
+		return
+	}
+	d := time.Since(start)
+	switch phase {
+	case PhaseBuild:
+		trace.sample.Build += d
+	case PhaseLayout:
+		trace.sample.Layout += d
+	case PhasePaint:
+		trace.sample.Paint += d
+	case PhaseTextLayout:
+		trace.sample.TextLayout += d
+	case PhaseRaster:
+		trace.sample.Raster += d
+	case PhaseUpload:
+		trace.sample.Upload += d
+	case PhasePresent:
+		trace.sample.Present += d
+	}
+}
+
+func (trace *FrameTrace) countCommands(frame Frame) {
+	if trace == nil {
+		return
+	}
+	trace.sample.Commands = len(frame.Commands)
+	for _, command := range frame.Commands {
+		switch command.Kind {
+		case CommandMask:
+			trace.sample.Masks++
+		case CommandImage:
+			trace.sample.Images++
+		}
+	}
+}
+
+// Finish publishes exactly one sample; FallbackReason is empty when the
+// selected backend rendered normally. Finish is also safe on a nil trace.
+func (trace *FrameTrace) Finish(backend, fallbackReason string) {
+	if trace == nil || trace.finished {
+		return
+	}
+	trace.finished = true
+	trace.sample.Backend = backend
+	trace.sample.FallbackReason = fallbackReason
+	if trace.trackAllocations {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		trace.sample.AllocBytes = mem.TotalAlloc - trace.startAlloc
+	}
+	trace.observer(trace.sample)
+}

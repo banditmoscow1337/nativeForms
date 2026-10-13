@@ -623,7 +623,11 @@ func (w *X11Window) paint() error {
 	now := time.Now()
 	w.manager.BeginFrame(platform.LogicalSize(w.width, w.scale), platform.LogicalSize(w.height, w.scale), now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale); err != nil {
+	trace := w.manager.FrameTrace()
+	rasterStart := trace.Start()
+	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale)
+	trace.Record(ui.PhaseRaster, rasterStart)
+	if err != nil {
 		return err
 	}
 	rowBytes := w.width * 4
@@ -632,6 +636,7 @@ func (w *X11Window) paint() error {
 		return fmt.Errorf("x11: scanline exceeds maximum request size")
 	}
 	for y := 0; y < w.height; {
+		uploadStart := trace.Start()
 		n := min(rowsPerRequest, w.height-y)
 		request := make([]byte, 24+n*rowBytes)
 		request[0] = 72
@@ -649,11 +654,15 @@ func (w *X11Window) paint() error {
 				request[j], request[j+1], request[j+2] = w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i]
 			}
 		}
+		trace.Record(ui.PhaseUpload, uploadStart)
+		presentStart := trace.Start()
 		if err := w.send(request); err != nil {
 			return err
 		}
+		trace.Record(ui.PhasePresent, presentStart)
 		y += n
 	}
+	trace.Finish("software/x11", "")
 	return nil
 }
 

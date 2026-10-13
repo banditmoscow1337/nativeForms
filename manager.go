@@ -38,6 +38,9 @@ type Manager struct {
 	clipboardRead    func() (string, error)
 	clipboardWrite   func(string) error
 	clock            func() time.Time
+	frameObserver    func(FrameSample)
+	frameObserverOptions FrameObserverOptions
+	frameTrace       *FrameTrace
 	caretDue         time.Time
 	popups           []popupEntry
 	nextPopup        PopupID
@@ -276,6 +279,8 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	}
 
 	manager.mu.Lock()
+	observer := manager.frameObserver
+	observerOptions := manager.frameObserverOptions
 	root := manager.root
 	visible := manager.visible
 	theme := manager.theme
@@ -284,11 +289,16 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	layoutNeeded := manager.dirtyLayout || width != manager.layoutWidth || height != manager.layoutHeight
 	manager.dirtyLayout, manager.dirtyPaint = false, false
 	manager.mu.Unlock()
+	manager.frameTrace = newFrameTrace(observer, observerOptions, width, height)
+	trace := manager.frameTrace
+	buildStart := trace.Start()
 
 	manager.frame.Width, manager.frame.Height = width, height
 	clear(manager.frame.Commands)
 	manager.frame.Commands = manager.frame.Commands[:0]
 	if !visible || width <= 0 || height <= 0 {
+		trace.countCommands(manager.frame)
+		trace.Record(PhaseBuild, buildStart)
 		return
 	}
 	viewport := Rect{W: float32(width), H: float32(height)}
@@ -299,15 +309,23 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 		theme:        &theme,
 		fonts:        fonts,
 		displayScale: displayScale,
+		trace:        trace,
 	}
 	if root != nil && root.UIState().Visible() {
 		if layoutNeeded {
+			layoutStart := trace.Start()
 			root.Measure(Constraints{Min: Vec2{X: viewport.W, Y: viewport.H}, Max: Vec2{X: viewport.W, Y: viewport.H}})
 			root.Arrange(viewport)
+			trace.Record(PhaseLayout, layoutStart)
 		}
+		paintStart := trace.Start()
 		paintComponent(root, &canvas)
+		trace.Record(PhasePaint, paintStart)
 	}
+	popupStart := trace.Start()
 	manager.layoutPopups(viewport)
+	trace.Record(PhaseLayout, popupStart)
+	paintStart := trace.Start()
 	for _, entry := range manager.popups {
 		if entry.modal {
 			canvas.Rect(viewport, theme.Scrim)
@@ -315,8 +333,11 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 		paintComponent(entry.content, &canvas)
 	}
 	manager.paintNotifications(&canvas, viewport, now)
+	trace.Record(PhasePaint, paintStart)
 	manager.clips = canvas.clips
 	manager.layoutWidth, manager.layoutHeight = width, height
+	trace.countCommands(manager.frame)
+	trace.Record(PhaseBuild, buildStart)
 }
 
 func (manager *Manager) Frame() Frame { return manager.frame }

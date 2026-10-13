@@ -360,6 +360,7 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		w.dib = make([]byte, width*height*4)
 	}
 	rendered := resized || w.manager.NeedsFrame()
+	var trace *ui.FrameTrace
 	if rendered {
 		logicalWidth := platform.LogicalSize(width, w.scale())
 		logicalHeight := platform.LogicalSize(height, w.scale())
@@ -367,10 +368,15 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		delta := now.Sub(w.lastFrame).Seconds()
 		w.lastFrame = now
 		w.manager.BeginFrame(logicalWidth, logicalHeight, delta)
-		if err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale()); err != nil {
+		trace = w.manager.FrameTrace()
+		rasterStart := trace.Start()
+		err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale())
+		trace.Record(ui.PhaseRaster, rasterStart)
+		if err != nil {
 			return err
 		}
 		w.placeCandidate(hwnd)
+		uploadStart := trace.Start()
 		for y := 0; y < height; y++ {
 			for x := 0; x < width; x++ {
 				i := w.framebuffer.PixOffset(x, y)
@@ -379,16 +385,20 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 					w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
 			}
 		}
+		trace.Record(ui.PhaseUpload, uploadStart)
 	}
 	info := bitmapInfo{Size: uint32(unsafe.Sizeof(bitmapInfo{})), Width: int32(width), Height: -int32(height),
 		Planes: 1, BitCount: 32, Compression: biRGB}
+	presentStart := trace.Start()
 	result := call(win.stretchDIBits, dc, 0, 0, uintptr(width), uintptr(height), 0, 0,
 		uintptr(width), uintptr(height), pointer(&w.dib[0]), pointer(&info), dibRGBColors, srccopy)
+	trace.Record(ui.PhasePresent, presentStart)
 	keep(w.dib, &info)
 	if int32(result) == -1 {
 		return fmt.Errorf("windows: StretchDIBits failed")
 	}
 	if rendered {
+		trace.Finish("software/gdi", "")
 		w.armFrameTimer(hwnd)
 	}
 	return nil

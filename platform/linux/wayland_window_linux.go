@@ -603,9 +603,14 @@ func (w *WaylandWindow) paint() error {
 	now := time.Now()
 	w.Manager.BeginFrame(w.width, w.height, now.Sub(w.lastFrame).Seconds())
 	w.lastFrame = now
-	if err := w.renderer.RenderAtScale(w.Manager.Frame(), w.framebuffer, w.scale); err != nil {
+	trace := w.Manager.FrameTrace()
+	rasterStart := trace.Start()
+	err := w.renderer.RenderAtScale(w.Manager.Frame(), w.framebuffer, w.scale)
+	trace.Record(ui.PhaseRaster, rasterStart)
+	if err != nil {
 		return err
 	}
+	uploadStart := trace.Start()
 	for y := 0; y < ph; y++ {
 		for x := 0; x < pw; x++ {
 			i := w.framebuffer.PixOffset(x, y)
@@ -614,6 +619,8 @@ func (w *WaylandWindow) paint() error {
 				w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
 		}
 	}
+	trace.Record(ui.PhaseUpload, uploadStart)
+	presentStart := trace.Start()
 	args := append(wlWord(buffer.id), wlWord(0)...)
 	args = append(args, wlWord(0)...)
 	if w.viewport != 0 {
@@ -635,6 +642,8 @@ func (w *WaylandWindow) paint() error {
 		return err
 	}
 	buffer.busy = true
+	trace.Record(ui.PhasePresent, presentStart)
+	trace.Finish("software/wayland", "")
 	return nil
 }
 
