@@ -54,17 +54,17 @@ type candidateForm struct {
 }
 
 type functions struct {
-	user, kernel, gdi, imm, shell                                                                     uintptr
-	createWindow, registerClass, defProc, getMessage, translateMessage, dispatchMessage, showWindow   uintptr
-	destroyWindow, postQuit, postMessage, beginPaint, endPaint, invalidateRect                        uintptr
-	getClientRect, screenToClient, getDpi, setDpi, setWindowPos                                       uintptr
-	adjustWindowRect, adjustWindowRectForDpi                                                          uintptr
-	setCapture, releaseCapture, loadCursor, setCursor, getKeyState, trackMouse                        uintptr
-	setTimer, killTimer, openClipboard, closeClipboard, emptyClipboard                                uintptr
-	setClipboardData, getClipboardData, globalAlloc, globalLock, globalUnlock, globalFree, globalSize uintptr
-	stretchDIBits, getModuleHandle                                                                    uintptr
-	immGetContext, immReleaseContext, immGetComposition, immSetCandidate                              uintptr
-	dragAcceptFiles, dragQueryFile, dragFinish                                                        uintptr
+	user, kernel, gdi, imm, shell                                                                                     uintptr
+	createWindow, registerClass, defProc, getMessage, peekMessage, translateMessage, dispatchMessage, showWindow      uintptr
+	destroyWindow, postQuit, postMessage, postThreadMessage, getCurrentThreadId, beginPaint, endPaint, invalidateRect uintptr
+	getClientRect, screenToClient, getDpi, setDpi, setWindowPos                                                       uintptr
+	adjustWindowRect, adjustWindowRectForDpi                                                                          uintptr
+	setCapture, releaseCapture, loadCursor, setCursor, getKeyState, trackMouse                                        uintptr
+	setTimer, killTimer, openClipboard, closeClipboard, emptyClipboard                                                uintptr
+	setClipboardData, getClipboardData, globalAlloc, globalLock, globalUnlock, globalFree, globalSize                 uintptr
+	stretchDIBits, getModuleHandle                                                                                    uintptr
+	immGetContext, immReleaseContext, immGetComposition, immSetCandidate                                              uintptr
+	dragAcceptFiles, dragQueryFile, dragFinish                                                                        uintptr
 }
 
 var win functions
@@ -114,12 +114,14 @@ func load() error {
 		{win.user, "RegisterClassExW", &win.registerClass},
 		{win.user, "DefWindowProcW", &win.defProc},
 		{win.user, "GetMessageW", &win.getMessage},
+		{win.user, "PeekMessageW", &win.peekMessage},
 		{win.user, "TranslateMessage", &win.translateMessage},
 		{win.user, "DispatchMessageW", &win.dispatchMessage},
 		{win.user, "ShowWindow", &win.showWindow},
 		{win.user, "DestroyWindow", &win.destroyWindow},
 		{win.user, "PostQuitMessage", &win.postQuit},
 		{win.user, "PostMessageW", &win.postMessage},
+		{win.user, "PostThreadMessageW", &win.postThreadMessage},
 		{win.user, "BeginPaint", &win.beginPaint},
 		{win.user, "EndPaint", &win.endPaint},
 		{win.user, "InvalidateRect", &win.invalidateRect},
@@ -147,6 +149,7 @@ func load() error {
 		{win.kernel, "GlobalSize", &win.globalSize},
 		{win.gdi, "StretchDIBits", &win.stretchDIBits},
 		{win.kernel, "GetModuleHandleW", &win.getModuleHandle},
+		{win.kernel, "GetCurrentThreadId", &win.getCurrentThreadId},
 		{win.imm, "ImmGetContext", &win.immGetContext},
 		{win.imm, "ImmReleaseContext", &win.immReleaseContext},
 		{win.imm, "ImmGetCompositionStringW", &win.immGetComposition},
@@ -214,7 +217,10 @@ const (
 	wmWake             = 0x8001
 	wsOverlappedWindow = 0x00CF0000
 	cwUseDefault       = 0x80000000
+	swHide             = 0
 	swShow             = 5
+	wmAppWake          = 0x8002
+	wmAppDestroy       = 0x8003
 	swpNoZOrder        = 0x0004
 	swpNoMove          = 0x0002
 	swpNoActivate      = 0x0010

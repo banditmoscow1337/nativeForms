@@ -6,8 +6,14 @@ import (
 	"fmt"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/platform"
 	"github.com/banditmoscow1337/nativeForms/platform/linux"
 )
+
+type linuxDriver struct{ *linux.App }
+
+func newAppDriver() appDriver            { return linuxDriver{linux.NewApp()} }
+func (a linuxDriver) Add(w Window) error { return a.App.Add(w) }
 
 func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	if manager == nil {
@@ -30,6 +36,12 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 					options.OnReady(w)
 				}
 			}, OnFilesDropped: options.OnFilesDropped,
+			OnCloseRequest: func(w *linux.WaylandWindow) platform.CloseAction {
+				if options.OnCloseRequest != nil {
+					return options.OnCloseRequest(w)
+				}
+				return platform.CloseWindow
+			},
 		}), nil
 	case "x11":
 		return linux.NewX11(manager, linux.X11Options{
@@ -39,6 +51,12 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 					options.OnReady(w)
 				}
 			}, OnFilesDropped: options.OnFilesDropped,
+			OnCloseRequest: func(w *linux.X11Window) platform.CloseAction {
+				if options.OnCloseRequest != nil {
+					return options.OnCloseRequest(w)
+				}
+				return platform.CloseWindow
+			},
 		}), nil
 	default:
 		return nil, fmt.Errorf("desktop: unknown Linux backend %q", backend)

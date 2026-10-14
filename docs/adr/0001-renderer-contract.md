@@ -1,6 +1,6 @@
 # ADR 0001: Renderer contract and backend choice
 
-Status: proposed for v1; stage 0 records the contract, not a GPU backend.
+Status: accepted for v1 (2026-10-14). GPU backend selection remains a later stage.
 
 The widget tree produces a `Frame` of ordered `DrawCommand`s in logical
 coordinates. Keep `Manager` and `Canvas` backend-independent. A renderer

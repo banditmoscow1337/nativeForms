@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/platform"
 	"github.com/ebitengine/purego/objc"
 )
 
@@ -27,6 +28,20 @@ func registerView() error {
 		return fmt.Errorf("darwin: NSTextInputClient unavailable")
 	}
 	methods := []objc.MethodDef{
+		{Cmd: selector("windowShouldClose:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID) bool {
+			w := viewWindows[self]
+			if w != nil {
+				switch w.closeAction() {
+				case platform.HideWindow:
+					w.Hide()
+				case platform.QuitApp:
+					w.owner.Quit()
+				case platform.CloseWindow:
+					w.Close()
+				}
+			}
+			return false // the App destroys the window after the callback returns
+		}},
 		{Cmd: selector("isFlipped"), Fn: func(objc.ID, objc.SEL) bool { return true }},
 		{Cmd: selector("drawRect:"), Fn: func(self objc.ID, _ objc.SEL, _ rect) {
 			w := viewWindows[self]

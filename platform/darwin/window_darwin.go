@@ -41,10 +41,12 @@ type Options struct {
 	Width, Height  int
 	OnReady        func(*Window)
 	OnFilesDropped func([]string)
+	OnCloseRequest func(*Window) platform.CloseAction
 }
 
 type Window struct {
 	manager                           *ui.Manager
+	owner                             *App
 	options                           Options
 	app, window, view, representation objc.ID
 	framebuffer                       *image.RGBA
@@ -100,9 +102,63 @@ func nsString(value string) objc.ID {
 
 func (w *Window) Run() error { return Run(w) }
 
+// App owns the AppKit event loop and survives hidden or closed windows.
+type App struct {
+	queue    platform.AppQueue
+	windows  []*Window
+	running  atomic.Bool
+	started  atomic.Bool
+	autoQuit bool // legacy Run(windows...)
+}
+
+func NewApp() *App { return &App{} }
+
+func (a *App) Add(w *Window) error {
+	if a == nil || w == nil || w.manager == nil {
+		return fmt.Errorf("darwin: nil app, window or manager")
+	}
+	if w.owner != nil {
+		return fmt.Errorf("darwin: window is already registered")
+	}
+	if a.running.Load() && onMainThread() == 0 {
+		return fmt.Errorf("darwin: Add must run on the AppKit UI thread (use App.Post)")
+	}
+	if a.queue.Quitting() {
+		return fmt.Errorf("darwin: application is quitting")
+	}
+	for _, other := range a.windows {
+		if other.manager == w.manager {
+			return fmt.Errorf("darwin: windows must have distinct managers")
+		}
+	}
+	w.owner = a
+	a.windows = append(a.windows, w)
+	if a.running.Load() {
+		if err := w.Open(); err != nil {
+			a.windows = a.windows[:len(a.windows)-1]
+			w.owner = nil
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) remove(w *Window) {
+	for i, existing := range a.windows {
+		if existing == w {
+			a.windows = append(a.windows[:i], a.windows[i+1:]...)
+			return
+		}
+	}
+}
+
+func (a *App) Post(fn func()) { a.queue.Post(fn) }
+func (a *App) Quit()          { a.queue.Quit() }
+
 type application struct {
 	app     objc.ID
 	windows map[objc.ID]*Window
+	owner   *App
 }
 
 var activeApplication *application
@@ -125,13 +181,27 @@ func loadAppKit() error {
 }
 
 func Run(windows ...*Window) error {
-	if len(windows) == 0 {
-		return fmt.Errorf("darwin: no windows")
+	a := NewApp()
+	a.autoQuit = true
+	for _, w := range windows {
+		if err := a.Add(w); err != nil {
+			return err
+		}
+	}
+	return a.Run()
+}
+
+func (a *App) Run() error {
+	if a == nil {
+		return fmt.Errorf("darwin: nil app")
 	}
 	if !appMu.TryLock() {
 		return fmt.Errorf("darwin: application is already running; use Window.Open on its UI goroutine")
 	}
 	defer appMu.Unlock()
+	if !a.started.CompareAndSwap(false, true) {
+		return fmt.Errorf("darwin: App.Run may only be called once")
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := loadAppKit(); err != nil {
@@ -145,16 +215,29 @@ func Run(windows ...*Window) error {
 	}
 	pool := class("NSAutoreleasePool").Send(selector("new"))
 	defer pool.Send(selector("drain"))
-	app := &application{app: class("NSApplication").Send(selector("sharedApplication")), windows: make(map[objc.ID]*Window)}
+	app := &application{app: class("NSApplication").Send(selector("sharedApplication")), windows: make(map[objc.ID]*Window), owner: a}
 	app.app.Send(selector("setActivationPolicy:"), 0)
 	activeApplication = app
+	a.running.Store(true)
+	a.queue.SetWake(func() {
+		// NSEvent is immutable. NSApplication's event queue accepts posts from
+		// worker threads and wakes nextEventMatchingMask immediately.
+		pool := class("NSAutoreleasePool").Send(selector("new"))
+		event := class("NSEvent").Send(selector("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+			uint64(15), point{}, uint64(0), float64(0), uint64(0), objc.ID(0), int16(0), int64(0), int64(0))
+		app.app.Send(selector("postEvent:atStart:"), event, true)
+		pool.Send(selector("drain"))
+	})
 	defer func() {
+		a.queue.SetWake(nil)
+		a.queue.Quit()
+		a.running.Store(false)
 		for _, w := range app.windows {
 			w.destroy()
 		}
 		activeApplication = nil
 	}()
-	for _, w := range windows {
+	for _, w := range append([]*Window(nil), a.windows...) {
 		if err := w.Open(); err != nil {
 			return err
 		}
@@ -162,7 +245,10 @@ func Run(windows ...*Window) error {
 	app.app.Send(selector("finishLaunching"))
 	app.app.Send(selector("activateIgnoringOtherApps:"), true)
 	mode := nsString("kCFRunLoopDefaultMode")
-	for len(app.windows) > 0 {
+	for !a.queue.Drain() {
+		if a.autoQuit && len(app.windows) == 0 {
+			break
+		}
 		iteration := class("NSAutoreleasePool").Send(selector("new"))
 		err := app.step(mode)
 		iteration.Send(selector("drain"))
@@ -188,6 +274,13 @@ func (w *Window) Open() error {
 		if other.manager == w.manager {
 			return fmt.Errorf("darwin: windows must have distinct managers")
 		}
+	}
+	if w.owner != nil && w.owner != app.owner {
+		return fmt.Errorf("darwin: window belongs to another app")
+	}
+	if w.owner == nil {
+		w.owner = app.owner
+		app.owner.windows = append(app.owner.windows, w)
 	}
 	w.closing.Store(false)
 	w.app = app.app
@@ -222,6 +315,7 @@ func (w *Window) Open() error {
 	w.window.Send(selector("setAcceptsMouseMovedEvents:"), true)
 	w.view.Send(selector("setAutoresizingMask:"), uint64(2|16))
 	w.window.Send(selector("setContentView:"), w.view)
+	w.window.Send(selector("setDelegate:"), w.view)
 	w.window.Send(selector("center"))
 	w.window.Send(selector("makeFirstResponder:"), w.view)
 	if w.options.OnFilesDropped != nil {
@@ -244,11 +338,14 @@ func (w *Window) Open() error {
 func (a *application) step(mode objc.ID) error {
 	seconds := 0.05
 	for _, w := range a.windows {
-		if w.closing.Load() || !objc.Send[bool](w.window, selector("isVisible")) {
+		if w.closing.Load() {
 			w.destroy()
 			continue
 		}
 		w.manager.ProcessPending()
+		if !objc.Send[bool](w.window, selector("isVisible")) {
+			continue
+		}
 		key := objc.Send[bool](w.window, selector("isKeyWindow"))
 		if w.wasKey && !key {
 			w.cancelMarked()
@@ -277,9 +374,6 @@ func (a *application) step(mode objc.ID) error {
 			}
 		}
 	}
-	if len(a.windows) == 0 {
-		return nil
-	}
 	for _, w := range a.windows {
 		w.manager.ProcessPending()
 		bounds := objc.Send[rect](w.view, selector("bounds"))
@@ -293,6 +387,9 @@ func (a *application) step(mode objc.ID) error {
 		return nil
 	}
 	typ := objc.Send[uint64](event, selector("type"))
+	if typ == 15 { // App.Post's application-defined wake event.
+		return nil
+	}
 	id := event.Send(selector("window"))
 	w := a.windows[id]
 	if w != nil {
@@ -320,8 +417,12 @@ func (w *Window) destroy() {
 	w.manager.SetClipboardHandlers(nil, nil)
 	w.manager.ClearInteraction()
 	w.manager.SetInteractive(false)
+	w.window.Send(selector("setDelegate:"), objc.ID(0))
 	if activeApplication != nil {
 		delete(activeApplication.windows, w.window)
+	}
+	if w.owner != nil {
+		w.owner.remove(w)
 	}
 	delete(viewWindows, w.view)
 	if objc.Send[bool](w.window, selector("isVisible")) {
@@ -344,7 +445,38 @@ func (w *Window) destroy() {
 func (w *Window) Close() {
 	if w != nil {
 		w.closing.Store(true)
+		if w.owner != nil {
+			w.owner.Post(func() {})
+		}
 	}
+}
+
+func (w *Window) Show() { w.setVisible(true) }
+func (w *Window) Hide() { w.setVisible(false) }
+func (w *Window) setVisible(visible bool) {
+	if w == nil || w.owner == nil {
+		return
+	}
+	w.owner.Post(func() {
+		if w.window == 0 || w.closing.Load() {
+			return
+		}
+		if visible {
+			w.window.Send(selector("makeKeyAndOrderFront:"), objc.ID(0))
+			w.manager.InvalidatePaint()
+		} else {
+			w.cancelMarked()
+			w.manager.CancelPointerCapture()
+			w.window.Send(selector("orderOut:"), objc.ID(0))
+		}
+	})
+}
+
+func (w *Window) closeAction() platform.CloseAction {
+	if w.options.OnCloseRequest != nil {
+		return w.options.OnCloseRequest(w)
+	}
+	return platform.CloseWindow
 }
 
 func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32) error {

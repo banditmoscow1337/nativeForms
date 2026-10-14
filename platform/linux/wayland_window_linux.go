@@ -24,6 +24,7 @@ type WaylandOptions struct {
 	Width, Height  int
 	OnReady        func(*WaylandWindow)
 	OnFilesDropped func([]string)
+	OnCloseRequest func(*WaylandWindow) platform.CloseAction
 }
 
 type waylandWire struct {
@@ -31,6 +32,14 @@ type waylandWire struct {
 	next    uint32
 	pending []byte
 	fds     []int
+}
+
+func (wire *waylandWire) hasEvent() bool {
+	if len(wire.pending) < 8 {
+		return false
+	}
+	size := int(binary.LittleEndian.Uint32(wire.pending[4:]) >> 16)
+	return size >= 8 && len(wire.pending) >= size
 }
 
 func (wire *waylandWire) id() uint32 { wire.next++; return wire.next }
@@ -174,6 +183,7 @@ type wlOutput struct {
 
 type WaylandWindow struct {
 	Manager                                                              *ui.Manager
+	app                                                                  *App
 	Options                                                              WaylandOptions
 	wire                                                                 *waylandWire
 	compositor, shm, wm, surface, xdg, toplevel, seat, pointer, keyboard uint32
@@ -187,6 +197,7 @@ type WaylandWindow struct {
 	current                                                              [2]*wlBuffer
 	ready                                                                bool
 	closing                                                              atomic.Bool
+	hidden                                                               atomic.Bool
 	lastFrame                                                            time.Time
 	pointerPos                                                           ui.Vec2
 	pressed                                                              map[uint32]bool
@@ -245,9 +256,73 @@ func (w *WaylandWindow) Close() {
 		return
 	}
 	w.closing.Store(true)
+	if w.app != nil {
+		w.app.wake()
+	}
+}
+
+func (w *WaylandWindow) Show() { w.setVisible(true) }
+func (w *WaylandWindow) Hide() { w.setVisible(false) }
+func (w *WaylandWindow) setVisible(visible bool) {
+	if w == nil {
+		return
+	}
+	w.hidden.Store(!visible)
+	if w.app != nil {
+		w.app.Post(func() {
+			if w.wire == nil || w.closing.Load() {
+				return
+			}
+			if visible {
+				// An empty commit requests a new xdg_surface configure after unmap.
+				w.Manager.InvalidatePaint()
+				if err := w.wire.send(w.surface, 6, nil); err != nil {
+					w.app.fail(err)
+				}
+			} else {
+				w.Manager.ClearInteraction()
+				w.ready = false
+				// A null buffer unmaps the xdg_surface without dropping its role.
+				args := append(wlWord(0), wlWord(0)...)
+				args = append(args, wlWord(0)...)
+				if err := w.wire.send(w.surface, 1, args); err != nil {
+					w.app.fail(err)
+					return
+				}
+				if err := w.wire.send(w.surface, 6, nil); err != nil {
+					w.app.fail(err)
+				}
+			}
+		})
+	}
+}
+
+func (w *WaylandWindow) closeAction() {
+	decision := platform.CloseWindow
+	if w.Options.OnCloseRequest != nil {
+		decision = w.Options.OnCloseRequest(w)
+	}
+	switch decision {
+	case platform.HideWindow:
+		w.Hide()
+	case platform.QuitApp:
+		w.app.Quit()
+	case platform.CancelClose:
+	default:
+		w.Close()
+	}
 }
 
 func (w *WaylandWindow) Run() error {
+	a := NewApp()
+	a.autoQuit = true
+	if err := a.Add(w); err != nil {
+		return err
+	}
+	return a.Run()
+}
+
+func (w *WaylandWindow) appStart() error {
 	if w == nil || w.Manager == nil {
 		return fmt.Errorf("wayland: nil window or manager")
 	}
@@ -267,16 +342,6 @@ func (w *WaylandWindow) Run() error {
 	w.wire = &waylandWire{conn: unix, next: 3}
 	w.scale = 1
 	w.outputs = make(map[uint32]*wlOutput)
-	defer func() {
-		for _, buffer := range w.buffers {
-			_ = syscall.Munmap(buffer.pixels)
-		}
-		for _, fd := range w.wire.fds {
-			_ = syscall.Close(fd)
-		}
-		_ = unix.Close()
-		w.wire = nil
-	}()
 	if err = w.setup(); err != nil {
 		return err
 	}
@@ -289,34 +354,36 @@ func (w *WaylandWindow) Run() error {
 	w.dataSources = make(map[uint32]string)
 	w.lastFrame = time.Now()
 	w.Manager.SetInteractive(true)
-	w.Manager.SetWakeHandler(func() { _ = unix.SetReadDeadline(time.Now()) })
+	w.Manager.SetWakeHandler(w.app.wake)
 	if w.dataDevice != 0 {
 		w.Manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
 	}
-	defer func() {
-		w.Manager.SetWakeHandler(nil)
-		w.Manager.SetClipboardHandlers(nil, nil)
-		w.Manager.SetInteractive(false)
-	}()
 	if w.Options.OnReady != nil {
 		w.Options.OnReady(w)
 	}
-	for !w.closing.Load() {
+	if w.hidden.Load() {
+		w.setVisible(false)
+	}
+	return nil
+}
+
+func (w *WaylandWindow) appStep(read bool) (time.Time, error) {
+	if !w.closing.Load() {
 		w.Manager.ProcessPending()
-		if err = w.syncTextInput(false); err != nil {
-			return err
+		if err := w.syncTextInput(false); err != nil {
+			return time.Time{}, err
 		}
 		if !w.modal && w.repeatCode != 0 && !w.repeatAt.IsZero() && !time.Now().Before(w.repeatAt) {
 			w.dispatchKey(w.repeatCode, true, true)
 			w.repeatAt = time.Now().Add(time.Second / time.Duration(max(1, w.repeatRate)))
 		}
-		if w.paintAvailable() && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
-			if err = w.paint(); err != nil {
-				return err
+		if !w.hidden.Load() && w.paintAvailable() && (w.Manager.NeedsFrame() || w.framebuffer == nil) {
+			if err := w.paint(); err != nil {
+				return time.Time{}, err
 			}
 		}
 		deadline := time.Now().Add(50 * time.Millisecond)
-		if w.paintAvailable() {
+		if !w.hidden.Load() && w.paintAvailable() {
 			if next, scheduled := w.Manager.NextFrameDeadline(); scheduled && next.Before(deadline) {
 				deadline = next
 			}
@@ -325,22 +392,49 @@ func (w *WaylandWindow) Run() error {
 			deadline = minTime(deadline, w.repeatAt)
 		}
 		w.Manager.ProcessPending()
-		if w.paintAvailable() && w.Manager.NeedsFrame() {
-			continue
+		if (!read && !w.wire.hasEvent()) || (!w.hidden.Load() && w.paintAvailable() && w.Manager.NeedsFrame()) {
+			return deadline, nil
 		}
-		object, opcode, payload, readErr := w.wire.read(deadline)
+		object, opcode, payload, readErr := w.wire.read(time.Now().Add(5 * time.Millisecond))
 		if timeout, ok := readErr.(net.Error); ok && timeout.Timeout() {
-			continue
+			return deadline, nil
 		}
 		if readErr != nil {
-			return readErr
+			return time.Time{}, readErr
 		}
-		if err = w.handle(object, opcode, payload); err != nil {
-			return err
+		if err := w.handle(object, opcode, payload); err != nil {
+			return time.Time{}, err
 		}
+		if w.wire.hasEvent() {
+			return time.Now(), nil
+		}
+		return deadline, nil
 	}
-	return nil
+	return time.Time{}, nil
 }
+
+func (w *WaylandWindow) appStop() {
+	w.Manager.SetWakeHandler(nil)
+	w.Manager.SetClipboardHandlers(nil, nil)
+	w.Manager.SetInteractive(false)
+	if w.wire != nil {
+		for _, buffer := range w.buffers {
+			_ = syscall.Munmap(buffer.pixels)
+		}
+		for _, fd := range w.wire.fds {
+			_ = syscall.Close(fd)
+		}
+		_ = w.wire.conn.Close()
+		w.wire = nil
+	}
+	w.framebuffer, w.renderer = nil, nil
+}
+
+func (w *WaylandWindow) appClosed() bool         { return w.closing.Load() }
+func (w *WaylandWindow) appManager() *ui.Manager { return w.Manager }
+func (w *WaylandWindow) appOwner() *App          { return w.app }
+func (w *WaylandWindow) appSetApp(a *App)        { w.app = a }
+func (w *WaylandWindow) appFD() (int, error)     { return unixFD(w.wire.conn) }
 
 func (w *WaylandWindow) setup() error {
 	// wl_display.get_registry(2), wl_display.sync(3).
@@ -697,7 +791,7 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 		}
 	case w.toplevel:
 		if opcode == 1 {
-			w.Close()
+			w.closeAction()
 			return nil
 		}
 		if opcode == 0 && len(payload) >= 8 {
@@ -712,7 +806,7 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 			if err := w.wire.send(w.xdg, 4, wlWord(u32(0))); err != nil {
 				return err
 			}
-			w.ready = true
+			w.ready = !w.hidden.Load()
 			w.Manager.InvalidatePaint()
 		}
 	case w.seat:
