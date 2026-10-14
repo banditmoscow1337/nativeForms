@@ -29,10 +29,12 @@ type X11Options struct {
 	Scale          float32 // Zero uses the Xft.dpi setting, falling back to 96 DPI.
 	OnReady        func(*X11Window)
 	OnFilesDropped func([]string)
+	OnCloseRequest func(*X11Window) platform.CloseAction
 }
 
 type X11Window struct {
 	manager                                                       *ui.Manager
+	app                                                           *App
 	options                                                       X11Options
 	conn                                                          net.Conn
 	id, gc, root                                                  uint32
@@ -46,6 +48,7 @@ type X11Window struct {
 	renderer                                                      *software.Renderer
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
+	hidden                                                        atomic.Bool
 	keysyms                                                       map[byte][]uint32
 	lastReleaseCode                                               byte
 	lastReleaseTime                                               uint32
@@ -119,6 +122,53 @@ func (w *X11Window) Close() {
 		return
 	}
 	w.closeRequested.Store(true)
+	if w.app != nil {
+		w.app.wake()
+	}
+}
+
+func (w *X11Window) Show() { w.setVisible(true) }
+func (w *X11Window) Hide() { w.setVisible(false) }
+func (w *X11Window) setVisible(visible bool) {
+	if w == nil {
+		return
+	}
+	w.hidden.Store(!visible)
+	if w.app != nil {
+		w.app.Post(func() {
+			if w.conn == nil || w.closeRequested.Load() {
+				return
+			}
+			request := make([]byte, 8)
+			if visible {
+				request[0] = 8 // MapWindow
+				w.manager.InvalidatePaint()
+			} else {
+				request[0] = 10 // UnmapWindow
+				w.manager.ClearInteraction()
+			}
+			le.PutUint32(request[4:], w.id)
+			if err := w.send(request); err != nil {
+				w.app.fail(err)
+			}
+		})
+	}
+}
+
+func (w *X11Window) closeAction() {
+	decision := platform.CloseWindow
+	if w.options.OnCloseRequest != nil {
+		decision = w.options.OnCloseRequest(w)
+	}
+	switch decision {
+	case platform.HideWindow:
+		w.Hide()
+	case platform.QuitApp:
+		w.app.Quit()
+	case platform.CancelClose:
+	default:
+		w.Close()
+	}
 }
 
 func x11Display() (string, int, string, error) {
@@ -493,6 +543,15 @@ func (w *X11Window) readKeyboardMapping() error {
 }
 
 func (w *X11Window) Run() error {
+	a := NewApp()
+	a.autoQuit = true
+	if err := a.Add(w); err != nil {
+		return err
+	}
+	return a.Run()
+}
+
+func (w *X11Window) appStart() error {
 	if w == nil || w.manager == nil {
 		return fmt.Errorf("x11: nil window or manager")
 	}
@@ -504,8 +563,6 @@ func (w *X11Window) Run() error {
 	if err != nil {
 		return err
 	}
-	conn := w.conn
-	defer func() { conn.Close(); w.conn = nil }()
 	if err = w.open(screen, display); err != nil {
 		return err
 	}
@@ -519,34 +576,27 @@ func (w *X11Window) Run() error {
 	}
 	w.originDirty = true
 	w.running = true
-	defer func() { w.running = false }()
 	w.portal = portalAvailable()
 	w.ime = openLinuxIME(w.manager)
 	if w.ime != nil {
 		w.ime.scale = w.scale
 	}
-	defer func() {
-		if w.ime != nil {
-			w.ime.close()
-		}
-	}()
 	w.renderer = software.New()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
 	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
-	w.manager.SetWakeHandler(func() {
-		_ = conn.SetReadDeadline(time.Now())
-	})
-	defer func() {
-		w.manager.SetWakeHandler(nil)
-		w.manager.SetClipboardHandlers(nil, nil)
-		w.manager.SetInteractive(false)
-	}()
+	w.manager.SetWakeHandler(w.app.wake)
 	if w.options.OnReady != nil {
 		w.options.OnReady(w)
 	}
-	paint := true
-	for !w.closeRequested.Load() {
+	if w.hidden.Load() {
+		w.setVisible(false)
+	}
+	return nil
+}
+
+func (w *X11Window) appStep(read bool) (time.Time, error) {
+	if !w.closeRequested.Load() {
 		w.manager.ProcessPending()
 		if w.ime != nil {
 			if w.originDirty && w.manager.TextInputFocused() {
@@ -563,35 +613,55 @@ func (w *X11Window) Run() error {
 				delete(w.transfers, k)
 			}
 		}
-		if paint || w.manager.NeedsFrame() {
-			if err = w.paint(); err != nil {
-				return err
+		if !w.hidden.Load() && (w.framebuffer == nil || w.manager.NeedsFrame()) {
+			if err := w.paint(); err != nil {
+				return time.Time{}, err
 			}
-			paint = false
 		}
 		deadline := time.Now().Add(50 * time.Millisecond)
-		if next, scheduled := w.manager.NextFrameDeadline(); w.width > 0 && w.height > 0 && scheduled && next.Before(deadline) {
+		if next, scheduled := w.manager.NextFrameDeadline(); !w.hidden.Load() && w.width > 0 && w.height > 0 && scheduled && next.Before(deadline) {
 			deadline = next
 		}
-
 		w.manager.ProcessPending()
-		if w.width > 0 && w.height > 0 && w.manager.NeedsFrame() {
-			continue
+		if !read || (!w.hidden.Load() && w.width > 0 && w.height > 0 && w.manager.NeedsFrame()) {
+			return deadline, nil
 		}
-		message, readErr := w.clipboardPacket(deadline)
-		err = readErr
+		message, err := w.clipboardPacket(time.Now().Add(5 * time.Millisecond))
 		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-			continue
+			return deadline, nil
 		}
 		if err != nil {
-			return err
+			return time.Time{}, err
 		}
-		if err = w.clipboardDispatch(message); err != nil {
-			return err
+		if err := w.clipboardDispatch(message); err != nil {
+			return time.Time{}, err
 		}
+		return time.Now(), nil // drain other pending events before sleeping
 	}
-	return nil
+	return time.Time{}, nil
 }
+
+func (w *X11Window) appStop() {
+	w.running = false
+	w.manager.SetWakeHandler(nil)
+	w.manager.SetClipboardHandlers(nil, nil)
+	w.manager.SetInteractive(false)
+	if w.ime != nil {
+		w.ime.close()
+		w.ime = nil
+	}
+	if w.conn != nil {
+		_ = w.conn.Close()
+		w.conn = nil
+	}
+	w.framebuffer, w.renderer = nil, nil
+}
+
+func (w *X11Window) appClosed() bool         { return w.closeRequested.Load() }
+func (w *X11Window) appManager() *ui.Manager { return w.manager }
+func (w *X11Window) appOwner() *App          { return w.app }
+func (w *X11Window) appSetApp(a *App)        { w.app = a }
+func (w *X11Window) appFD() (int, error)     { return unixFD(w.conn.(*net.UnixConn)) }
 
 func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
 	_ = w.conn.SetReadDeadline(deadline)
@@ -999,7 +1069,7 @@ func (w *X11Window) handle(message []byte) bool {
 		}
 	case 33:
 		if message[1] == 32 && le.Uint32(message[8:]) == w.wmProtocols && le.Uint32(message[12:]) == w.wmDelete {
-			w.Close()
+			w.closeAction()
 		} else {
 			w.handleDND(message)
 		}

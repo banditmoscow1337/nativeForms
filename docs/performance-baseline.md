@@ -18,10 +18,19 @@ runs; compare median and p95 across runs, not a single best number.
 go version
 go test ./... -count=1
 go test ./... -run '^$' -bench 'Benchmark(FrameBuild|FrameResize|Render)' -benchmem -benchtime=1x -count=5
+go test . -run '^$' -bench 'Benchmark(TextInputSnapshot|FocusedTextInputState100k|CodeEditorColdJump100k|CodeEditorWarmJump100k|FrameBuildLongParagraph)' -benchmem -benchtime=1x -count=5
 go test ./... -run '^$' -bench 'Benchmark(FrameBuildWidgets|RenderCommands)' -benchmem -benchtime=100x -count=5
+go test . -run '^$' -bench 'BenchmarkOffscreenPaintVisits' -benchmem -benchtime=100x -count=5
 ```
 
 The 100k-line scenarios are intentionally isolated with `-benchtime=1x`.
+`TextInputSnapshot` measures the surrounding-text window alone; the focused
+`TextInputState` includes caret geometry and full-document wrapping. The
+CodeEditor cold jump rebuilds lexical state up to line 90k for each attempt,
+while the warm jump revisits nearby lines. The 1k-fragment long paragraph is
+separate from a 1k-line TextArea, since wrapping work differs sharply.
+`BenchmarkOffscreenPaintVisits` reports `visits/op` and `visible/op` for a
+clipped 1k-row viewport; its no-op Paint deliberately isolates traversal.
 `BenchmarkFrameBuildWidgets` covers 1k/10k widgets, both paint-only and forced
 layout; `BenchmarkFrameBuildScrolledForm` has 1k fields; text area has
 1k/10k/100k lines; CodeEditor has 100k lines; image and 2x HiDPI include
@@ -30,7 +39,28 @@ masks and a bilinear 2x image. Setup is excluded from each benchmark's timed
 loop. The headless suite exercises `BeginFrame` and `software.RenderAtScale`,
 but not OS upload or display submission.
 
-For an integrated window run, install an observer before `Run`:
+For an integrated window run, use the included driver. Run the same commit on
+each target machine and retain one file per scenario:
+
+```sh
+go run ./cmd/perftrace -scenario form -count 1000 -duration 60s -output form.jsonl -os-version "..." -cpu "..." -gpu "..." -power "..." -display "resolution, scale, font, theme"
+go run ./cmd/perftrace -scenario textarea -count 100000 -duration 60s -output textarea.jsonl
+go run ./cmd/perftrace -scenario editor -count 100000 -pattern cold -duration 60s -output editor-cold.jsonl
+go run ./cmd/perftrace -scenario editor -count 100000 -pattern warm -duration 60s -output editor-warm.jsonl
+```
+
+Repeat for `widgets` (`-count 1000` and `10000`), `form` and `paragraph`.
+The driver records a JSONL manifest, frame samples, action durations (which
+include IME state queries), and a summary with dropped and skipped counts. Actions
+scroll, type, resize and briefly hide/show the window on the UI thread.
+Use `-backend x11` or `-backend wayland` when probing a particular Linux
+session. Run `-allocations` separately: allocation sampling distorts latency.
+Do not interpret no frames during a hidden interval as missing data. The
+headless sandbox cannot run native integrated traces on the two target hosts.
+Summarize recorded phases and action latency with
+`python3 tools/summarize_perftrace.py form.jsonl editor-cold.jsonl`.
+
+Alternatively, install an observer before `Run`:
 
 ```go
 manager.SetFrameObserver(func(s nativeforms.FrameSample) {

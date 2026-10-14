@@ -1,0 +1,36 @@
+goos: linux
+goarch: amd64
+pkg: github.com/banditmoscow1337/nativeForms
+cpu: AMD EPYC 9V74 80-Core Processor
+BenchmarkTextInputSnapshot/1k-lines-8  	       1	     33931 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/1k-lines-8  	       1	     52609 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/1k-lines-8  	       1	     30536 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/1k-lines-8  	       1	     53420 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/1k-lines-8  	       1	     30426 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/100k-lines-8         	       1	   3590338 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/100k-lines-8         	       1	   3586843 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/100k-lines-8         	       1	   3611810 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/100k-lines-8         	       1	   3709317 ns/op	       0 B/op	       0 allocs/op
+BenchmarkTextInputSnapshot/100k-lines-8         	       1	   3540663 ns/op	       0 B/op	       0 allocs/op
+BenchmarkFocusedTextInputState100k-8            	       1	 261871507 ns/op	25685488 B/op	  200031 allocs/op
+BenchmarkFocusedTextInputState100k-8            	       1	 277287126 ns/op	25685472 B/op	  200030 allocs/op
+BenchmarkFocusedTextInputState100k-8            	       1	 280183044 ns/op	25685472 B/op	  200030 allocs/op
+BenchmarkFocusedTextInputState100k-8            	       1	 309026679 ns/op	25685472 B/op	  200030 allocs/op
+BenchmarkFocusedTextInputState100k-8            	       1	 272610793 ns/op	25685472 B/op	  200030 allocs/op
+BenchmarkCodeEditorColdJump100k-8               	       1	1441274333 ns/op	20633368 B/op	  182100 allocs/op
+BenchmarkCodeEditorColdJump100k-8               	       1	1410300124 ns/op	20633320 B/op	  182099 allocs/op
+BenchmarkCodeEditorColdJump100k-8               	       1	1455121352 ns/op	20633320 B/op	  182099 allocs/op
+BenchmarkCodeEditorColdJump100k-8               	       1	1393266621 ns/op	20633320 B/op	  182099 allocs/op
+BenchmarkCodeEditorColdJump100k-8               	       1	1354927572 ns/op	20633320 B/op	  182099 allocs/op
+BenchmarkCodeEditorWarmJump100k-8               	       1	   1581752 ns/op	   89928 B/op	    2082 allocs/op
+BenchmarkCodeEditorWarmJump100k-8               	       1	   1577276 ns/op	   89928 B/op	    2082 allocs/op
+BenchmarkCodeEditorWarmJump100k-8               	       1	   2197700 ns/op	   89928 B/op	    2082 allocs/op
+BenchmarkCodeEditorWarmJump100k-8               	       1	   1810457 ns/op	   89928 B/op	    2082 allocs/op
+BenchmarkCodeEditorWarmJump100k-8               	       1	   1598868 ns/op	   89928 B/op	    2082 allocs/op
+BenchmarkFrameBuildLongParagraph-8              	       1	 387588907 ns/op	24504176 B/op	    6237 allocs/op
+BenchmarkFrameBuildLongParagraph-8              	       1	 381581340 ns/op	24504176 B/op	    6237 allocs/op
+BenchmarkFrameBuildLongParagraph-8              	       1	 421241290 ns/op	24504176 B/op	    6237 allocs/op
+BenchmarkFrameBuildLongParagraph-8              	       1	 399516074 ns/op	24504176 B/op	    6237 allocs/op
+BenchmarkFrameBuildLongParagraph-8              	       1	 384855109 ns/op	24504176 B/op	    6237 allocs/op
+PASS
+ok  	github.com/banditmoscow1337/nativeForms	25.297s

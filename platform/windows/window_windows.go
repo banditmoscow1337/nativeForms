@@ -5,7 +5,6 @@ package windows
 import (
 	"fmt"
 	"image"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,10 +23,12 @@ type Options struct {
 	Width, Height  int
 	OnReady        func(*Window)
 	OnFilesDropped func([]string)
+	OnCloseRequest func(*Window) platform.CloseAction
 }
 
 type Window struct {
 	manager         *ui.Manager
+	app             *App
 	options         Options
 	hwnd            atomic.Uintptr
 	dpi             uint32
@@ -76,18 +77,17 @@ var className []uint16
 var windowCallback uintptr
 
 func (w *Window) Run() error {
+	app := NewApp()
+	app.autoQuit = true
+	if err := app.Add(w); err != nil {
+		return err
+	}
+	return app.Run()
+}
+
+func (w *Window) open() error {
 	if w == nil || w.manager == nil {
 		return fmt.Errorf("windows: nil window or manager")
-	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	apiOnce.Do(func() { apiError = load() })
-	if apiError != nil {
-		return apiError
-	}
-	classOnce.Do(registerWindowClass)
-	if classError != nil {
-		return classError
 	}
 	if win.setDpi != 0 {
 		call(win.setDpi, ^uintptr(3))
@@ -111,11 +111,6 @@ func (w *Window) Run() error {
 	w.lastFrame = time.Now()
 	w.dpi = 96
 	w.err = nil
-	defer func() {
-		w.manager.SetWakeHandler(nil)
-		w.manager.SetClipboardHandlers(nil, nil)
-		w.manager.SetInteractive(false)
-	}()
 	creationMu.Lock()
 	creatingWindow.Store(w)
 	hwnd := call(win.createWindow, 0, ptr16(className), ptr16(name), wsOverlappedWindow,
@@ -132,7 +127,6 @@ func (w *Window) Run() error {
 	if hwnd == 0 {
 		return fmt.Errorf("windows: CreateWindowExW failed")
 	}
-	defer func() { windowsMu.Lock(); delete(windowsByHandle, hwnd); windowsMu.Unlock() }()
 	w.hwnd.Store(hwnd)
 	call(win.dragAcceptFiles, hwnd, 1)
 	if win.getDpi != 0 {
@@ -157,22 +151,14 @@ func (w *Window) Run() error {
 		w.options.OnReady(w)
 	}
 	w.invalidate()
-	var msg message
-	for {
-		result := call(win.getMessage, pointer(&msg), 0, 0, 0)
-		if int32(result) == -1 {
-			if w.hwnd.Load() != 0 {
-				call(win.destroyWindow, w.hwnd.Load())
-			}
-			return fmt.Errorf("windows: GetMessageW failed")
-		}
-		if result == 0 {
-			break
-		}
-		call(win.translateMessage, pointer(&msg))
-		call(win.dispatchMessage, pointer(&msg))
-	}
-	return w.err
+	return nil
+}
+
+func (w *Window) cleanup() {
+	w.manager.SetWakeHandler(nil)
+	w.manager.SetClipboardHandlers(nil, nil)
+	w.manager.SetInteractive(false)
+	w.framebuffer, w.renderer, w.dib = nil, nil, nil
 }
 
 func registerWindowClass() {
@@ -206,7 +192,7 @@ func windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) (result uintptr) {
 	defer func() {
 		if value := recover(); value != nil {
 			w.err = fmt.Errorf("windows: UI callback: %v", value)
-			call(win.postMessage, hwnd, wmClose, 0, 0)
+			call(win.postMessage, hwnd, wmAppDestroy, 0, 0)
 			result = 0
 		}
 	}()
@@ -221,7 +207,7 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		if dc != 0 {
 			if err := w.paint(hwnd, dc); err != nil {
 				w.err = err
-				call(win.postMessage, hwnd, wmClose, 0, 0)
+				call(win.postMessage, hwnd, wmAppDestroy, 0, 0)
 			}
 			call(win.endPaint, hwnd, pointer(&ps))
 		}
@@ -330,13 +316,31 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 			return 1
 		}
 	case wmClose:
+		switch w.closeAction() {
+		case platform.CancelClose:
+			return 0
+		case platform.HideWindow:
+			w.Hide()
+			return 0
+		case platform.QuitApp:
+			w.app.Quit()
+			return 0
+		}
+		fallthrough
+	case wmAppDestroy:
 		call(win.destroyWindow, hwnd)
 		return 0
 	case wmDestroy:
 		call(win.dragAcceptFiles, hwnd, 0)
 		w.hwnd.Store(0)
 		call(win.killTimer, hwnd, 1)
-		call(win.postQuit, 0)
+		windowsMu.Lock()
+		delete(windowsByHandle, hwnd)
+		windowsMu.Unlock()
+		w.cleanup()
+		if w.app != nil {
+			w.app.closed(w)
+		}
 		return 0
 	}
 	return call(win.defProc, hwnd, uintptr(msg), wp, lp)
@@ -455,9 +459,37 @@ func (w *Window) invalidate() {
 func (w *Window) Close() {
 	if w != nil {
 		if h := w.hwnd.Load(); h != 0 {
-			call(win.postMessage, h, wmClose, 0, 0)
+			call(win.postMessage, h, wmAppDestroy, 0, 0)
 		}
 	}
+}
+
+func (w *Window) closeAction() platform.CloseAction {
+	if w.options.OnCloseRequest != nil {
+		return w.options.OnCloseRequest(w)
+	}
+	return platform.CloseWindow
+}
+
+// Show and Hide may be called from any goroutine while the App is running.
+func (w *Window) Show() { w.setVisible(true) }
+func (w *Window) Hide() { w.setVisible(false) }
+func (w *Window) setVisible(visible bool) {
+	if w == nil || w.app == nil {
+		return
+	}
+	w.app.Post(func() {
+		if h := w.hwnd.Load(); h != 0 {
+			mode := uintptr(swHide)
+			if visible {
+				mode = swShow
+			}
+			call(win.showWindow, h, mode)
+			if visible {
+				w.invalidate()
+			}
+		}
+	})
 }
 
 func (w *Window) mouse(hwnd uintptr, msg uint32, wp, lp uintptr) {

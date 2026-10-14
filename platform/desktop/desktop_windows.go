@@ -6,8 +6,20 @@ import (
 	"fmt"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/platform"
 	"github.com/banditmoscow1337/nativeForms/platform/windows"
 )
+
+type windowsDriver struct{ *windows.App }
+
+func newAppDriver() appDriver { return windowsDriver{windows.NewApp()} }
+func (a windowsDriver) Add(w Window) error {
+	native, ok := w.(*windows.Window)
+	if !ok {
+		return fmt.Errorf("desktop: expected a Windows window, got %T", w)
+	}
+	return a.App.Add(native)
+}
 
 func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	if manager == nil {
@@ -23,5 +35,11 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 				options.OnReady(w)
 			}
 		}, OnFilesDropped: options.OnFilesDropped,
+		OnCloseRequest: func(w *windows.Window) platform.CloseAction {
+			if options.OnCloseRequest != nil {
+				return options.OnCloseRequest(w)
+			}
+			return platform.CloseWindow
+		},
 	}), nil
 }

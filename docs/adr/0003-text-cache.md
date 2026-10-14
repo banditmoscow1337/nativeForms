@@ -1,6 +1,6 @@
 # ADR 0003: Text layout and cache ownership
 
-Status: proposed for v1; stage 0 supplies baseline cases and metrics.
+Status: accepted for v1 (2026-10-14). Cache implementation belongs to later stages.
 
 Current `TextField` can rewrap/repaint a large document, and repeated
 `FontContext.Layout` calls allocate even when a line is unchanged. Avoid a
