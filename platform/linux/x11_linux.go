@@ -18,6 +18,7 @@ import (
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
+	"github.com/banditmoscow1337/nativeForms/render"
 	"github.com/banditmoscow1337/nativeForms/software"
 )
 
@@ -30,6 +31,7 @@ type X11Options struct {
 	OnReady        func(*X11Window)
 	OnFilesDropped func([]string)
 	OnCloseRequest func(*X11Window) platform.CloseAction
+	Graphics       render.Kind
 }
 
 type X11Window struct {
@@ -48,7 +50,8 @@ type X11Window struct {
 	staging                                                       []byte
 	stagingValid                                                  bool
 	request                                                       []byte
-	renderer                                                      *software.Renderer
+	renderer                                                      render.Backend
+	fallbackReason                                                string
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
 	hidden                                                        atomic.Bool
@@ -585,7 +588,12 @@ func (w *X11Window) appStart() error {
 	if w.ime != nil {
 		w.ime.scale = w.scale
 	}
-	w.renderer = software.New()
+	selection, err := software.Open(w.options.Graphics, nil)
+	if err != nil {
+		return err
+	}
+	w.renderer = selection.Backend
+	w.fallbackReason = selection.FallbackReason()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
 	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
@@ -658,6 +666,9 @@ func (w *X11Window) appStop() {
 		_ = w.conn.Close()
 		w.conn = nil
 	}
+	if w.renderer != nil {
+		_ = w.renderer.Close()
+	}
 	w.framebuffer, w.renderer = nil, nil
 }
 
@@ -712,7 +723,7 @@ func (w *X11Window) paint() error {
 	w.stagingValid = true
 	trace.Record(ui.PhaseUpload, uploadStart)
 	if dirty.Empty() {
-		trace.Finish("software/x11", "")
+		trace.Finish("software/x11", w.fallbackReason)
 		return nil
 	}
 	rowBytes := dirty.Dx() * 4
@@ -756,7 +767,7 @@ func (w *X11Window) paint() error {
 		trace.Record(ui.PhasePresent, presentStart)
 		y += n
 	}
-	trace.Finish("software/x11", "")
+	trace.Finish("software/x11", w.fallbackReason)
 	return nil
 }
 

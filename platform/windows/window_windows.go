@@ -14,6 +14,7 @@ import (
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
+	"github.com/banditmoscow1337/nativeForms/render"
 	"github.com/banditmoscow1337/nativeForms/software"
 	"github.com/ebitengine/purego"
 )
@@ -24,6 +25,7 @@ type Options struct {
 	OnReady        func(*Window)
 	OnFilesDropped func([]string)
 	OnCloseRequest func(*Window) platform.CloseAction
+	Graphics       render.Kind
 }
 
 type Window struct {
@@ -32,7 +34,8 @@ type Window struct {
 	options         Options
 	hwnd            atomic.Uintptr
 	dpi             uint32
-	renderer        *software.Renderer
+	renderer        render.Backend
+	fallbackReason  string
 	framebuffer     *image.RGBA
 	dib             []byte
 	dibValid        bool
@@ -108,7 +111,12 @@ func (w *Window) open() error {
 	if err != nil {
 		return err
 	}
-	w.renderer = software.New()
+	selection, err := software.Open(w.options.Graphics, nil)
+	if err != nil {
+		return err
+	}
+	w.renderer = selection.Backend
+	w.fallbackReason = selection.FallbackReason()
 	w.lastFrame = time.Now()
 	w.dpi = 96
 	w.err = nil
@@ -159,6 +167,9 @@ func (w *Window) cleanup() {
 	w.manager.SetWakeHandler(nil)
 	w.manager.SetClipboardHandlers(nil, nil)
 	w.manager.SetInteractive(false)
+	if w.renderer != nil {
+		_ = w.renderer.Close()
+	}
 	w.framebuffer, w.renderer, w.dib = nil, nil, nil
 }
 
@@ -399,7 +410,7 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		return fmt.Errorf("windows: StretchDIBits failed")
 	}
 	if rendered {
-		trace.Finish("software/gdi", "")
+		trace.Finish("software/gdi", w.fallbackReason)
 		w.armFrameTimer(hwnd)
 	}
 	return nil

@@ -30,7 +30,7 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	switch backend {
 	case "wayland":
 		return linux.NewWayland(manager, linux.WaylandOptions{
-			Title: options.Title, Width: options.Width, Height: options.Height,
+			Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
 			OnReady: func(w *linux.WaylandWindow) {
 				if options.OnReady != nil {
 					options.OnReady(w)
@@ -45,7 +45,7 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 		}), nil
 	case "x11":
 		return linux.NewX11(manager, linux.X11Options{
-			Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.X11Scale,
+			Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.X11Scale, Graphics: options.Graphics,
 			OnReady: func(w *linux.X11Window) {
 				if options.OnReady != nil {
 					options.OnReady(w)

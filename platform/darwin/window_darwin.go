@@ -15,6 +15,7 @@ import (
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
+	"github.com/banditmoscow1337/nativeForms/render"
 	"github.com/banditmoscow1337/nativeForms/software"
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -42,6 +43,7 @@ type Options struct {
 	OnReady        func(*Window)
 	OnFilesDropped func([]string)
 	OnCloseRequest func(*Window) platform.CloseAction
+	Graphics       render.Kind
 }
 
 type Window struct {
@@ -50,7 +52,8 @@ type Window struct {
 	options                           Options
 	app, window, view, representation objc.ID
 	framebuffer                       *image.RGBA
-	renderer                          *software.Renderer
+	renderer                          render.Backend
+	fallbackReason                    string
 	width, height                     int
 	pixelWidth, pixelHeight           int
 	lastFrame                         time.Time
@@ -325,7 +328,12 @@ func (w *Window) Open() error {
 		w.view.Send(selector("registerForDraggedTypes:"), types)
 	}
 	w.window.Send(selector("makeKeyAndOrderFront:"), objc.ID(0))
-	w.renderer = software.New()
+	selection, err := software.Open(w.options.Graphics, nil)
+	if err != nil {
+		return err
+	}
+	w.renderer = selection.Backend
+	w.fallbackReason = selection.FallbackReason()
 	w.lastFrame = time.Now()
 	w.manager.SetInteractive(true)
 	w.manager.InvalidateLayout()
@@ -412,6 +420,10 @@ func (a *application) step(mode objc.ID) error {
 func (w *Window) destroy() {
 	if w.window == 0 {
 		return
+	}
+	if w.renderer != nil {
+		_ = w.renderer.Close()
+		w.renderer = nil
 	}
 	w.cancelMarked()
 	w.manager.SetClipboardHandlers(nil, nil)
@@ -523,7 +535,7 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	presentStart := trace.Start()
 	w.view.Send(selector("setNeedsDisplay:"), true)
 	trace.Record(ui.PhasePresent, presentStart)
-	trace.Finish("software/appkit", "")
+	trace.Finish("software/appkit", w.fallbackReason)
 	return nil
 }
 
