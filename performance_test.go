@@ -54,3 +54,18 @@ func TestFrameTraceCountsCommandKinds(t *testing.T) {
 		t.Fatalf("unexpected command count: %+v", sample)
 	}
 }
+
+func TestFrameTraceGPUStatsAreSeparateFromCurrentSubmission(t *testing.T) {
+	var sample FrameSample
+	trace := newFrameTrace(func(got FrameSample) { sample = got }, FrameObserverOptions{}, 12, 8)
+	stats := RenderStats{Build: 2 * time.Millisecond, Upload: 3 * time.Millisecond,
+		Submit: time.Millisecond, GPUWait: 4 * time.Millisecond, CompletedGPU: 5 * time.Millisecond,
+		Batches: 2, Vertices: 12, TextureUploads: 1, UploadBytes: 1024}
+	trace.RecordRenderStats(stats)
+	trace.Finish("hardware/metal", "")
+	if sample.Raster != stats.Build || sample.Upload != stats.Upload || sample.Present != stats.Submit ||
+		sample.GPUWait != stats.GPUWait || sample.CompletedGPU != stats.CompletedGPU ||
+		sample.Batches != 2 || sample.Vertices != 12 || sample.TextureUploads != 1 || sample.UploadBytes != 1024 {
+		t.Fatalf("lost GPU statistics: %+v", sample)
+	}
+}

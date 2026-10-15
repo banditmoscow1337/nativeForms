@@ -19,11 +19,13 @@ import (
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/editor"
 	"github.com/banditmoscow1337/nativeForms/platform/desktop"
+	"github.com/banditmoscow1337/nativeForms/render"
 )
 
 type manifest struct {
 	Kind, Scenario, Pattern, Revision, GoVersion, OS, Arch string
 	OSVersion, CPU, GPU, PowerProfile, Display             string
+	Graphics, Warmup, MetalFault, MetalFailAfter           string
 	Count, Width, Height                                   int
 	Duration, Interval                                     string
 	Started                                                time.Time
@@ -138,9 +140,11 @@ func run() error {
 	pattern := flag.String("pattern", "warm", "editor jumps: warm or cold")
 	count := flag.Int("count", 1000, "number of widgets, fields, lines or paragraph fragments")
 	duration := flag.Duration("duration", 60*time.Second, "measurement time")
+	warmup := flag.Duration("warmup", 5*time.Second, "unrecorded interactive warmup after window opens")
 	interval := flag.Duration("interval", 100*time.Millisecond, "scripted interaction period")
 	output := flag.String("output", "frames.jsonl", "JSONL output")
 	backend := flag.String("backend", "", "Linux: x11 or wayland (empty: session default)")
+	graphics := flag.String("graphics", "auto", "renderer: auto, hardware or software")
 	osVersion := flag.String("os-version", "", "target OS version")
 	cpu := flag.String("cpu", "", "target CPU")
 	gpu := flag.String("gpu", "", "target GPU and driver")
@@ -148,8 +152,11 @@ func run() error {
 	display := flag.String("display", "", "resolution, scale, font and theme")
 	allocations := flag.Bool("allocations", false, "sample runtime allocations (separate run from latency)")
 	flag.Parse()
-	if *count < 1 || *interval <= 0 || *duration <= 0 || (*pattern != "warm" && *pattern != "cold") {
-		return fmt.Errorf("count, duration, interval and pattern must be valid")
+	if *count < 1 || *interval <= 0 || *duration <= 0 || *warmup < 0 || (*pattern != "warm" && *pattern != "cold") {
+		return fmt.Errorf("count, duration, warmup, interval and pattern must be valid")
+	}
+	if *graphics != string(render.Auto) && *graphics != string(render.Hardware) && *graphics != string(render.Software) {
+		return fmt.Errorf("graphics must be auto, hardware or software")
 	}
 	w, err := build(*scenario, *count)
 	if err != nil {
@@ -163,7 +170,9 @@ func run() error {
 	manager := ui.New()
 	manager.SetRoot(w.root)
 	app := desktop.NewApp()
-	window, err := app.NewWindow(manager, desktop.Options{Title: "nativeForms perftrace", Width: 1024, Height: 768, Backend: *backend})
+	ready := make(chan struct{})
+	window, err := app.NewWindow(manager, desktop.Options{Title: "nativeForms perftrace", Width: 1024, Height: 768,
+		Backend: *backend, Graphics: render.Kind(*graphics), OnReady: func(desktop.Window) { close(ready) }})
 	if err != nil {
 		return err
 	}
@@ -172,7 +181,9 @@ func run() error {
 	meta := manifest{Kind: "manifest", Scenario: *scenario, Pattern: *pattern, Revision: revision(),
 		GoVersion: runtime.Version(), OS: runtime.GOOS, Arch: runtime.GOARCH, OSVersion: *osVersion,
 		CPU: *cpu, GPU: *gpu, PowerProfile: *power, Display: *display,
-		Count: *count, Width: 1024, Height: 768, Duration: duration.String(), Interval: interval.String(), Started: time.Now().UTC()}
+		Count: *count, Width: 1024, Height: 768, Duration: duration.String(), Interval: interval.String(),
+		Graphics: *graphics, Warmup: warmup.String(), MetalFault: os.Getenv("NATIVEFORMS_METAL_FAULT"),
+		MetalFailAfter: os.Getenv("NATIVEFORMS_METAL_FAIL_AFTER"), Started: time.Now().UTC()}
 	go func() {
 		writer := bufio.NewWriterSize(file, 256*1024)
 		encoder := json.NewEncoder(writer)
@@ -191,7 +202,11 @@ func run() error {
 	var droppedActions atomic.Uint64
 	var skippedActions atomic.Uint64
 	var pending atomic.Bool
+	var measuring atomic.Bool
 	manager.SetFrameObserver(func(sample ui.FrameSample) {
+		if !measuring.Load() {
+			return
+		}
 		select {
 		case lines <- frame{Kind: "frame", Scenario: *scenario, At: time.Now().UTC(), Sample: sample}:
 		default:
@@ -200,10 +215,16 @@ func run() error {
 	}, ui.FrameObserverOptions{TrackAllocations: *allocations})
 	stop := make(chan struct{})
 	go func() {
+		select {
+		case <-ready:
+		case <-stop:
+			return
+		}
 		ticker := time.NewTicker(*interval)
 		defer ticker.Stop()
-		timer := time.NewTimer(*duration)
-		defer timer.Stop()
+		warmupTimer := time.NewTimer(*warmup)
+		defer warmupTimer.Stop()
+		var measurement <-chan time.Time
 		interrupt := make(chan os.Signal, 1)
 		signal.Notify(interrupt, os.Interrupt)
 		defer signal.Stop(interrupt)
@@ -212,7 +233,13 @@ func run() error {
 			select {
 			case <-stop:
 				return
-			case <-timer.C:
+			case <-warmupTimer.C:
+				measuring.Store(true)
+				timer := time.NewTimer(*duration)
+				defer timer.Stop()
+				measurement = timer.C
+				warmupTimer.Stop()
+			case <-measurement:
 				app.Quit()
 				return
 			case <-interrupt:
@@ -229,10 +256,12 @@ func run() error {
 					defer pending.Store(false)
 					started := time.Now()
 					w.tick(manager, *pattern, current)
-					select {
-					case lines <- action{Kind: "action", Scenario: *scenario, At: time.Now().UTC(), Step: current, DurationNS: time.Since(started).Nanoseconds()}:
-					default:
-						droppedActions.Add(1)
+					if measuring.Load() {
+						select {
+						case lines <- action{Kind: "action", Scenario: *scenario, At: time.Now().UTC(), Step: current, DurationNS: time.Since(started).Nanoseconds()}:
+						default:
+							droppedActions.Add(1)
+						}
 					}
 					if current%30 == 0 {
 						window.Hide()

@@ -207,3 +207,28 @@ type stubBackend struct{}
 func (*stubBackend) Kind() Kind                                         { return Software }
 func (*stubBackend) Close() error                                       { return nil }
 func (*stubBackend) RenderAtScale(ui.Frame, *image.RGBA, float32) error { return nil }
+
+type failedHardware struct{ closed int }
+
+func (*failedHardware) Kind() Kind { return Hardware }
+func (b *failedHardware) Close() error {
+	b.closed++
+	return nil
+}
+func (*failedHardware) RenderAtScale(ui.Frame, *image.RGBA, float32) error { return ErrDeviceLost }
+
+func TestFailoverAfterRenderLoss(t *testing.T) {
+	hardware := &failedHardware{}
+	frame := ui.Frame{Width: 1, Height: 1}
+	err := hardware.RenderAtScale(frame, nil, 1)
+	fallback, fallbackErr := Failover(hardware, err, func() (Backend, error) { return &stubBackend{}, nil })
+	if fallbackErr != nil || fallback.Kind() != Software || hardware.closed != 1 {
+		t.Fatalf("failover: %v, %v, closed %d", fallback, fallbackErr, hardware.closed)
+	}
+	if err = fallback.RenderAtScale(frame, image.NewRGBA(image.Rect(0, 0, 1, 1)), 1); err != nil {
+		t.Fatalf("same frame cannot be retried: %v", err)
+	}
+	if _, err := Failover(&stubBackend{}, ErrDeviceLost, func() (Backend, error) { return &stubBackend{}, nil }); err != ErrDeviceLost {
+		t.Fatalf("software failure should propagate: %v", err)
+	}
+}

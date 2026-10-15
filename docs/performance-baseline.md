@@ -88,8 +88,45 @@ and Wayland attach/damage/commit writes. It is not a GPU time measurement.
 `runtime.ReadMemStats` is intrusive, so use separate runs for allocations and
 latency. A headless `BeginFrame` must call `FrameTrace().Finish("headless", "")`
 after rendering to deliver a sample. In `Graphics: "auto"`, desktop reports
-`render: backend unavailable` while no standalone hardware renderer is
-installed; explicit `Graphics: "software"` has an empty fallback reason.
+`render: backend unavailable` on platforms without a standalone GPU backend;
+macOS now selects Metal when available. Explicit `Graphics: "software"` has an
+empty fallback reason.
+
+## Stage 3: paired Metal measurements on macOS
+
+Run on the target Mac with the window visible, a stable power profile and
+unchanged display scale. The script runs all Go tests, builds a single binary,
+then records paired software and hardware traces for six identical scripted
+workloads, twice each in reversed order to reduce run-order bias. It waits ten
+seconds before sampling each 60-second trace. For a final five-run baseline,
+set `STAGE3_REPEATS=5`. It also
+injects an initialization failure and a failure after ten Metal submissions,
+and records whether the current frame and later frames use software.
+
+```sh
+STAGE3_POWER_PROFILE='AC, high power' STAGE3_DISPLAY='2560x1600, 2x, default font' \
+  bash tools/run_stage3_mac.sh
+```
+
+The script prints the path of a `.tar.gz` file containing `go-test.txt`, raw
+JSONL, per-run logs, environment details, `summary.txt` and `exit-status.txt`.
+Send the archive together with paired screenshots if you see clipping, glyph,
+alpha or order differences. You can shorten a debugging run with
+`STAGE3_DURATION=10s STAGE3_WARMUP=1s STAGE3_REPEATS=1`; use the defaults for a performance
+comparison. For isolation, rerun a single workload manually with identical
+`-scenario`, `-count`, `-pattern`, `-duration`, `-warmup`, and environment fields,
+changing only `-graphics software` versus `-graphics hardware`.
+
+`summary.txt` reports backend selection, fallback reasons, CPU p50/p95/max,
+frames over 16.7/33.3/50 ms, batches, vertices, uploads, GPU slot waits and
+completed GPU command time. GPU command timing is reported only when an
+earlier frame's slot is reused and is separate from the current frame's CPU
+time. A trace containing a fallback is rejected for direct speed comparison.
+The Metal path batches adjacent paint commands by texture and filter, packs
+glyph masks into an incrementally updated atlas, and uses three persistent
+buffers and atlas copies. It waits for a reused slot's command buffer, never
+for the whole device. The reference software renderer remains available through
+`-graphics software` and through automatic fallback on Metal errors.
 
 Capture at least 60 seconds of interactive scrolling, typing, resize and
 repeated hide/show, with cold and warm text-cache runs distinguished. Retain

@@ -23,14 +23,41 @@ const (
 // TextLayout is a subset of Paint. Present is the time spent submitting the
 // frame to the window system, not the time until it appears on the display.
 type FrameSample struct {
-	Width, Height                      int
-	Build, Layout, Paint, TextLayout   time.Duration
-	Raster, Upload, Present            time.Duration
-	Commands, Masks, Images, TextRunes int
-	Glyphs, DamagePixels               int
-	TextCacheHits, TextCacheMisses     uint64
-	AllocBytes, AllocObjects           uint64
-	Backend, FallbackReason            string
+	Width, Height                                         int
+	Build, Layout, Paint, TextLayout                      time.Duration
+	Raster, Upload, Present                               time.Duration
+	GPUWait, CompletedGPU                                 time.Duration // GPU timing belongs to an earlier completed frame.
+	Commands, Masks, Images, TextRunes                    int
+	Batches, Vertices, TextureUploads, MaskAtlasFallbacks int
+	UploadBytes                                           int64
+	Glyphs, DamagePixels                                  int
+	TextCacheHits, TextCacheMisses                        uint64
+	AllocBytes, AllocObjects                              uint64
+	Backend, FallbackReason                               string
+}
+
+// RenderStats describes a native GPU submission. CompletedGPU is the last
+// frame that finished before the current slot was reused, never scan-out time.
+type RenderStats struct {
+	Build, Upload, Submit, GPUWait, CompletedGPU          time.Duration
+	Batches, Vertices, TextureUploads, MaskAtlasFallbacks int
+	UploadBytes                                           int64
+}
+
+func (trace *FrameTrace) RecordRenderStats(stats RenderStats) {
+	if trace == nil || trace.finished {
+		return
+	}
+	trace.sample.Raster += stats.Build
+	trace.sample.Upload += stats.Upload
+	trace.sample.Present += stats.Submit
+	trace.sample.GPUWait += stats.GPUWait
+	trace.sample.CompletedGPU = stats.CompletedGPU
+	trace.sample.Batches += stats.Batches
+	trace.sample.Vertices += stats.Vertices
+	trace.sample.TextureUploads += stats.TextureUploads
+	trace.sample.MaskAtlasFallbacks += stats.MaskAtlasFallbacks
+	trace.sample.UploadBytes += stats.UploadBytes
 }
 
 // FrameObserverOptions controls potentially intrusive profiling features.

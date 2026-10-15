@@ -41,9 +41,31 @@ func (selection Selection) FallbackReason() string {
 	return selection.Fallback.Error()
 }
 
-// Factory negotiates a desktop renderer after a surface exists. Supplying a
-// hardware constructor is optional until the standalone backend in stage 3.
+// Factory negotiates a desktop renderer after a surface exists.
 type Factory struct{ Software, Hardware Constructor }
+
+// Failover switches a failed hardware backend to software. The caller renders
+// the same frame again on the returned backend, then keeps it for future frames.
+func Failover(current Backend, failure error, software Constructor) (Backend, error) {
+	if failure == nil || current == nil || current.Kind() != Hardware {
+		return nil, failure
+	}
+	_ = current.Close()
+	if software == nil {
+		return nil, errors.Join(failure, ErrUnavailable)
+	}
+	fallback, err := software()
+	if err != nil {
+		return nil, errors.Join(failure, err)
+	}
+	if fallback == nil || fallback.Kind() != Software {
+		if fallback != nil {
+			_ = fallback.Close()
+		}
+		return nil, errors.Join(failure, ErrUnavailable)
+	}
+	return fallback, nil
+}
 
 func (factory Factory) Open(preference Kind) (Selection, error) {
 	try := func(create Constructor) (Backend, error) {
