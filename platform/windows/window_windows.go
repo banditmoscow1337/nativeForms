@@ -35,6 +35,7 @@ type Window struct {
 	renderer        *software.Renderer
 	framebuffer     *image.RGBA
 	dib             []byte
+	dibValid        bool
 	lastFrame       time.Time
 	highSurrogate   uint16
 	suppressSysChar bool
@@ -362,6 +363,7 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 	if resized {
 		w.framebuffer = image.NewRGBA(image.Rect(0, 0, width, height))
 		w.dib = make([]byte, width*height*4)
+		w.dibValid = false
 	}
 	rendered := resized || w.manager.NeedsFrame()
 	var trace *ui.FrameTrace
@@ -381,14 +383,9 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		}
 		w.placeCandidate(hwnd)
 		uploadStart := trace.Start()
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
-				i := w.framebuffer.PixOffset(x, y)
-				j := (y*width + x) * 4
-				w.dib[j], w.dib[j+1], w.dib[j+2], w.dib[j+3] =
-					w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
-			}
-		}
+		dirty := software.UpdateBGRA(w.dib, w.framebuffer, w.dibValid)
+		trace.RecordDamage(dirty.Dx(), dirty.Dy())
+		w.dibValid = true
 		trace.Record(ui.PhaseUpload, uploadStart)
 	}
 	info := bitmapInfo{Size: uint32(unsafe.Sizeof(bitmapInfo{})), Width: int32(width), Height: -int32(height),

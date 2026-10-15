@@ -170,9 +170,9 @@ func (wire *waylandWire) bind(global WaylandGlobal, version uint32) (uint32, err
 }
 
 type wlBuffer struct {
-	id            uint32
-	pixels        []byte
-	busy, retired bool
+	id                   uint32
+	pixels               []byte
+	busy, retired, valid bool
 }
 
 type wlOutput struct {
@@ -275,6 +275,11 @@ func (w *WaylandWindow) setVisible(visible bool) {
 			}
 			if visible {
 				// An empty commit requests a new xdg_surface configure after unmap.
+				for _, buffer := range w.current {
+					if buffer != nil {
+						buffer.valid = false
+					}
+				}
 				w.Manager.InvalidatePaint()
 				if err := w.wire.send(w.surface, 6, nil); err != nil {
 					w.app.fail(err)
@@ -705,15 +710,14 @@ func (w *WaylandWindow) paint() error {
 		return err
 	}
 	uploadStart := trace.Start()
-	for y := 0; y < ph; y++ {
-		for x := 0; x < pw; x++ {
-			i := w.framebuffer.PixOffset(x, y)
-			j := (y*pw + x) * 4
-			buffer.pixels[j], buffer.pixels[j+1], buffer.pixels[j+2], buffer.pixels[j+3] =
-				w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i], w.framebuffer.Pix[i+3]
-		}
-	}
+	dirty := software.UpdateBGRA(buffer.pixels, w.framebuffer, buffer.valid)
+	trace.RecordDamage(dirty.Dx(), dirty.Dy())
+	buffer.valid = true
 	trace.Record(ui.PhaseUpload, uploadStart)
+	if dirty.Empty() {
+		trace.Finish("software/wayland", "")
+		return nil
+	}
 	presentStart := trace.Start()
 	args := append(wlWord(buffer.id), wlWord(0)...)
 	args = append(args, wlWord(0)...)
@@ -726,9 +730,17 @@ func (w *WaylandWindow) paint() error {
 	if err := w.wire.send(w.surface, 1, args); err != nil {
 		return err
 	}
+	// wl_surface.damage uses logical surface coordinates. Round outward so
+	// fractional display scales never leave a changed pixel undamaged.
+	x0 := max(0, int(float32(dirty.Min.X)/w.scale))
+	y0 := max(0, int(float32(dirty.Min.Y)/w.scale))
+	x1 := min(w.width, int(float32(dirty.Max.X)/w.scale+1))
+	y1 := min(w.height, int(float32(dirty.Max.Y)/w.scale+1))
 	damage := make([]byte, 16)
-	binary.LittleEndian.PutUint32(damage[8:], uint32(w.width))
-	binary.LittleEndian.PutUint32(damage[12:], uint32(w.height))
+	binary.LittleEndian.PutUint32(damage[0:], uint32(x0))
+	binary.LittleEndian.PutUint32(damage[4:], uint32(y0))
+	binary.LittleEndian.PutUint32(damage[8:], uint32(x1-x0))
+	binary.LittleEndian.PutUint32(damage[12:], uint32(y1-y0))
 	if err := w.wire.send(w.surface, 2, damage); err != nil {
 		return err
 	}

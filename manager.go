@@ -291,6 +291,10 @@ func (manager *Manager) BeginFrame(width, height int, deltaSeconds float64) {
 	manager.mu.Unlock()
 	manager.frameTrace = newFrameTrace(observer, observerOptions, width, height)
 	trace := manager.frameTrace
+	if trace != nil && fonts != nil {
+		trace.fonts = fonts
+		_, _, trace.startHits, trace.startMisses = fonts.LayoutCacheStats()
+	}
 	buildStart := trace.Start()
 
 	manager.frame.Width, manager.frame.Height = width, height
@@ -440,7 +444,16 @@ func paintComponent(component Component, canvas *Canvas) {
 		return
 	}
 	state := component.UIState()
-	if !state.Visible() || state.rect.Empty() {
+	if !state.Visible() || state.rect.Empty() || len(canvas.clips) == 0 {
+		return
+	}
+	viewport := canvas.clips[len(canvas.clips)-1]
+	if intersect(state.rect, viewport).Empty() {
+		return
+	}
+	// Components with expensive, internally virtualized painting can narrow
+	// their own visible range further. Cull must not change the clip stack.
+	if culler, ok := component.(ViewportCuller); ok && culler.Cull(viewport) {
 		return
 	}
 	if state.clip {

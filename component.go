@@ -8,6 +8,13 @@ type Component interface {
 	Handle(Event) bool
 }
 
+// ViewportCuller may skip painting its entire subtree for an effective clip.
+// Cull returns true only when neither the component nor its children or
+// overlay can produce pixels inside viewport.
+type ViewportCuller interface {
+	Cull(viewport Rect) bool
+}
+
 type State struct {
 	owner    Component
 	parent   Component
@@ -53,7 +60,7 @@ func (state *State) fontContext() *FontContext {
 
 func (state *State) textWidth(text string, spec FontSpec) float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.Layout(text, spec).Advance
+		return fonts.Advance(text, spec)
 	}
 	return measureTextLine(text, spec.Size)
 }
@@ -74,7 +81,7 @@ func (state *State) caretX(text string, spec FontSpec, index int) float32 {
 
 func (state *State) caretPositions(text string, spec FontSpec) []float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.Layout(text, spec).Carets
+		return fonts.layoutShared(text, spec).Carets
 	}
 	return textCaretPositions(text, spec.Size)
 }
@@ -302,6 +309,8 @@ type Panel struct {
 
 	layoutChildren []Component
 	layoutSizes    []Vec2
+	layoutWeights  []float32
+	layoutActive   []bool
 }
 
 func NewPanel(direction ...Direction) *Panel {
@@ -429,8 +438,17 @@ func (panel *Panel) arrangeStack(inner Rect) {
 		total += panel.Gap * float32(len(children)-1)
 	}
 	delta := mainAvailable - total
-	weights := make([]float32, len(children))
-	active := make([]bool, len(children))
+	if cap(panel.layoutWeights) < len(children) {
+		panel.layoutWeights = make([]float32, len(children))
+	} else {
+		panel.layoutWeights = panel.layoutWeights[:len(children)]
+	}
+	if cap(panel.layoutActive) < len(children) {
+		panel.layoutActive = make([]bool, len(children))
+	} else {
+		panel.layoutActive = panel.layoutActive[:len(children)]
+	}
+	weights, active := panel.layoutWeights, panel.layoutActive
 	weight := float32(0)
 	for i, child := range children {
 		state := child.UIState()

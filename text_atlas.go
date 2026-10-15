@@ -1,7 +1,10 @@
 package nativeforms
 
 func walkAtlasText(text string, size float32, carets []float32, emit func(glyphInfo, float32)) float32 {
-	runes := []rune(text)
+	return walkAtlasRunes([]rune(text), size, carets, emit)
+}
+
+func walkAtlasRunes(runes []rune, size float32, carets []float32, emit func(glyphInfo, float32)) float32 {
 	var previous glyphInfo
 	x := float32(0)
 	for i := 0; i < len(runes); {

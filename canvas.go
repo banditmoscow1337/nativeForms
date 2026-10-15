@@ -74,29 +74,43 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	if canvas.trace != nil {
 		canvas.trace.sample.TextRunes += utf8.RuneCountInString(text)
 	}
+	if !strings.Contains(text, "\n") {
+		start := canvas.trace.Start()
+		line := canvas.fonts.layoutShared(text, spec)
+		canvas.trace.Record(PhaseTextLayout, start)
+		canvas.paintTextLine(line, bounds, align, tint, bounds.Y+(bounds.H-line.Height())*0.5)
+		return
+	}
 	lines := strings.Split(text, "\n")
 	layouts := make([]TextLayout, len(lines))
 	height := float32(0)
 	textStart := canvas.trace.Start()
 	for i, line := range lines {
-		layouts[i] = canvas.fonts.Layout(line, spec)
+		layouts[i] = canvas.fonts.layoutShared(line, spec)
 		height += layouts[i].Height()
 	}
 	canvas.trace.Record(PhaseTextLayout, textStart)
 	y := bounds.Y + (bounds.H-height)*0.5
 	for _, line := range layouts {
-		x := bounds.X
-		switch align {
-		case TextCenter:
-			x += (bounds.W - line.Advance) * 0.5
-		case TextRight:
-			x += bounds.W - line.Advance
-		}
-		for _, glyph := range line.Glyphs {
-			mask := glyph.Mask
-			canvas.mask(mask, Rect{X: x + glyph.X, Y: y + glyph.Y, W: float32(mask.Bounds().Dx()) / glyph.Scale, H: float32(mask.Bounds().Dy()) / glyph.Scale}, tint)
-		}
+		canvas.paintTextLine(line, bounds, align, tint, y)
 		y += line.Height()
+	}
+}
+
+func (canvas *Canvas) paintTextLine(line TextLayout, bounds Rect, align TextAlign, tint Color, y float32) {
+	if canvas.trace != nil {
+		canvas.trace.sample.Glyphs += len(line.Glyphs)
+	}
+	x := bounds.X
+	switch align {
+	case TextCenter:
+		x += (bounds.W - line.Advance) * 0.5
+	case TextRight:
+		x += bounds.W - line.Advance
+	}
+	for _, glyph := range line.Glyphs {
+		mask := glyph.Mask
+		canvas.mask(mask, Rect{X: x + glyph.X, Y: y + glyph.Y, W: float32(mask.Bounds().Dx()) / glyph.Scale, H: float32(mask.Bounds().Dy()) / glyph.Scale}, tint)
 	}
 }
 
@@ -276,10 +290,16 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 		canvas.trace.Record(PhaseTextLayout, shapeStart)
 		if ok {
 			if mask := shaped.Mask; mask != nil {
+				if canvas.trace != nil {
+					canvas.trace.sample.Glyphs++
+				}
 				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
 			}
 		} else {
 			walkAtlasText(line, size, nil, func(glyph glyphInfo, offset float32) {
+				if canvas.trace != nil {
+					canvas.trace.sample.Glyphs++
+				}
 				cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
 				cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
 				cell := float32(fontCellSize) / fontAtlasSize

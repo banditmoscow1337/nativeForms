@@ -2,7 +2,6 @@ package nativeforms
 
 import "unicode"
 
-
 type TextEditor struct {
 	Text                        string
 	Caret, Anchor               int
@@ -11,6 +10,14 @@ type TextEditor struct {
 	undo, redo                  []editSnapshot
 	Limit                       int
 	UndoByteLimit               int
+	version                     uint64
+	lastEdit                    textEdit
+}
+
+type textEdit struct {
+	base, version uint64
+	start, end    int // rune offsets in the previous text
+	insert        string
 }
 
 type editSnapshot struct {
@@ -24,6 +31,8 @@ func NewTextEditor(text string) *TextEditor {
 }
 
 func (e *TextEditor) SetText(text string) {
+	e.version++
+	e.lastEdit = textEdit{}
 	e.Text = text
 	e.Caret = len([]rune(text))
 	e.Anchor = e.Caret
@@ -95,6 +104,9 @@ func (e *TextEditor) Replace(value string) bool {
 		return false
 	}
 	e.record()
+	base := e.version
+	e.version++
+	e.lastEdit = textEdit{base: base, version: e.version, start: a, end: b, insert: value}
 	e.Text = updated
 	e.Caret = a + len([]rune(value))
 	updatedRunes := []rune(updated)
@@ -188,6 +200,8 @@ func (e *TextEditor) restore(from, to *[]editSnapshot) bool {
 	e.trimHistory(to, limit)
 	e.trimByteBudget()
 	e.Text, e.Caret, e.Anchor = s.text, s.caret, s.anchor
+	e.version++
+	e.lastEdit = textEdit{}
 	e.Preedit = ""
 	return true
 }
