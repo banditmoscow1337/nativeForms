@@ -7,6 +7,7 @@ import (
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
+	"github.com/banditmoscow1337/nativeForms/render"
 )
 
 // Window is the shared desktop API. Use a platform-specific adapter directly
@@ -30,8 +31,9 @@ type Options struct {
 	// OnCloseRequest runs on the UI goroutine when the user asks to close the
 	// window. A programmatic Close bypasses this policy.
 	OnCloseRequest func(Window) platform.CloseAction
-	Backend        string  // Linux: "", "x11" or "wayland"; empty selects the session.
-	X11Scale       float32 // Linux X11 only; zero uses the Xft.dpi setting.
+	Backend        string      // Linux: "", "x11" or "wayland"; empty selects the session.
+	Graphics       render.Kind // "auto", "software", or "hardware" (when installed).
+	X11Scale       float32     // Linux X11 only; zero uses the Xft.dpi setting.
 }
 
 // App owns the desktop UI loop. Register windows before Run or from a callback

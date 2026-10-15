@@ -90,3 +90,9 @@ func (resource *ImageResource) RGBAAt(x, y int) color.RGBA {
 	i := (y*resource.width + x) * 4
 	return color.RGBA{R: resource.pixels[i], G: resource.pixels[i+1], B: resource.pixels[i+2], A: resource.pixels[i+3]}
 }
+
+// ImageResource implements image.Image so backends can upload its immutable
+// premultiplied pixels without allocating a copy on every frame.
+func (resource *ImageResource) ColorModel() color.Model { return color.RGBAModel }
+
+func (resource *ImageResource) At(x, y int) color.Color { return resource.RGBAAt(x, y) }

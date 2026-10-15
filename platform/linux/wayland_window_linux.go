@@ -16,6 +16,7 @@ import (
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
+	"github.com/banditmoscow1337/nativeForms/render"
 	"github.com/banditmoscow1337/nativeForms/software"
 )
 
@@ -25,6 +26,7 @@ type WaylandOptions struct {
 	OnReady        func(*WaylandWindow)
 	OnFilesDropped func([]string)
 	OnCloseRequest func(*WaylandWindow) platform.CloseAction
+	Graphics       render.Kind
 }
 
 type waylandWire struct {
@@ -192,7 +194,8 @@ type WaylandWindow struct {
 	scale, preferredScale                                                float32
 	viewporter, viewport, fractionalManager, fractional                  uint32
 	framebuffer                                                          *image.RGBA
-	renderer                                                             *software.Renderer
+	renderer                                                             render.Backend
+	fallbackReason                                                       string
 	buffers                                                              map[uint32]*wlBuffer
 	current                                                              [2]*wlBuffer
 	ready                                                                bool
@@ -352,7 +355,12 @@ func (w *WaylandWindow) appStart() error {
 	}
 	w.portal = portalAvailable()
 	w.repeatRate, w.repeatDelay = 25, 600
-	w.renderer = software.New()
+	selection, err := software.Open(w.Options.Graphics, nil)
+	if err != nil {
+		return err
+	}
+	w.renderer = selection.Backend
+	w.fallbackReason = selection.FallbackReason()
 	w.buffers = make(map[uint32]*wlBuffer)
 	w.pressed = make(map[uint32]bool)
 	w.dataOffers = make(map[uint32]map[string]bool)
@@ -431,6 +439,9 @@ func (w *WaylandWindow) appStop() {
 		}
 		_ = w.wire.conn.Close()
 		w.wire = nil
+	}
+	if w.renderer != nil {
+		_ = w.renderer.Close()
 	}
 	w.framebuffer, w.renderer = nil, nil
 }
@@ -715,7 +726,7 @@ func (w *WaylandWindow) paint() error {
 	buffer.valid = true
 	trace.Record(ui.PhaseUpload, uploadStart)
 	if dirty.Empty() {
-		trace.Finish("software/wayland", "")
+		trace.Finish("software/wayland", w.fallbackReason)
 		return nil
 	}
 	presentStart := trace.Start()
@@ -749,7 +760,7 @@ func (w *WaylandWindow) paint() error {
 	}
 	buffer.busy = true
 	trace.Record(ui.PhasePresent, presentStart)
-	trace.Finish("software/wayland", "")
+	trace.Finish("software/wayland", w.fallbackReason)
 	return nil
 }
 

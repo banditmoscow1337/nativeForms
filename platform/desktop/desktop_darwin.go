@@ -34,7 +34,7 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 		return nil, fmt.Errorf("desktop: backend %q is only available on Linux", options.Backend)
 	}
 	return darwin.New(manager, darwin.Options{
-		Title: options.Title, Width: options.Width, Height: options.Height,
+		Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
 		OnReady: func(w *darwin.Window) {
 			if options.OnReady != nil {
 				options.OnReady(w)

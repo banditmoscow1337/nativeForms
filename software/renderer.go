@@ -6,6 +6,7 @@ import (
 	"math"
 
 	ui "github.com/banditmoscow1337/nativeForms"
+	"github.com/banditmoscow1337/nativeForms/render"
 )
 
 type Renderer struct {
@@ -16,6 +17,19 @@ type Renderer struct {
 // The atlas is only needed when a frame contains a bitmap font quad. Native
 // text shapers emit masks, so most desktop windows never need its 16 MiB image.
 func New() *Renderer { return &Renderer{} }
+
+func (renderer *Renderer) Kind() render.Kind { return render.Software }
+func (renderer *Renderer) Close() error {
+	renderer.atlas, renderer.scaled = nil, nil
+	return nil
+}
+
+// Open selects a renderer for a desktop surface. A hardware constructor can
+// be supplied when a standalone backend is installed in a later stage.
+func Open(preference render.Kind, hardware render.Constructor) (render.Selection, error) {
+	return (render.Factory{Software: func() (render.Backend, error) { return New(), nil },
+		Hardware: hardware}).Open(preference)
+}
 
 func (renderer *Renderer) RenderScaled(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || frame.Width <= 0 || frame.Height <= 0 {

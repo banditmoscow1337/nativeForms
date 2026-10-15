@@ -87,9 +87,9 @@ and Wayland attach/damage/commit writes. It is not a GPU time measurement.
 `AllocBytes` and `AllocObjects` are opt-in with `FrameObserverOptions{TrackAllocations: true}`;
 `runtime.ReadMemStats` is intrusive, so use separate runs for allocations and
 latency. A headless `BeginFrame` must call `FrameTrace().Finish("headless", "")`
-after rendering to deliver a sample. The current software path has no backend
-fallback, so its reason is empty; a future GPU backend must report actual
-selection/failure reasons, not a synthetic value.
+after rendering to deliver a sample. In `Graphics: "auto"`, desktop reports
+`render: backend unavailable` while no standalone hardware renderer is
+installed; explicit `Graphics: "software"` has an empty fallback reason.
 
 Capture at least 60 seconds of interactive scrolling, typing, resize and
 repeated hide/show, with cold and warm text-cache runs distinguished. Retain

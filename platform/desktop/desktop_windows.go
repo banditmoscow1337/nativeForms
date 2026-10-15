@@ -29,7 +29,7 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 		return nil, fmt.Errorf("desktop: backend %q is only available on Linux", options.Backend)
 	}
 	return windows.New(manager, windows.Options{
-		Title: options.Title, Width: options.Width, Height: options.Height,
+		Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
 		OnReady: func(w *windows.Window) {
 			if options.OnReady != nil {
 				options.OnReady(w)
