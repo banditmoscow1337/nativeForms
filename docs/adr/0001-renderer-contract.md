@@ -1,6 +1,7 @@
 # ADR 0001: Renderer contract and backend choice
 
-Status: renderer contract implemented (2026-10-15); GPU pixel parity pending.
+Status: renderer contract and macOS Metal adapter implemented (2026-10-15);
+target-machine GPU pixel parity and performance pending.
 
 The widget tree produces a `Frame` of ordered `DrawCommand`s in logical
 coordinates. Keep `Manager` and `Canvas` backend-independent. A renderer
@@ -20,23 +21,24 @@ only detached frames to callers.
 
 `render.Factory` selects a renderer and returns the reason for an automatic
 software fallback. `desktop.Options.Graphics` accepts `auto`, `software`, or
-`hardware`; hardware selection currently reports `ErrUnavailable` because no
-standalone desktop GPU backend is installed. `software.RenderAtScale` remains
-the correctness oracle and desktop fallback. The engine Vulkan integration
-is a separate consumer of the same display list and batches. The desktop GPU
-selection should be a later spike on Windows/RX 480 and macOS/M1; decide
-between native D3D/Metal and a maintained portable layer after measuring
-dependency, packaging and fallback costs. Do not make the v1 public widget
-API depend on that choice.
+`hardware`. macOS chooses a standalone Metal backend after creating the native
+view; platforms without a standalone adapter report `ErrUnavailable` for
+explicit hardware selection. `auto` falls back during creation and after a
+Metal frame fails, and retries that frame on software. `software.RenderAtScale`
+remains the correctness oracle and desktop fallback. The engine Vulkan
+integration is a separate consumer of the same display list and batches.
+Windows/RX 480 still needs a standalone adapter. The public widget API is
+independent of the choice.
 
-Proposed adapter boundary: initialize backend after the native window and
-surface exist; resize/recreate swapchain on scale change; render the same
-`Frame`; release device resources on window shutdown. Choose GPU if surface
-initialization succeeds, otherwise software; on device loss, release the GPU
-path and retry software for that frame. Publish backend and exact fallback
-reason in `FrameSample`. Explicit user selection should be available for
-debugging and parity tests. The trace already separates CPU build, raster,
-upload and submission; GPU timestamp queries may add a distinct GPU metric.
+The Metal adapter owns a CAMetalLayer, native shader pipelines, a three-slot
+vertex buffer and dynamic glyph atlas, and a bounded immutable image cache.
+It waits for each slot before reusing its buffer or uploading new masks to that
+slot's atlas, avoiding whole-device waits. Adjacent draws with the same texture
+and filter share a batch; clipping is baked into triangles. Resizing updates
+the drawable and the slot's multisample attachment. Window shutdown releases
+native resources. `FrameSample` records CPU build/upload/submission, slot wait,
+the last completed GPU command duration, batches, uploads and exact fallback
+reason. Explicit software/hardware selection supports paired measurements.
 
 The engine Vulkan adapter accepts images, creates textures by ID/version and
 groups adjacent commands by texture and sampler without changing paint order.
@@ -49,13 +51,11 @@ wait for device idle only on eviction. The font atlas is currently pinned; the
 software-shaped glyph masks remain geometry, not dynamic GPU atlas entries.
 
 The golden scenes exercise software pixel output and the Vulkan adapter's
-headless batch/descriptor/draw submission. Actual Vulkan pixel readback on a
-GPU is still required to establish raster parity, especially fractional
-coverage and cropped bilinear sampling. Before adopting a desktop GPU adapter,
-require the shared parity corpus, 1x/2x
-screenshot comparisons, lifecycle tests (resize, minimize, device loss), and
-the two-machine performance baseline in `docs/performance-baseline.md`. Avoid
-uploading all glyph masks and images every frame: use a bounded atlas/cache
-with generation IDs and deterministic eviction. Software can always rebuild
-from the immutable CPU resources.
+headless batch/descriptor/draw submission. Actual GPU readback and paired
+1x/2x screenshots are still required for visual parity, especially fractional
+coverage and cropped bilinear sampling. The repeatable macOS script in
+`docs/performance-baseline.md` covers resize, hide/show, repeated workloads
+and injected Metal initialization/render failure. Hardware speed and visual
+parity remain unverified until the target M1 run is reviewed. Windows/RX 480
+also remains on the software desktop path for now.
 
