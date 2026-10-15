@@ -138,7 +138,7 @@ func (a *App) Add(w *Window) error {
 	a.windows = append(a.windows, w)
 	if a.running.Load() {
 		if err := w.Open(); err != nil {
-			a.windows = a.windows[:len(a.windows)-1]
+			a.remove(w) // Open may already have destroyed and unregistered it.
 			w.owner = nil
 			return err
 		}
@@ -328,8 +328,9 @@ func (w *Window) Open() error {
 		w.view.Send(selector("registerForDraggedTypes:"), types)
 	}
 	w.window.Send(selector("makeKeyAndOrderFront:"), objc.ID(0))
-	selection, err := software.Open(w.options.Graphics, nil)
+	selection, err := software.Open(w.options.Graphics, func() (render.Backend, error) { return newMetalBackend(w.view) })
 	if err != nil {
+		w.destroy()
 		return err
 	}
 	w.renderer = selection.Backend
@@ -495,9 +496,36 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	if pixelWidth > 16384 || pixelHeight > 16384 || int64(pixelWidth)*int64(pixelHeight) > 64*1024*1024 {
 		return fmt.Errorf("darwin: framebuffer exceeds 64 megapixels")
 	}
-	if w.framebuffer == nil || pixelWidth != w.pixelWidth || pixelHeight != w.pixelHeight {
+	w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
+	if width != w.width || height != w.height {
+		w.width, w.height = width, height
+		w.manager.InvalidateLayout()
+	}
+	now := time.Now()
+	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
+	w.lastFrame = now
+	trace := w.manager.FrameTrace()
+	frame := w.manager.Frame()
+	if gpu, ok := w.renderer.(*metalBackend); ok {
+		gpu.SetDrawableSize(pixelWidth, pixelHeight)
+		err := gpu.RenderAtScale(frame, nil, scale)
+		trace.RecordRenderStats(gpu.RenderStats())
+		if err == nil {
+			trace.RecordDamage(pixelWidth, pixelHeight)
+			trace.Finish("hardware/metal", w.fallbackReason)
+			return nil
+		}
+		// Present the same frame in software after any Metal failure, including
+		// a completed command buffer reporting device loss on slot reuse.
+		w.fallbackReason = err.Error()
+		fallback, fallbackErr := render.Failover(gpu, err, func() (render.Backend, error) { return software.New(), nil })
+		if fallbackErr != nil {
+			return fmt.Errorf("darwin: Metal fallback: %w", fallbackErr)
+		}
+		w.renderer = fallback
+	}
+	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != pixelWidth || w.framebuffer.Bounds().Dy() != pixelHeight {
 		w.framebuffer = image.NewRGBA(image.Rect(0, 0, pixelWidth, pixelHeight))
-		w.pixelWidth, w.pixelHeight = pixelWidth, pixelHeight
 		if w.representation != 0 {
 			w.representation.Send(selector("release"))
 			w.representation = 0
@@ -509,17 +537,9 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 			return fmt.Errorf("darwin: bitmap representation failed")
 		}
 	}
-	if width != w.width || height != w.height {
-		w.width, w.height = width, height
-		w.manager.InvalidateLayout()
-	}
 	w.representation.Send(selector("setSize:"), objc.Send[rect](w.view, selector("bounds")).Size)
-	now := time.Now()
-	w.manager.BeginFrame(width, height, now.Sub(w.lastFrame).Seconds())
-	w.lastFrame = now
-	trace := w.manager.FrameTrace()
 	rasterStart := trace.Start()
-	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, scale)
+	err := w.renderer.RenderAtScale(frame, w.framebuffer, scale)
 	trace.Record(ui.PhaseRaster, rasterStart)
 	if err != nil {
 		return err
@@ -535,6 +555,7 @@ func (w *Window) paint(width, height, pixelWidth, pixelHeight int, scale float32
 	presentStart := trace.Start()
 	w.view.Send(selector("setNeedsDisplay:"), true)
 	trace.Record(ui.PhasePresent, presentStart)
+	trace.RecordDamage(pixelWidth, pixelHeight)
 	trace.Finish("software/appkit", w.fallbackReason)
 	return nil
 }

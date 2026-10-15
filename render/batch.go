@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"image"
 
 	ui "github.com/banditmoscow1337/nativeForms"
 )
@@ -24,15 +25,28 @@ type Mesh struct {
 	scratch  []ui.Vertex
 }
 
+// MaskTexture identifies the dynamic glyph atlas. Zero remains the immutable
+// font atlas used by ordinary quads, lines and rounded rectangles.
+var MaskTexture = TextureKey{ID: ^uint64(0)}
+
 // Build preserves painter's order. Adjacent draws sharing a texture and
 // sampler form one batch; clipping is baked into geometry and image UVs.
 func Build(list *DisplayList, mesh Mesh) (Mesh, error) {
+	return BuildWithAtlas(list, mesh, nil)
+}
+
+// BuildWithAtlas puts repeated masks into one texture and emits one quad per
+// mask. When the atlas fills, the original tessellation remains correct.
+func BuildWithAtlas(list *DisplayList, mesh Mesh, atlas *GlyphAtlas) (Mesh, error) {
 	if list == nil {
 		return Mesh{}, fmt.Errorf("render: nil display list")
 	}
 	mesh.Vertices = mesh.Vertices[:0]
 	mesh.Batches = mesh.Batches[:0]
 	for _, command := range list.commands {
+		if command.Kind > ui.CommandRoundedRect {
+			return Mesh{}, fmt.Errorf("render: unsupported command %d", command.Kind)
+		}
 		first := len(mesh.Vertices)
 		var key TextureKey
 		var resource *ui.ImageResource
@@ -44,6 +58,17 @@ func Build(list *DisplayList, mesh Mesh) (Mesh, error) {
 			resource, filter = command.Image, command.Filter
 			key = TextureKey{ID: resource.ID(), Version: resource.Version()}
 			mesh.Vertices = appendImage(mesh.Vertices, command)
+		} else if command.Kind == ui.CommandMask && atlas != nil {
+			if command.Rect.Empty() || command.Clip.Empty() || command.Mask == nil || command.Tint.A <= 0 {
+				continue
+			}
+			if rect, ok := atlas.Place(command.Mask); ok {
+				key = MaskTexture
+				mesh.Vertices = appendAtlasMask(mesh.Vertices, command, rect, atlas.Size())
+			} else {
+				mesh.scratch = ui.Tessellate([]ui.DrawCommand{command}, mesh.scratch)
+				mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
+			}
 		} else {
 			mesh.scratch = ui.Tessellate([]ui.DrawCommand{command}, mesh.scratch)
 			mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
@@ -60,6 +85,34 @@ func Build(list *DisplayList, mesh Mesh) (Mesh, error) {
 		}
 	}
 	return mesh, nil
+}
+
+// BuildFrame is the synchronous path for a native renderer. The returned mesh
+// owns its vertices, so the Manager may reuse its command storage afterwards.
+func BuildFrame(frame ui.Frame, mesh Mesh, atlas *GlyphAtlas) (Mesh, error) {
+	if frame.Width <= 0 || frame.Height <= 0 {
+		return Mesh{}, fmt.Errorf("render: invalid frame dimensions")
+	}
+	return BuildWithAtlas(&DisplayList{width: frame.Width, height: frame.Height, commands: frame.Commands}, mesh, atlas)
+}
+
+func appendAtlasMask(dst []ui.Vertex, c ui.DrawCommand, region image.Rectangle, size int) []ui.Vertex {
+	if c.Rect.Empty() || c.Clip.Empty() || c.Tint.A <= 0 {
+		return dst
+	}
+	x0, y0 := max(c.Rect.X, c.Clip.X), max(c.Rect.Y, c.Clip.Y)
+	x1, y1 := min(c.Rect.X+c.Rect.W, c.Clip.X+c.Clip.W), min(c.Rect.Y+c.Rect.H, c.Clip.Y+c.Clip.H)
+	if x1 <= x0 || y1 <= y0 {
+		return dst
+	}
+	vertex := func(x, y float32) ui.Vertex {
+		return ui.Vertex{X: x, Y: y,
+			U: (float32(region.Min.X) + (x-c.Rect.X)*float32(region.Dx())/c.Rect.W) / float32(size),
+			V: (float32(region.Min.Y) + (y-c.Rect.Y)*float32(region.Dy())/c.Rect.H) / float32(size),
+			R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
+	}
+	return append(dst, vertex(x0, y0), vertex(x1, y0), vertex(x0, y1),
+		vertex(x0, y1), vertex(x1, y0), vertex(x1, y1))
 }
 
 func appendImage(vertices []ui.Vertex, c ui.DrawCommand) []ui.Vertex {
