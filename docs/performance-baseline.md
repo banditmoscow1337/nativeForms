@@ -108,8 +108,12 @@ STAGE3_POWER_PROFILE='AC, high power' STAGE3_DISPLAY='2560x1600, 2x, default fon
   bash tools/run_stage3_mac.sh
 ```
 
-The script prints the path of a `.tar.gz` file containing `go-test.txt`, raw
-JSONL, per-run logs, environment details, `summary.txt` and `exit-status.txt`.
+The script prints the path of a `.tar.gz` file containing `go-test.txt`,
+`python-test.txt`, raw JSONL, per-run logs, `run-status.tsv` with each process
+exit code, environment details, `summary.txt` and `exit-status.txt`. The trace
+manifest is flushed immediately and frame records periodically so a native
+crash leaves useful partial evidence. Incomplete traces are summarized but
+rejected for speed comparisons.
 Send the archive together with paired screenshots if you see clipping, glyph,
 alpha or order differences. You can shorten a debugging run with
 `STAGE3_DURATION=10s STAGE3_WARMUP=1s STAGE3_REPEATS=1`; use the defaults for a performance

@@ -188,9 +188,18 @@ func run() error {
 		writer := bufio.NewWriterSize(file, 256*1024)
 		encoder := json.NewEncoder(writer)
 		writeErr := encoder.Encode(meta)
+		if writeErr == nil {
+			writeErr = writer.Flush() // Preserve the manifest even if the process crashes early.
+		}
+		pendingWrites := 0
 		for line := range lines {
 			if writeErr == nil {
 				writeErr = encoder.Encode(line)
+				pendingWrites++
+				if writeErr == nil && pendingWrites >= 16 {
+					writeErr = writer.Flush() // Bound data lost on a native crash.
+					pendingWrites = 0
+				}
 			}
 		}
 		if err := writer.Flush(); writeErr == nil {

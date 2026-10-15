@@ -224,7 +224,11 @@ func (a *App) Run() error {
 	a.running.Store(true)
 	a.queue.SetWake(func() {
 		// NSEvent is immutable. NSApplication's event queue accepts posts from
-		// worker threads and wakes nextEventMatchingMask immediately.
+		// worker threads and wakes nextEventMatchingMask immediately. Cocoa's
+		// autorelease pools are thread-local, so keep this goroutine on one OS
+		// thread from pool creation through drain.
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
 		pool := class("NSAutoreleasePool").Send(selector("new"))
 		event := class("NSEvent").Send(selector("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
 			uint64(15), point{}, uint64(0), float64(0), uint64(0), objc.ID(0), int16(0), int64(0), int64(0))

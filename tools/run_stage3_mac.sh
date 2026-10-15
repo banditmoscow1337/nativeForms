@@ -19,6 +19,7 @@ cpu="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || sysctl -n hw.model)"
 gpu="$(system_profiler SPDisplaysDataType 2>/dev/null | awk -F': ' '/Chipset Model:|Chip:/{if (!seen) print $2; seen=1}' || true)"
 gpu="${gpu:-unknown}"
 failure=0
+printf 'run\texit_code\tlog\n' > "$out/run-status.tsv"
 
 {
   date -u
@@ -32,6 +33,9 @@ failure=0
 } > "$out/environment.txt" 2>&1 || true
 
 if ! go test ./... -count=1 > "$out/go-test.txt" 2>&1; then
+  failure=1
+fi
+if ! PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py' > "$out/python-test.txt" 2>&1; then
   failure=1
 fi
 if ! go build -o "$out/perftrace" ./cmd/perftrace > "$out/go-build.txt" 2>&1; then
@@ -54,28 +58,31 @@ for case in "${cases[@]}"; do
     if (( repeat % 2 == 0 )); then modes=(hardware software); fi
     for graphics in "${modes[@]}"; do
       name="${scenario}-${count}-${pattern}-run${repeat}-${graphics}"
-      if ! "$out/perftrace" -scenario "$scenario" -count "$count" -pattern "$pattern" \
+      status=0
+      "$out/perftrace" -scenario "$scenario" -count "$count" -pattern "$pattern" \
         -graphics "$graphics" -duration "$duration" -warmup "$warmup" \
         -output "$out/$name.jsonl" -os-version "$os_version" -cpu "$cpu" \
-        -gpu "$gpu" -power "$power" -display "$display" > "$out/$name.log" 2>&1; then
-        failure=1
-      fi
+        -gpu "$gpu" -power "$power" -display "$display" > "$out/$name.log" 2>&1 || status=$?
+      printf '%s\t%d\t%s\n' "$name" "$status" "$name.log" >> "$out/run-status.tsv"
+      if (( status != 0 )); then failure=1; fi
     done
   done
 done
 
-if ! NATIVEFORMS_METAL_FAULT=init "$out/perftrace" -scenario widgets -count 1000 \
+status=0
+NATIVEFORMS_METAL_FAULT=init "$out/perftrace" -scenario widgets -count 1000 \
     -graphics auto -warmup 0s -duration 8s -output "$out/fault-init.jsonl" \
     -os-version "$os_version" -cpu "$cpu" -gpu "$gpu" -power "$power" -display "$display" \
-    > "$out/fault-init.log" 2>&1; then
-  failure=1
-fi
-if ! NATIVEFORMS_METAL_FAIL_AFTER=10 "$out/perftrace" -scenario widgets -count 1000 \
+    > "$out/fault-init.log" 2>&1 || status=$?
+printf 'fault-init\t%d\tfault-init.log\n' "$status" >> "$out/run-status.tsv"
+if (( status != 0 )); then failure=1; fi
+status=0
+NATIVEFORMS_METAL_FAIL_AFTER=10 "$out/perftrace" -scenario widgets -count 1000 \
     -graphics auto -warmup 0s -duration 8s -output "$out/fault-render.jsonl" \
     -os-version "$os_version" -cpu "$cpu" -gpu "$gpu" -power "$power" -display "$display" \
-    > "$out/fault-render.log" 2>&1; then
-  failure=1
-fi
+    > "$out/fault-render.log" 2>&1 || status=$?
+printf 'fault-render\t%d\tfault-render.log\n' "$status" >> "$out/run-status.tsv"
+if (( status != 0 )); then failure=1; fi
 
 python3 tools/summarize_perftrace.py "$out"/*.jsonl > "$out/summary.txt" 2>&1 || failure=1
 for case in "${cases[@]}"; do
