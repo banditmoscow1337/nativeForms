@@ -45,6 +45,9 @@ type X11Window struct {
 	width, height                                                 int
 	scale                                                         float32
 	framebuffer                                                   *image.RGBA
+	staging                                                       []byte
+	stagingValid                                                  bool
+	request                                                       []byte
 	renderer                                                      *software.Renderer
 	lastFrame                                                     time.Time
 	closeRequested                                                atomic.Bool
@@ -141,7 +144,8 @@ func (w *X11Window) setVisible(visible bool) {
 			}
 			request := make([]byte, 8)
 			if visible {
-				request[0] = 8 // MapWindow
+				request[0] = 8         // MapWindow
+				w.stagingValid = false // the server may have discarded the pixmap
 				w.manager.InvalidatePaint()
 			} else {
 				request[0] = 10 // UnmapWindow
@@ -689,6 +693,8 @@ func (w *X11Window) paint() error {
 	}
 	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != w.width || w.framebuffer.Bounds().Dy() != w.height {
 		w.framebuffer = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
+		w.staging = make([]byte, w.width*w.height*4)
+		w.stagingValid = false
 	}
 	now := time.Now()
 	w.manager.BeginFrame(platform.LogicalSize(w.width, w.scale), platform.LogicalSize(w.height, w.scale), now.Sub(w.lastFrame).Seconds())
@@ -700,28 +706,46 @@ func (w *X11Window) paint() error {
 	if err != nil {
 		return err
 	}
-	rowBytes := w.width * 4
+	uploadStart := trace.Start()
+	dirty := software.UpdateBGRA(w.staging, w.framebuffer, w.stagingValid)
+	trace.RecordDamage(dirty.Dx(), dirty.Dy())
+	w.stagingValid = true
+	trace.Record(ui.PhaseUpload, uploadStart)
+	if dirty.Empty() {
+		trace.Finish("software/x11", "")
+		return nil
+	}
+	rowBytes := dirty.Dx() * 4
 	rowsPerRequest := (w.maxRequest - 24) / rowBytes
 	if rowsPerRequest < 1 {
 		return fmt.Errorf("x11: scanline exceeds maximum request size")
 	}
-	for y := 0; y < w.height; {
+	for y := dirty.Min.Y; y < dirty.Max.Y; {
 		uploadStart := trace.Start()
-		n := min(rowsPerRequest, w.height-y)
-		request := make([]byte, 24+n*rowBytes)
+		n := min(rowsPerRequest, dirty.Max.Y-y)
+		length := 24 + n*rowBytes
+		if cap(w.request) < length {
+			w.request = make([]byte, length)
+		}
+		request := w.request[:length]
+		clear(request[:24])
 		request[0] = 72
 		request[1] = 2 // ZPixmap
 		le.PutUint32(request[4:], w.id)
 		le.PutUint32(request[8:], w.gc)
-		le.PutUint16(request[12:], uint16(w.width))
+		le.PutUint16(request[12:], uint16(dirty.Dx()))
 		le.PutUint16(request[14:], uint16(n))
+		le.PutUint16(request[16:], uint16(dirty.Min.X))
 		le.PutUint16(request[18:], uint16(y))
 		request[21] = w.depth
 		for row := 0; row < n; row++ {
-			for x := 0; x < w.width; x++ {
-				i := w.framebuffer.PixOffset(x, y+row)
-				j := 24 + row*rowBytes + x*4
-				request[j], request[j+1], request[j+2] = w.framebuffer.Pix[i+2], w.framebuffer.Pix[i+1], w.framebuffer.Pix[i]
+			start := ((y+row)*w.width + dirty.Min.X) * 4
+			output := request[24+row*rowBytes : 24+(row+1)*rowBytes]
+			copy(output, w.staging[start:start+rowBytes])
+			if w.depth == 24 {
+				for x := 3; x < len(output); x += 4 {
+					output[x] = 0 // preserve unused pad bits in 24-bit ZPixmap
+				}
 			}
 		}
 		trace.Record(ui.PhaseUpload, uploadStart)
@@ -1054,6 +1078,7 @@ func (w *X11Window) handle(message []byte) bool {
 			w.clipboardError = err
 		}
 	case 12:
+		w.stagingValid = false // Expose needs a full upload even if UI pixels match
 		return true
 	case 22:
 		w.originDirty = true

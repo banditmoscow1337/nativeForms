@@ -27,7 +27,9 @@ type FrameSample struct {
 	Build, Layout, Paint, TextLayout   time.Duration
 	Raster, Upload, Present            time.Duration
 	Commands, Masks, Images, TextRunes int
-	AllocBytes                         uint64
+	Glyphs, DamagePixels               int
+	TextCacheHits, TextCacheMisses     uint64
+	AllocBytes, AllocObjects           uint64
 	Backend, FallbackReason            string
 }
 
@@ -45,6 +47,10 @@ type FrameTrace struct {
 	observer         func(FrameSample)
 	trackAllocations bool
 	startAlloc       uint64
+	startObjects     uint64
+	startHits        uint64
+	startMisses      uint64
+	fonts            *FontContext
 	finished         bool
 }
 
@@ -76,8 +82,16 @@ func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, wid
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		trace.startAlloc = mem.TotalAlloc
+		trace.startObjects = mem.Mallocs
 	}
 	return trace
+}
+
+// RecordDamage reports the conservative pixel region uploaded to the OS.
+func (trace *FrameTrace) RecordDamage(width, height int) {
+	if trace != nil && !trace.finished && width > 0 && height > 0 {
+		trace.sample.DamagePixels = width * height
+	}
 }
 
 // Start returns a timestamp only when tracing is enabled.
@@ -137,10 +151,16 @@ func (trace *FrameTrace) Finish(backend, fallbackReason string) {
 	trace.finished = true
 	trace.sample.Backend = backend
 	trace.sample.FallbackReason = fallbackReason
+	if trace.fonts != nil {
+		_, _, hits, misses := trace.fonts.LayoutCacheStats()
+		trace.sample.TextCacheHits = hits - trace.startHits
+		trace.sample.TextCacheMisses = misses - trace.startMisses
+	}
 	if trace.trackAllocations {
 		var mem runtime.MemStats
 		runtime.ReadMemStats(&mem)
 		trace.sample.AllocBytes = mem.TotalAlloc - trace.startAlloc
+		trace.sample.AllocObjects = mem.Mallocs - trace.startObjects
 	}
 	trace.observer(trace.sample)
 }

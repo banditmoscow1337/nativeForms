@@ -15,30 +15,30 @@ import (
 // callbacks are zero based; displayed line numbers start at one.
 type CodeEditor struct {
 	State
-	Document *editor.Document
-	Font FontSpec
-	TabWidth int
-	ReadOnly bool
-	Caret, Anchor int
-	Palette map[CodeStyle]Color
-	OnChange func(editor.Change)
+	Document           *editor.Document
+	Font               FontSpec
+	TabWidth           int
+	ReadOnly           bool
+	Caret, Anchor      int
+	Palette            map[CodeStyle]Color
+	OnChange           func(editor.Change)
 	OnBreakpointChange func(line int, enabled bool)
 
-	breakpoints map[int]bool
+	breakpoints      map[int]bool
 	styles, semantic []StyledRange
-	lexStates []goLexState
-	lastVersion uint64
+	lexStates        []goLexState
+	lastVersion      uint64
 	scrollX, scrollY float32
-	desiredX float32
-	retainX bool
-	composing bool
-	preedit string
-	preeditCaret int
-	caretVisible bool
-	lastClick time.Time
-	lastPoint Vec2
-	clicks int
-	completionPopup PopupID
+	desiredX         float32
+	retainX          bool
+	composing        bool
+	preedit          string
+	preeditCaret     int
+	caretVisible     bool
+	lastClick        time.Time
+	lastPoint        Vec2
+	clicks           int
+	completionPopup  PopupID
 }
 
 var _ Component = (*CodeEditor)(nil)
@@ -57,6 +57,7 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 	e.focusable = true
 	e.clip = true
 	e.minimum = Vec2{X: 300, Y: 180}
+	e.rebuildLexStates(0)
 	return e
 }
 
@@ -70,6 +71,7 @@ func (e *CodeEditor) SetDocument(document *editor.Document) {
 	e.scrollX, e.scrollY = 0, 0
 	e.styles, e.semantic = nil, nil
 	e.lexStates = []goLexState{goNormal}
+	e.rebuildLexStates(0)
 	e.lastVersion = document.Version()
 	e.breakpoints = make(map[int]bool)
 	e.composing, e.preedit = false, ""
@@ -117,6 +119,7 @@ func (e *CodeEditor) syncDocument() {
 	}
 	e.lastVersion = e.Document.Version()
 	e.lexStates = []goLexState{goNormal}
+	e.rebuildLexStates(0)
 	e.styles, e.semantic = nil, nil
 	e.Caret = e.validCaret(e.Caret)
 	e.Anchor = e.validCaret(e.Anchor)
@@ -145,7 +148,7 @@ func (e *CodeEditor) fontSpec() FontSpec {
 
 func (e *CodeEditor) rowHeight() float32 {
 	if fonts := e.fontContext(); fonts != nil {
-		return maxFloat32(1, fonts.Layout("", e.fontSpec()).Height())
+		return maxFloat32(1, fonts.layoutShared("", e.fontSpec()).Height())
 	}
 	return e.fontSpec().Size * 1.25
 }
@@ -194,9 +197,9 @@ func (e *CodeEditor) ScrollToLine(line int) {
 }
 
 type codeLineLayout struct {
-	display []rune
+	display          []rune
 	offsets, columns []int
-	carets []float32
+	carets           []float32
 }
 
 func (e *CodeEditor) layoutLine(line string) codeLineLayout {
@@ -239,7 +242,7 @@ func (l codeLineLayout) byteAtX(line string, x float32) int {
 		if !graphemeBreak(runes, i) {
 			continue
 		}
-		if d := absFloat32(x-l.carets[l.columns[i]]); d < distance {
+		if d := absFloat32(x - l.carets[l.columns[i]]); d < distance {
 			best, distance = offset, d
 		}
 	}
@@ -273,7 +276,7 @@ func (e *CodeEditor) CaretRect() Rect {
 		prefix = prefix[:min(max(0, e.preeditCaret), len(prefix))]
 		x += e.textWidth(string(prefix), e.fontSpec())
 	}
-	return Rect{X: x, Y: view.Y + float32(line)*e.rowHeight()-e.scrollY,
+	return Rect{X: x, Y: view.Y + float32(line)*e.rowHeight() - e.scrollY,
 		W: 1, H: e.rowHeight()}
 }
 
@@ -289,7 +292,7 @@ func (e *CodeEditor) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
 	}
 	maxBytes = min(length, max(maxBytes, b-a))
 	start := min(max(0, a-(maxBytes-(b-a))/2), length-maxBytes)
-	end := start+maxBytes
+	end := start + maxBytes
 	for start > 0 {
 		if _, err := e.Document.Slice(start, start); err == nil {
 			break
@@ -304,33 +307,63 @@ func (e *CodeEditor) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
 	}
 	text, _ := e.Document.Slice(start, end)
 	utf16Base, _ := e.Document.UTF16Offset(start)
-	return TextInputState{Text: text, Cursor: e.Caret-start, Anchor: e.Anchor-start,
+	return TextInputState{Text: text, Cursor: e.Caret - start, Anchor: e.Anchor - start,
 		Base: start, UTF16Base: utf16Base, Multiline: true}, true
 }
 
 func (e *CodeEditor) TextInputComposing() bool { return e.composing }
-func (e *CodeEditor) ResetCaretBlink() { e.caretVisible = true; e.invalidatePaint() }
-func (e *CodeEditor) BlinkCaret() { e.caretVisible = !e.caretVisible; e.invalidatePaint() }
+func (e *CodeEditor) ResetCaretBlink()         { e.caretVisible = true; e.invalidatePaint() }
+func (e *CodeEditor) BlinkCaret()              { e.caretVisible = !e.caretVisible; e.invalidatePaint() }
 
 func (e *CodeEditor) goStateAt(line int) goLexState {
 	if len(e.lexStates) == 0 {
 		e.lexStates = []goLexState{goNormal}
 	}
-	for len(e.lexStates) <= line {
-		previous := len(e.lexStates)-1
-		start, end, _ := e.Document.LineRange(previous)
-		text, _ := e.Document.Slice(start, end)
-		_, state := lexGoLine(text, e.lexStates[previous])
-		e.lexStates = append(e.lexStates, state)
+	if len(e.lexStates) <= line {
+		e.rebuildLexStates(len(e.lexStates) - 1)
 	}
 	return e.lexStates[line]
+}
+
+// Carry states are prepared once per version, outside the paint loop. A cold
+// jump then only tokenizes the visible lines.
+func (e *CodeEditor) rebuildLexStates(fromLine int) {
+	if e.Document == nil {
+		return
+	}
+	if fromLine < 0 || fromLine >= len(e.lexStates) {
+		fromLine = 0
+		e.lexStates = []goLexState{goNormal}
+	}
+	count := e.Document.LineCount()
+	if fromLine >= count {
+		e.lexStates = e.lexStates[:count]
+		return
+	}
+	start, _, _ := e.Document.LineRange(fromLine)
+	text, _ := e.Document.Slice(start, e.Document.Len())
+	e.lexStates = e.lexStates[:fromLine+1]
+	state := e.lexStates[fromLine]
+	for line := fromLine; line < count; line++ {
+		end := strings.IndexByte(text, '\n')
+		segment := text
+		if end >= 0 {
+			segment = text[:end]
+		}
+		segment = strings.TrimSuffix(segment, "\r")
+		_, state = scanGoLine(segment, state, false)
+		e.lexStates = append(e.lexStates, state)
+		if end >= 0 {
+			text = text[end+1:]
+		}
+	}
 }
 
 func (e *CodeEditor) applyStyleRanges(dst []CodeStyle, layout codeLineLayout, lineStart int, ranges []StyledRange) {
 	if len(dst) == 0 {
 		return
 	}
-	lineEnd := lineStart+layout.offsets[len(layout.offsets)-1]
+	lineEnd := lineStart + layout.offsets[len(layout.offsets)-1]
 	index := sort.Search(len(ranges), func(i int) bool { return ranges[i].End > lineStart })
 	for ; index < len(ranges) && ranges[index].Start < lineEnd; index++ {
 		r := ranges[index]
@@ -369,20 +402,20 @@ func (e *CodeEditor) Paint(c *Canvas) {
 		start, end, _ := e.Document.LineRange(line)
 		text, _ := e.Document.Slice(start, end)
 		layout := e.layoutLine(text)
-		y := view.Y+float32(line)*h-e.scrollY
+		y := view.Y + float32(line)*h - e.scrollY
 		e.paintCodeLine(c, layout, text, line, start, end, view.X-e.scrollX, y, h)
 	}
 	if e.Focused() && e.caretVisible {
 		caret := e.CaretRect()
-		c.Line(Vec2{X: caret.X, Y: caret.Y+2}, Vec2{X: caret.X, Y: caret.Y+h-2}, 1, c.theme.AccentHover)
+		c.Line(Vec2{X: caret.X, Y: caret.Y + 2}, Vec2{X: caret.X, Y: caret.Y + h - 2}, 1, c.theme.AccentHover)
 	}
 	c.PopClip()
 	for line := first; line < last; line++ {
-		y := view.Y+float32(line)*h-e.scrollY
+		y := view.Y + float32(line)*h - e.scrollY
 		if e.breakpoints[line] {
-			c.RoundedRect(Rect{X: e.rect.X+7, Y: y+(h-10)/2, W: 10, H: 10}, 5, c.theme.Danger)
+			c.RoundedRect(Rect{X: e.rect.X + 7, Y: y + (h-10)/2, W: 10, H: 10}, 5, c.theme.Danger)
 		}
-		c.TextStyled(strconv.Itoa(line+1), Rect{X: e.rect.X+19, Y: y, W: gutter-25, H: h},
+		c.TextStyled(strconv.Itoa(line+1), Rect{X: e.rect.X + 19, Y: y, W: gutter - 25, H: h},
 			e.fontSpec(), TextRight, c.theme.MutedText)
 	}
 }
@@ -391,8 +424,8 @@ func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string
 	a, b := min(e.Caret, e.Anchor), max(e.Caret, e.Anchor)
 	from, to := max(start, a), min(end, b)
 	if from < to || b > end && a <= end {
-		left := x+layout.xAt(max(0, from-start))
-		right := x+layout.xAt(max(0, to-start))
+		left := x + layout.xAt(max(0, from-start))
+		right := x + layout.xAt(max(0, to-start))
 		if b > end {
 			right += 6
 		}
@@ -400,7 +433,7 @@ func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string
 	}
 	styles := e.rowStyles(text, layout, line, start)
 	for from := 0; from < len(styles); {
-		to := from+1
+		to := from + 1
 		for to < len(styles) && styles[to] == styles[from] {
 			to++
 		}
@@ -413,16 +446,16 @@ func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string
 		left := layout.carets[layout.columns[from]]
 		right := layout.carets[layout.columns[to]]
 		fragment := string(layout.display[layout.columns[from]:layout.columns[to]])
-		c.TextStyled(fragment, Rect{X: x+left, Y: y, W: maxFloat32(1, right-left+2), H: h},
+		c.TextStyled(fragment, Rect{X: x + left, Y: y, W: maxFloat32(1, right-left+2), H: h},
 			e.fontSpec(), TextLeft, color)
 		from = to
 	}
 	preeditAt := min(e.Caret, e.Anchor)
 	if e.composing && e.preedit != "" && preeditAt >= start && preeditAt <= end {
-		left := x+layout.xAt(preeditAt-start)
+		left := x + layout.xAt(preeditAt-start)
 		width := e.textWidth(e.preedit, e.fontSpec())
-		c.Rect(Rect{X: left, Y: y, W: width+2, H: h}, c.theme.Panel)
-		c.TextStyled(e.preedit, Rect{X: left, Y: y, W: width+2, H: h}, e.fontSpec(), TextLeft, c.theme.Text)
-		c.Line(Vec2{X: left, Y: y+h-2}, Vec2{X: left+width, Y: y+h-2}, 1, c.theme.Accent)
+		c.Rect(Rect{X: left, Y: y, W: width + 2, H: h}, c.theme.Panel)
+		c.TextStyled(e.preedit, Rect{X: left, Y: y, W: width + 2, H: h}, e.fontSpec(), TextLeft, c.theme.Text)
+		c.Line(Vec2{X: left, Y: y + h - 2}, Vec2{X: left + width, Y: y + h - 2}, 1, c.theme.Accent)
 	}
 }

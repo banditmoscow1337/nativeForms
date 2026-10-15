@@ -21,6 +21,8 @@ go test ./... -run '^$' -bench 'Benchmark(FrameBuild|FrameResize|Render)' -bench
 go test . -run '^$' -bench 'Benchmark(TextInputSnapshot|FocusedTextInputState100k|CodeEditorColdJump100k|CodeEditorWarmJump100k|FrameBuildLongParagraph)' -benchmem -benchtime=1x -count=5
 go test ./... -run '^$' -bench 'Benchmark(FrameBuildWidgets|RenderCommands)' -benchmem -benchtime=100x -count=5
 go test . -run '^$' -bench 'BenchmarkOffscreenPaintVisits' -benchmem -benchtime=100x -count=5
+go test . -run '^$' -bench 'Benchmark(TextAreaScroll100k|VirtualFormScroll10k|FocusedTextInputState100k|CodeEditorColdJump100k)' -benchmem -benchtime=20x -count=5
+go test . -run '^$' -bench 'Benchmark(TextAreaInitial100k|CodeEditorInitial100k)' -benchmem -benchtime=1x -count=5
 ```
 
 The 100k-line scenarios are intentionally isolated with `-benchtime=1x`.
@@ -31,6 +33,8 @@ while the warm jump revisits nearby lines. The 1k-fragment long paragraph is
 separate from a 1k-line TextArea, since wrapping work differs sharply.
 `BenchmarkOffscreenPaintVisits` reports `visits/op` and `visible/op` for a
 clipped 1k-row viewport; its no-op Paint deliberately isolates traversal.
+The stage-1 scroll cases warm the text index and the virtual row-height index
+before timing. Compare them to the cold construction benchmarks separately.
 `BenchmarkFrameBuildWidgets` covers 1k/10k widgets, both paint-only and forced
 layout; `BenchmarkFrameBuildScrolledForm` has 1k fields; text area has
 1k/10k/100k lines; CodeEditor has 100k lines; image and 2x HiDPI include
@@ -44,6 +48,7 @@ each target machine and retain one file per scenario:
 
 ```sh
 go run ./cmd/perftrace -scenario form -count 1000 -duration 60s -output form.jsonl -os-version "..." -cpu "..." -gpu "..." -power "..." -display "resolution, scale, font, theme"
+go run ./cmd/perftrace -scenario virtual-form -count 10000 -duration 60s -output virtual-form.jsonl
 go run ./cmd/perftrace -scenario textarea -count 100000 -duration 60s -output textarea.jsonl
 go run ./cmd/perftrace -scenario editor -count 100000 -pattern cold -duration 60s -output editor-cold.jsonl
 go run ./cmd/perftrace -scenario editor -count 100000 -pattern warm -duration 60s -output editor-warm.jsonl
@@ -70,13 +75,16 @@ manager.SetFrameObserver(func(s nativeforms.FrameSample) {
 ```
 
 Samples have `Build`, `Layout`, `Paint`, `TextLayout`, `Raster`, `Upload`,
-`Present`, command/mask/image/rune counts, backend and fallback reason.
+`Present`, command/mask/image/rune/glyph counts, text layout cache hits/misses,
+the conservative changed-tile bounding area (`DamagePixels`), backend and
+fallback reason. Windows still submits the full DIB on `WM_PAINT`, so
+`DamagePixels` is not a Windows present byte count.
 `Build` contains `Layout` and `Paint`; `TextLayout` is the font-layout portion
 of `Paint` only. Text measurement inside widget `Measure` is counted in
 `Layout`, not `TextLayout`. `Present` measures submission, not scan-out:
 `StretchDIBits` on Windows, `setNeedsDisplay` on macOS, X11 request writes,
 and Wayland attach/damage/commit writes. It is not a GPU time measurement.
-`AllocBytes` is opt-in with `FrameObserverOptions{TrackAllocations: true}`;
+`AllocBytes` and `AllocObjects` are opt-in with `FrameObserverOptions{TrackAllocations: true}`;
 `runtime.ReadMemStats` is intrusive, so use separate runs for allocations and
 latency. A headless `BeginFrame` must call `FrameTrace().Finish("headless", "")`
 after rendering to deliver a sample. The current software path has no backend
@@ -104,6 +112,10 @@ allocations/frame, counts, and any fallback reason. Do not compare only FPS:
 the pipeline is event driven and idle windows may legitimately render zero
 frames.
 
+The [2026-10-15 headless snapshot](performance-snapshot-2026-10-15.md)
+isolates the stage-1 changes on Linux. It does not replace native p95 runs on
+the Radeon RX 480 and Apple M1 target machines.
+
 ## Render parity
 
 `internal/renderparity.Scenes()` is the shared, OS-independent golden corpus;
@@ -116,3 +128,4 @@ versus linear blending, and allow at most two 8-bit levels per channel where
 GPU coverage rounding differs; no missing command, clipping, or order changes.
 Supplement this tiny deterministic corpus with OS screenshot goldens at
 1x/2x once the backend runs on target hardware.
+

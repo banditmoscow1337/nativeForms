@@ -58,7 +58,7 @@ func (e *CodeEditor) ReplaceTextRange(start, end int, value string) bool {
 		return false
 	}
 	e.shiftBreakpoints(pos.Line, strings.Count(removed, "\n"), strings.Count(value, "\n"))
-	e.Caret = e.validCaret(start+len(value))
+	e.Caret = e.validCaret(start + len(value))
 	e.Anchor = e.Caret
 	e.composing, e.preedit = false, ""
 	e.changed(change, pos.Line)
@@ -91,6 +91,7 @@ func (e *CodeEditor) changed(change editor.Change, fromLine int) {
 	} else {
 		e.lexStates = e.lexStates[:min(len(e.lexStates), fromLine+1)]
 	}
+	e.rebuildLexStates(max(0, fromLine))
 	e.moved(false)
 	if e.OnChange != nil {
 		e.OnChange(change)
@@ -121,7 +122,7 @@ func (e *CodeEditor) revealCaret() {
 	if r.X < view.X+2 {
 		e.scrollX = maxFloat32(0, e.scrollX-(view.X+2-r.X))
 	} else if r.X > view.X+view.W-2 {
-		e.scrollX += r.X-view.X-view.W+2
+		e.scrollX += r.X - view.X - view.W + 2
 	}
 }
 
@@ -131,7 +132,7 @@ func (e *CodeEditor) offsetAt(x, y float32) int {
 	start, end, _ := e.Document.LineRange(line)
 	text, _ := e.Document.Slice(start, end)
 	layout := e.layoutLine(text)
-	return start+layout.byteAtX(text, x-view.X+e.scrollX)
+	return start + layout.byteAtX(text, x-view.X+e.scrollX)
 }
 
 func (e *CodeEditor) horizontalDestination(direction int, word bool) int {
@@ -140,11 +141,11 @@ func (e *CodeEditor) horizontalDestination(direction int, word bool) int {
 	at := utf8.RuneCountInString(text[:min(max(0, e.Caret-start), len(text))])
 	runes := []rune(text)
 	if direction < 0 && at == 0 && line > 0 {
-		_, previousEnd, _ := e.Document.LineRange(line-1)
+		_, previousEnd, _ := e.Document.LineRange(line - 1)
 		return previousEnd
 	}
 	if direction > 0 && at == len(runes) && line+1 < e.Document.LineCount() {
-		nextStart, _, _ := e.Document.LineRange(line+1)
+		nextStart, _, _ := e.Document.LineRange(line + 1)
 		return nextStart
 	}
 	if word {
@@ -154,7 +155,7 @@ func (e *CodeEditor) horizontalDestination(direction int, word bool) int {
 	} else {
 		at = nextGrapheme(runes, at)
 	}
-	return start+textByteOffset(text, at)
+	return start + textByteOffset(text, at)
 }
 
 func (e *CodeEditor) move(to int, extend, keepX bool) {
@@ -181,7 +182,7 @@ func (e *CodeEditor) moveHorizontal(direction int, word, extend bool) {
 func (e *CodeEditor) moveVertical(rows int, extend bool) {
 	line, _, _ := e.lineAtCaret()
 	if !e.retainX {
-		e.desiredX = e.CaretRect().X-e.contentRect().X+e.scrollX
+		e.desiredX = e.CaretRect().X - e.contentRect().X + e.scrollX
 	}
 	target := min(max(0, line+rows), e.Document.LineCount()-1)
 	start, end, _ := e.Document.LineRange(target)
@@ -243,7 +244,7 @@ func (e *CodeEditor) indent(outdent bool) {
 			}
 		}
 		if remove > 0 {
-			edits = append(edits, editor.Edit{Start: start, End: start+remove})
+			edits = append(edits, editor.Edit{Start: start, End: start + remove})
 		}
 	}
 	if len(edits) == 0 {
@@ -265,11 +266,11 @@ func remapEditorOffset(at int, edits []editor.Edit) int {
 			break
 		}
 		if at <= edit.End {
-			return edit.Start+shift+len(edit.Text)
+			return edit.Start + shift + len(edit.Text)
 		}
-		shift += len(edit.Text)-(edit.End-edit.Start)
+		shift += len(edit.Text) - (edit.End - edit.Start)
 	}
-	return at+shift
+	return at + shift
 }
 
 func (e *CodeEditor) history(redo bool) {
@@ -288,7 +289,7 @@ func (e *CodeEditor) history(redo bool) {
 	}
 	if len(change.Edits) > 0 {
 		last := change.Edits[len(change.Edits)-1]
-		e.Caret = e.validCaret(last.Start+len(last.Text))
+		e.Caret = e.validCaret(last.Start + len(last.Text))
 	}
 	e.Anchor = e.Caret
 	e.changed(change, -1)
@@ -318,7 +319,7 @@ func (e *CodeEditor) Handle(event Event) bool {
 			e.clicks = event.Clicks
 		} else if time.Since(e.lastClick) < 500*time.Millisecond &&
 			absFloat32(point.X-e.lastPoint.X) < 5 && absFloat32(point.Y-e.lastPoint.Y) < 5 {
-			e.clicks = e.clicks%3+1
+			e.clicks = e.clicks%3 + 1
 		} else {
 			e.clicks = 1
 		}

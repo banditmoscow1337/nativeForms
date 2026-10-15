@@ -45,9 +45,16 @@ const (
 // lexGoLine returns local byte ranges and the state carried to the next line.
 // Keeping the state per line lets the widget tokenize only newly visible lines.
 func lexGoLine(line string, state goLexState) ([]StyledRange, goLexState) {
-	spans := make([]StyledRange, 0, 8)
+	return scanGoLine(line, state, true)
+}
+
+func scanGoLine(line string, state goLexState, styles bool) ([]StyledRange, goLexState) {
+	var spans []StyledRange
+	if styles {
+		spans = make([]StyledRange, 0, 8)
+	}
 	appendStyle := func(start, end int, style CodeStyle) {
-		if start < end {
+		if styles && start < end {
 			spans = append(spans, StyledRange{Start: start, End: end, Style: style})
 		}
 	}

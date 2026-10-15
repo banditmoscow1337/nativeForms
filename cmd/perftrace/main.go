@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,9 +50,21 @@ type workload struct {
 	count  int
 }
 
+type virtualFormModel int
+
+func (m virtualFormModel) Len() int             { return int(m) }
+func (m virtualFormModel) Key(i int) string     { return strconv.Itoa(i) }
+func (m virtualFormModel) Height(i int) float32 { return float32(40 + i%3*8) }
+func (m virtualFormModel) Build(i int) ui.Component {
+	return ui.NewTextField("Field value 0123456789", nil)
+}
+
 func build(name string, count int) (workload, error) {
 	w := workload{count: count}
 	switch name {
+	case "virtual-form":
+		w.scroll = ui.NewScrollPanel(ui.NewVirtualStack(virtualFormModel(count)))
+		w.root = w.scroll
 	case "widgets", "form":
 		rows := ui.NewPanel(ui.Vertical)
 		for i := 0; i < count; i++ {
@@ -121,7 +134,7 @@ func revision() string {
 }
 
 func run() error {
-	scenario := flag.String("scenario", "widgets", "widgets, form, textarea, editor, paragraph")
+	scenario := flag.String("scenario", "widgets", "widgets, form, virtual-form, textarea, editor, paragraph")
 	pattern := flag.String("pattern", "warm", "editor jumps: warm or cold")
 	count := flag.Int("count", 1000, "number of widgets, fields, lines or paragraph fragments")
 	duration := flag.Duration("duration", 60*time.Second, "measurement time")

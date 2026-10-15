@@ -1,6 +1,7 @@
 package nativeforms
 
 import (
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -8,20 +9,25 @@ import (
 
 type TextField struct {
 	State
-	Text, Placeholder             string
-	Font                          FontSpec
-	Cursor                        int
-	OnChange                      func(string)
-	OnSubmit                      func(string)
-	Multiline, ReadOnly, Password bool
-	Validate                      func(string) bool
-	editor                        *TextEditor
-	scrollX, scrollY              float32
-	lastClick                     time.Time
-	lastPoint                     Vec2
-	clicks                        int
-	caretVisible                  bool
-	composing                     bool
+	Text, Placeholder                string
+	Font                             FontSpec
+	Cursor                           int
+	OnChange                         func(string)
+	OnSubmit                         func(string)
+	Multiline, ReadOnly, Password    bool
+	Validate                         func(string) bool
+	editor                           *TextEditor
+	scrollX, scrollY                 float32
+	lastClick                        time.Time
+	lastPoint                        Vec2
+	clicks                           int
+	caretVisible                     bool
+	composing                        bool
+	layoutCache                      *textFieldLayout
+	compositionCache                 *textFieldLayout
+	compositionBase                  *textFieldLayout
+	compositionText                  string
+	compositionStart, compositionEnd int
 }
 
 func NewTextField(text string, onChange func(string)) *TextField {
@@ -44,6 +50,9 @@ func (f *TextField) Editor() *TextEditor { f.syncExternal(); return f.editor }
 
 func (f *TextField) CommitEditor() {
 	if f.editor != nil && f.editor.Text != f.Text {
+		if f.layoutCache != nil && f.editor.version == f.layoutCache.version {
+			f.layoutCache = nil // external mutation bypassed TextEditor.Replace
+		}
 		f.changed()
 	}
 }
@@ -56,6 +65,8 @@ func (f *TextField) SetText(text string) {
 	}
 	f.Text = text
 	f.editor.SetText(text)
+	f.layoutCache = nil
+	f.compositionCache = nil
 	f.composing = false
 	f.Cursor = f.editor.Caret
 	f.invalidateLayout()
@@ -69,6 +80,8 @@ func (f *TextField) syncExternal() {
 	}
 	if f.editor.Text != f.Text {
 		f.editor.SetText(f.Text)
+		f.layoutCache = nil
+		f.compositionCache = nil
 		f.composing = false
 	}
 	if f.Cursor != f.editor.Caret {
@@ -142,6 +155,10 @@ func (f *TextField) ResetCaretBlink() {
 }
 
 func (f *TextField) changed() {
+	f.compositionCache = nil
+	if f.layoutCache != nil && !f.layoutCache.applyEdit(f, f.editor.lastEdit) {
+		f.layoutCache = nil
+	}
 	f.Text = f.editor.Text
 	f.Cursor = f.editor.Caret
 	f.caretVisible = true
@@ -172,11 +189,12 @@ func (f *TextField) insert(s string) bool {
 	if !f.Multiline {
 		s = strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
 	}
-	a, b := f.editor.selection()
-	r := []rune(f.editor.Text)
-	next := string(r[:a]) + s + string(r[b:])
-	if f.Validate != nil && !f.Validate(next) {
-		return false
+	if f.Validate != nil {
+		a, b := f.editor.selection()
+		r := []rune(f.editor.Text)
+		if !f.Validate(string(r[:a]) + s + string(r[b:])) {
+			return false
+		}
 	}
 	if f.editor.Replace(s) {
 		f.changed()
@@ -186,6 +204,13 @@ func (f *TextField) insert(s string) bool {
 }
 func (f *TextField) delete(backward, word bool) bool {
 	if f.ReadOnly {
+		return false
+	}
+	if f.Validate == nil {
+		if f.editor.Delete(backward, word) {
+			f.changed()
+			return true
+		}
 		return false
 	}
 	a, b := f.editor.selection()
@@ -203,8 +228,10 @@ func (f *TextField) delete(backward, word bool) bool {
 			b = nextGrapheme(r, b)
 		}
 	}
-	if f.Validate != nil && !f.Validate(string(r[:a])+string(r[b:])) {
-		return false
+	if f.Validate != nil {
+		if !f.Validate(string(r[:a]) + string(r[b:])) {
+			return false
+		}
 	}
 	if f.editor.Delete(backward, word) {
 		f.changed()
@@ -259,7 +286,7 @@ func (f *TextField) fontSpec() FontSpec {
 
 func (f *TextField) lineHeight(spec FontSpec) float32 {
 	if fonts := f.fontContext(); fonts != nil {
-		return fonts.Layout("", spec).Height()
+		return fonts.layoutShared("", spec).Height()
 	}
 	return spec.Size * 1.2
 }
@@ -267,6 +294,15 @@ func (f *TextField) lineHeight(spec FontSpec) float32 {
 func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 	var result []textLine
 	measure := func(s string, _ float32) float32 { return f.textWidth(s, spec) }
+	textShaping.RLock()
+	atlasOnly := f.fontContext() == nil && textShaping.engine == nil
+	textShaping.RUnlock()
+	runeWidth := func(start, end int) float32 {
+		if atlasOnly {
+			return walkAtlasRunes(r[start:end], spec.Size, nil, nil)
+		}
+		return f.textWidth(string(r[start:end]), spec)
+	}
 	for start := 0; ; {
 		end := start
 		for end < len(r) && !(f.Multiline && hardTextBreak(r, end) != 0) {
@@ -274,11 +310,17 @@ func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 		}
 		at := start
 		for at < end {
-			limit := end
-			if f.Multiline {
-				limit = wrappedLineEndWith(r, at, end, width, spec.Size, measure)
+			fullWidth := runeWidth(at, end)
+			if !f.Multiline || width <= 0 || fullWidth <= width {
+				result = append(result, textLine{at, end, fullWidth})
+				break
 			}
-			result = append(result, textLine{at, limit, f.textWidth(string(r[at:limit]), spec)})
+			limit := wrappedLineEndWith(r, at, end, width, spec.Size, measure)
+			lineWidth := fullWidth
+			if limit < end {
+				lineWidth = runeWidth(at, limit)
+			}
+			result = append(result, textLine{at, limit, lineWidth})
 			at = limit
 		}
 		if start == end {
@@ -299,7 +341,7 @@ func (f *TextField) Measure(c Constraints) Vec2 {
 	if c.Max.X <= 0 {
 		width = 240
 	}
-	lines := f.lines(f.displayRunes(), width, spec)
+	lines := f.layoutFor(width, spec).lines
 	height := f.Theme().ControlHeight
 	if f.Multiline {
 		height = maxFloat32(height, float32(len(lines))*f.lineHeight(spec)+12)
@@ -316,12 +358,12 @@ func (f *TextField) textGeometry() (Rect, []rune, []textLine, float32) {
 		inner.Y = f.rect.Y + (f.rect.H-lineHeight)*0.5
 		inner.H = lineHeight
 	}
-	r := f.displayRunes()
 	width := float32(0)
 	if f.Multiline {
 		width = inner.W
 	}
-	return inner, r, f.lines(r, width, spec), lineHeight
+	cache := f.layoutFor(width, spec)
+	return inner, cache.runes, cache.lines, lineHeight
 }
 
 func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeight float32) Vec2 {
@@ -330,12 +372,13 @@ func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeigh
 		a, _ := f.editor.selection()
 		caret = a + max(0, f.editor.PreeditCaret)
 	}
-	for i, line := range lines {
-		if caret <= line.end || i == len(lines)-1 {
-			end := min(max(caret, line.start), line.end)
-			return Vec2{X: inner.X + f.caretX(string(r[line.start:line.end]), f.fontSpec(), end-line.start) - f.scrollX,
-				Y: inner.Y + float32(i)*lineHeight - f.scrollY}
-		}
+	if len(lines) > 0 {
+		i := sort.Search(len(lines), func(i int) bool { return lines[i].end >= caret })
+		i = min(i, len(lines)-1)
+		line := lines[i]
+		end := min(max(caret, line.start), line.end)
+		return Vec2{X: inner.X + f.caretX(string(r[line.start:line.end]), f.fontSpec(), end-line.start) - f.scrollX,
+			Y: inner.Y + float32(i)*lineHeight - f.scrollY}
 	}
 	return Vec2{X: inner.X, Y: inner.Y}
 }
@@ -347,7 +390,7 @@ func (f *TextField) CaretRect() Rect {
 }
 func (f *TextField) Baseline() float32 {
 	if fonts := f.fontContext(); fonts != nil {
-		return fonts.Layout("", f.fontSpec()).Ascent + 4
+		return fonts.layoutShared("", f.fontSpec()).Ascent + 4
 	}
 	return f.fontSpec().Size*0.85 + 4
 }
@@ -395,32 +438,39 @@ func (f *TextField) Paint(c *Canvas) {
 		a = preeditStart + max(0, min(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 		b = preeditStart + max(0, max(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 	}
-	for i, line := range lines {
+	first := max(0, int(f.scrollY/lineHeight)-1)
+	last := min(len(lines), int((f.scrollY+inner.H)/lineHeight)+2)
+	for i := first; i < last; i++ {
+		line := lines[i]
 		y := inner.Y + float32(i)*lineHeight - f.scrollY
 		if y+lineHeight < inner.Y || y > inner.Y+inner.H {
 			continue
 		}
 		x := inner.X - f.scrollX
+		text := string(r[line.start:line.end])
 		from, to := max(a, line.start), min(b, line.end)
 		if from < to {
-			left := x + f.caretX(string(r[line.start:line.end]), f.fontSpec(), from-line.start)
-			right := x + f.caretX(string(r[line.start:line.end]), f.fontSpec(), to-line.start)
+			positions := f.caretPositions(text, f.fontSpec())
+			left := x + positions[from-line.start]
+			right := x + positions[to-line.start]
 			c.Rect(Rect{X: min(left, right), Y: y, W: absFloat32(right - left), H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
 		}
 		if line.start < line.end {
-			c.TextStyled(string(r[line.start:line.end]), Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
+			c.TextStyled(text, Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
 				f.fontSpec(), TextLeft, c.theme.Text)
 		}
 	}
 	if f.Focused() && composing {
-		for row, line := range lines {
+		for row := first; row < last; row++ {
+			line := lines[row]
 			from, to := max(preeditStart, line.start), min(preeditEnd, line.end)
 			if from >= to {
 				continue
 			}
 			text := string(r[line.start:line.end])
-			left := inner.X - f.scrollX + f.caretX(text, f.fontSpec(), from-line.start)
-			right := inner.X - f.scrollX + f.caretX(text, f.fontSpec(), to-line.start)
+			positions := f.caretPositions(text, f.fontSpec())
+			left := inner.X - f.scrollX + positions[from-line.start]
+			right := inner.X - f.scrollX + positions[to-line.start]
 			y := inner.Y + float32(row)*lineHeight - f.scrollY + lineHeight - 2
 			c.Line(Vec2{X: left, Y: y}, Vec2{X: right, Y: y}, 1, c.theme.Accent)
 		}
@@ -457,6 +507,7 @@ func (f *TextField) Handle(event Event) bool {
 	switch event.Type {
 	case FocusLost:
 		e.Preedit = ""
+		f.compositionCache = nil
 		f.composing = false
 		f.caretVisible = true
 		if f.OnSubmit != nil {
@@ -546,6 +597,7 @@ func (f *TextField) Handle(event Event) bool {
 	case CompositionEnd:
 		f.composing = false
 		e.Preedit = ""
+		f.compositionCache = nil
 		f.invalidatePaint()
 		if event.Text != "" {
 			return f.insert(event.Text)
@@ -710,17 +762,21 @@ func (f *TextField) compositionGeometry() (Rect, []rune, []textLine, float32) {
 	a, b := f.editor.selection()
 	a = min(max(a, 0), len(r))
 	b = min(max(b, a), len(r))
+	if f.compositionCache != nil && f.compositionBase == f.layoutCache &&
+		f.compositionText == f.editor.Preedit && f.compositionStart == a && f.compositionEnd == b {
+		return inner, f.compositionCache.runes, f.compositionCache.lines, h
+	}
 	preedit := []rune(f.editor.Preedit)
 	if f.Password {
 		maskPasswordRunes(preedit, f.fontContext() != nil)
 	}
-	displayed := make([]rune, 0, len(r)-(b-a)+len(preedit))
-	displayed = append(displayed, r[:a]...)
-	displayed = append(displayed, preedit...)
-	displayed = append(displayed, r[b:]...)
-	width := float32(0)
-	if f.Multiline {
-		width = inner.W
-	}
-	return inner, displayed, f.lines(displayed, width, f.fontSpec()), h
+	copyOfBase := *f.layoutCache
+	copyOfBase.runes = append([]rune(nil), r...)
+	copyOfBase.lines = append([]textLine(nil), lines...)
+	copyOfBase.replaceRange(f, a, b, preedit)
+	f.compositionCache = &copyOfBase
+	f.compositionBase = f.layoutCache
+	f.compositionText = f.editor.Preedit
+	f.compositionStart, f.compositionEnd = a, b
+	return inner, copyOfBase.runes, copyOfBase.lines, h
 }

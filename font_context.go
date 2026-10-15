@@ -10,7 +10,6 @@ import (
 	"unicode"
 )
 
-
 type FontSpec struct {
 	Family   string
 	Weight   int
@@ -58,7 +57,25 @@ type cachedGlyph struct {
 	bytes  int
 }
 
+type layoutKey struct {
+	text string
+	spec FontSpec
+}
+
+type faceOrderKey struct {
+	family string
+	weight int
+	italic bool
+}
+
+type cachedLayout struct {
+	key   layoutKey
+	line  TextLayout
+	bytes int
+}
+
 const defaultGlyphCacheBytes = 8 << 20
+const defaultLayoutCacheBytes = 8 << 20
 
 type FontContext struct {
 	mu           sync.Mutex
@@ -66,10 +83,19 @@ type FontContext struct {
 	cache        map[glyphKey]*list.Element
 	lru          list.List
 	bytes, limit int
+	layouts      map[layoutKey]*list.Element
+	layoutLRU    list.List
+	layoutBytes  int
+	layoutLimit  int
+	layoutHits   uint64
+	layoutMisses uint64
+	generation   uint64
+	faceOrders   map[faceOrderKey][]int
 }
 
 func NewFontContext() *FontContext {
-	return &FontContext{cache: make(map[glyphKey]*list.Element), limit: defaultGlyphCacheBytes}
+	return &FontContext{cache: make(map[glyphKey]*list.Element), limit: defaultGlyphCacheBytes,
+		layouts: make(map[layoutKey]*list.Element), layoutLimit: defaultLayoutCacheBytes}
 }
 
 func NewSystemFontContext() *FontContext {
@@ -86,6 +112,9 @@ func (ctx *FontContext) AddSystemFallbacks() {
 	for _, face := range defaultSystemFaces() {
 		ctx.faces = append(ctx.faces, registeredFace{weight: 400, face: face})
 	}
+	ctx.clearLayouts()
+	clear(ctx.faceOrders)
+	ctx.generation++
 	ctx.mu.Unlock()
 }
 
@@ -102,6 +131,9 @@ func (ctx *FontContext) AddFont(family string, weight int, italic bool, data []b
 	}
 	ctx.mu.Lock()
 	ctx.faces = append(ctx.faces, registeredFace{family: strings.ToLower(strings.TrimSpace(family)), weight: weight, italic: italic, face: face})
+	ctx.clearLayouts()
+	clear(ctx.faceOrders)
+	ctx.generation++
 	ctx.mu.Unlock()
 	return nil
 }
@@ -113,6 +145,8 @@ func (ctx *FontContext) SetCacheLimit(bytes int) {
 	ctx.mu.Lock()
 	ctx.limit = max(0, bytes)
 	ctx.evict()
+	// A cached run can otherwise keep an evicted mask alive indefinitely.
+	ctx.clearLayouts()
 	ctx.mu.Unlock()
 }
 
@@ -123,6 +157,51 @@ func (ctx *FontContext) CacheUsage() (bytes, entries int) {
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
 	return ctx.bytes, len(ctx.cache)
+}
+
+// SetLayoutCacheLimit bounds retained shaped runs independently of glyph masks.
+func (ctx *FontContext) SetLayoutCacheLimit(bytes int) {
+	if ctx == nil {
+		return
+	}
+	ctx.mu.Lock()
+	ctx.layoutLimit = max(0, bytes)
+	ctx.evictLayouts()
+	ctx.mu.Unlock()
+}
+
+func (ctx *FontContext) LayoutCacheStats() (bytes, entries int, hits, misses uint64) {
+	if ctx == nil {
+		return
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.layoutBytes, len(ctx.layouts), ctx.layoutHits, ctx.layoutMisses
+}
+
+func (ctx *FontContext) layoutGeneration() uint64 {
+	if ctx == nil {
+		return 0
+	}
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.generation
+}
+
+func (ctx *FontContext) clearLayouts() {
+	clear(ctx.layouts)
+	ctx.layoutLRU.Init()
+	ctx.layoutBytes = 0
+}
+
+func (ctx *FontContext) evictLayouts() {
+	for ctx.layoutBytes > ctx.layoutLimit && ctx.layoutLRU.Len() > 0 {
+		e := ctx.layoutLRU.Back()
+		entry := e.Value.(cachedLayout)
+		ctx.layoutBytes -= entry.bytes
+		delete(ctx.layouts, entry.key)
+		ctx.layoutLRU.Remove(e)
+	}
 }
 
 func (ctx *FontContext) evict() {
@@ -156,6 +235,10 @@ func normalFontSpec(spec FontSpec) FontSpec {
 }
 
 func (ctx *FontContext) orderedFaces(spec FontSpec) []int {
+	key := faceOrderKey{family: spec.Family, weight: spec.Weight, italic: spec.Italic}
+	if order, ok := ctx.faceOrders[key]; ok {
+		return order
+	}
 	order := make([]int, 0, len(ctx.faces))
 	if spec.Family == "" && len(ctx.faces) > 0 {
 		spec.Family = ctx.faces[0].family
@@ -178,7 +261,91 @@ func (ctx *FontContext) orderedFaces(spec FontSpec) []int {
 			order = append(order, i)
 		}
 	}
+	if ctx.faceOrders == nil {
+		ctx.faceOrders = make(map[faceOrderKey][]int)
+	}
+	ctx.faceOrders[key] = order
 	return order
+}
+
+// Advance measures without rasterizing offscreen glyph masks or creating
+// caret/glyph runs. It uses the same face selection and kerning as Layout.
+func (ctx *FontContext) Advance(text string, request FontSpec) float32 {
+	if ctx == nil {
+		return 0
+	}
+	spec := normalFontSpec(request)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	key := layoutKey{spec: spec, text: text}
+	if entry := ctx.layouts[key]; entry != nil {
+		ctx.layoutHits++
+		ctx.layoutLRU.MoveToFront(entry)
+		return entry.Value.(cachedLayout).line.Advance
+	}
+	order := ctx.orderedFaces(spec)
+	r := []rune(text)
+	advance := float32(0)
+	priorFace := -1
+	var priorID uint16
+	var priorAdvance float32
+	for at := 0; at < len(r); {
+		end := nextGrapheme(r, at)
+		cluster := r[at:end]
+		if len(cluster) == 2 {
+			if composed := composeRussian(cluster[0], cluster[1]); composed != 0 {
+				if _, _, ok := ctx.faceFor([]rune{composed}, order); ok {
+					cluster = []rune{composed}
+				}
+			}
+		}
+		index, id, ok := -1, uint16(0), false
+		if len(cluster) == 1 {
+			for _, candidate := range order {
+				id = ctx.faces[candidate].face.glyphIndex(cluster[0])
+				if id != 0 || invisibleRune(cluster[0]) || unicode.IsSpace(cluster[0]) {
+					index, ok = candidate, true
+					break
+				}
+			}
+		} else {
+			if selected, ids, found := ctx.faceFor(cluster, order); found {
+				index, id, ok = selected, ids[0], true
+			} else if selected, ids, found := ctx.faceFor(cluster[:1], order); found {
+				index, id, ok = selected, ids[0], true
+			}
+		}
+		if !ok {
+			step := spec.Size * 0.6
+			if invisibleRune(r[at]) || unicode.Is(unicode.Mn, r[at]) {
+				step = 0
+			}
+			if unicode.IsSpace(r[at]) {
+				step = spec.Size * 0.33
+			}
+			advance += step
+			priorFace = -1
+		} else {
+			if index == priorFace {
+				kern := ctx.faces[index].face.atlasKerning(priorID, id) * spec.Size
+				advance += maxFloat32(-priorAdvance, kern)
+			}
+			step := ctx.faces[index].face.advance(id) * spec.Size
+			if unicode.IsSpace(cluster[0]) && id == 0 {
+				step = spec.Size * 0.33
+			}
+			if cluster[0] == '\t' {
+				step = spec.Size * 0.33 * 4
+			}
+			if invisibleRune(cluster[0]) {
+				step = 0
+			}
+			advance += maxFloat32(0, step)
+			priorFace, priorID, priorAdvance = index, id, step
+		}
+		at = end
+	}
+	return advance
 }
 
 func faceDistance(face registeredFace, spec FontSpec) int {
@@ -267,16 +434,33 @@ func (ctx *FontContext) fallbackMaskFor(character rune, spec FontSpec) (*image.A
 	return mask, offset
 }
 
+// Layout gives callers independent slices; package painting uses layoutShared
+// while building its synchronous command list.
 func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
+	line := ctx.layoutShared(text, request)
+	line.Carets = append([]float32(nil), line.Carets...)
+	line.Glyphs = append([]PositionedGlyph(nil), line.Glyphs...)
+	return line
+}
+
+func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	spec := normalFontSpec(request)
-	r := []rune(text)
-	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	if ctx == nil {
+		line := TextLayout{Carets: make([]float32, len([]rune(text))+1)}
 		line.Ascent, line.Descent, line.LineGap = spec.Size*0.85, spec.Size*0.25, spec.Size*0.1
 		return line
 	}
 	ctx.mu.Lock()
 	defer ctx.mu.Unlock()
+	key := layoutKey{spec: spec, text: text}
+	if entry := ctx.layouts[key]; entry != nil {
+		ctx.layoutHits++
+		ctx.layoutLRU.MoveToFront(entry)
+		return entry.Value.(cachedLayout).line
+	}
+	ctx.layoutMisses++
+	r := []rune(text)
+	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	order := ctx.orderedFaces(spec)
 	for _, index := range order {
 		hhea := ctx.faces[index].face.tables["hhea"]
@@ -416,6 +600,13 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 	for i := range line.Glyphs {
 		line.Glyphs[i].Y += line.Ascent
 	}
+	cost := len(text) + len(line.Carets)*4 + len(line.Glyphs)*40 + 128
+	if cost <= ctx.layoutLimit {
+		e := ctx.layoutLRU.PushFront(cachedLayout{key: key, line: line, bytes: cost})
+		ctx.layouts[key] = e
+		ctx.layoutBytes += cost
+		ctx.evictLayouts()
+	}
 	return line
 }
 
@@ -474,7 +665,7 @@ func accentMask(mark rune, physical float32) (*image.Alpha, Vec2) {
 }
 
 func (ctx *FontContext) CaretX(text string, spec FontSpec, at int) float32 {
-	line := ctx.Layout(text, spec)
+	line := ctx.layoutShared(text, spec)
 	return line.Carets[min(max(0, at), len(line.Carets)-1)]
 }
 
@@ -482,7 +673,7 @@ func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 	spec = normalFontSpec(spec)
 	maxWidth, height := float32(0), float32(0)
 	for _, s := range strings.Split(normalizeTextBreaks(text), "\n") {
-		line := ctx.Layout(s, spec)
+		line := ctx.layoutShared(s, spec)
 		maxWidth = maxFloat32(maxWidth, line.Advance)
 		height += line.Height()
 	}
@@ -491,8 +682,8 @@ func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 
 func (ctx *FontContext) Ellipsize(text string, width float32, spec FontSpec) string {
 	ellipsis := "…"
-	if glyphs := ctx.Layout(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {
+	if glyphs := ctx.layoutShared(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {
 		ellipsis = "..."
 	}
-	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.Layout(s, spec).Advance }, ellipsis)
+	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.layoutShared(s, spec).Advance }, ellipsis)
 }
