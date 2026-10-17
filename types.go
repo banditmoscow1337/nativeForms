@@ -75,8 +75,8 @@ func (c Color) WithAlpha(alpha float32) Color {
 var Transparent = Color{}
 
 type Constraints struct {
-	Min Vec2
-	Max Vec2
+	Min                Vec2
+	Max                Vec2
 	BoundedX, BoundedY bool
 }
 

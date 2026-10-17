@@ -106,17 +106,17 @@ const (
 )
 
 type Event struct {
-	Type   EventType
-	Key    Key
-	Repeat bool
-	Button MouseButton
-	X      float32
-	Y      float32
-	Scroll Vec2
-	Mods   int
-	Rune   rune
-	Text   string
-	Clicks int    // 1: caret, 2: word, 3: line
+	Type                                 EventType
+	Key                                  Key
+	Repeat                               bool
+	Button                               MouseButton
+	X                                    float32
+	Y                                    float32
+	Scroll                               Vec2
+	Mods                                 int
+	Rune                                 rune
+	Text                                 string
+	Clicks                               int // 1: caret, 2: word, 3: line
 	CompositionCursor, CompositionAnchor int
 	CompositionSelection                 bool
 }

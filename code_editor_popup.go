@@ -11,7 +11,7 @@ func (e *CodeEditor) ShowCompletions(items []MenuItem) PopupID {
 	menu := NewMenu(items, nil)
 	menu.MaxVisibleItems = 8
 	id := e.manager.OpenUnfocusedPopup(menu, PopupOptions{
-		Owner: e,
+		Owner:  e,
 		Anchor: e.CaretRect,
 		OnKeyDown: func(event Event) bool {
 			if event.Mods != 0 {

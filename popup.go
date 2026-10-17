@@ -7,23 +7,23 @@ type PopupID uint64
 // supplies the size; when either dimension is zero the content is measured.
 // Passive popups let pointer events reach the content underneath them.
 type PopupOptions struct {
-	Owner Component
-	Anchor func() Rect
-	Bounds Rect
-	Passive bool
+	Owner     Component
+	Anchor    func() Rect
+	Bounds    Rect
+	Passive   bool
 	OnKeyDown func(Event) bool
 }
 
 type popupEntry struct {
-	id       PopupID
-	content  Component
-	bounds   Rect
-	modal    bool
-	previous Component
-	passive  bool
+	id        PopupID
+	content   Component
+	bounds    Rect
+	modal     bool
+	previous  Component
+	passive   bool
 	keepFocus bool
-	owner Component
-	anchor func() Rect
+	owner     Component
+	anchor    func() Rect
 	onKeyDown func(Event) bool
 }
 
@@ -247,7 +247,7 @@ func (manager *Manager) layoutPopups(viewport Rect) {
 		bounds.H = minFloat32(maxHeight, maxFloat32(0, bounds.H))
 		if entry.anchor != nil && bounds.Y+bounds.H > viewport.Y+viewport.H &&
 			anchor.Y-bounds.H >= viewport.Y {
-			bounds.Y = anchor.Y-bounds.H
+			bounds.Y = anchor.Y - bounds.H
 		}
 		bounds.X = clampFloat32(bounds.X, viewport.X, viewport.X+viewport.W-bounds.W)
 		bounds.Y = clampFloat32(bounds.Y, viewport.Y, viewport.Y+viewport.H-bounds.H)

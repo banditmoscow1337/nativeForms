@@ -339,4 +339,3 @@ func (bar *ProgressBar) Paint(canvas *Canvas) {
 		canvas.Text(fmt.Sprintf("%d%%", int(clampFloat32(bar.Value, 0, 1)*100+0.5)), bar.rect, canvas.theme.FontSize*0.8, TextCenter, canvas.theme.Text)
 	}
 }
-

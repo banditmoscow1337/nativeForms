@@ -80,8 +80,8 @@ func TestEditorPopupAnchorPointerAndFocusLifetime(t *testing.T) {
 	if r.X != 30 || r.Y != 36 {
 		t.Fatalf("popup did not follow its anchor: %+v", r)
 	}
-	manager.HandleEvent(Event{Type: PointerDown, X: r.X+2, Y: r.Y+2, Button: MouseLeft})
-	manager.HandleEvent(Event{Type: PointerUp, X: r.X+2, Y: r.Y+2, Button: MouseLeft})
+	manager.HandleEvent(Event{Type: PointerDown, X: r.X + 2, Y: r.Y + 2, Button: MouseLeft})
+	manager.HandleEvent(Event{Type: PointerUp, X: r.X + 2, Y: r.Y + 2, Button: MouseLeft})
 	if manager.focused != editor || len(manager.popups) != 1 {
 		t.Fatal("passive popup blocked editor pointer input")
 	}
@@ -105,8 +105,8 @@ func TestCodeEditorCompletionPointerSelection(t *testing.T) {
 	})
 	manager.BeginFrame(400, 300, 0)
 	menu := manager.popups[0].content.(*Menu)
-	x := menu.rect.X+10
-	y := menu.rect.Y+4+manager.Theme().ControlHeight+5
+	x := menu.rect.X + 10
+	y := menu.rect.Y + 4 + manager.Theme().ControlHeight + 5
 	manager.HandleEvent(Event{Type: PointerMove, X: x, Y: y})
 	manager.HandleEvent(Event{Type: PointerDown, X: x, Y: y, Button: MouseLeft})
 	if manager.focused != editor {

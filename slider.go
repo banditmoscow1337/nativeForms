@@ -176,3 +176,4 @@ func (slider *Slider) Handle(event Event) bool {
 
 func (slider *Slider) trackRect() Rect {
 	return Rect{X: slider.rect.X + 14, Y: slider.rect.Y + slider.rect.H - 17, W: maxFloat32(0, slider.rect.W-28), H: 5}
+}

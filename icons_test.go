@@ -91,9 +91,9 @@ type iconListModel struct {
 	calls int
 }
 
-func (m *iconListModel) Len() int                   { return 1000 }
-func (m *iconListModel) ID(i int) string            { return "row" }
-func (m *iconListModel) Label(i int) string         { return "Row" }
+func (m *iconListModel) Len() int                  { return 1000 }
+func (m *iconListModel) ID(i int) string           { return "row" }
+func (m *iconListModel) Label(i int) string        { return "Row" }
 func (m *iconListModel) Icon(i int) *ImageResource { m.calls++; return m.icon }
 
 type iconTreeModelWithImage struct{ icon *ImageResource }
@@ -107,7 +107,7 @@ func (m iconTreeModelWithImage) Children(id string) int {
 	}
 	return 0
 }
-func (m iconTreeModelWithImage) Child(string, int) string { return "leaf" }
+func (m iconTreeModelWithImage) Child(string, int) string   { return "leaf" }
 func (m iconTreeModelWithImage) Icon(string) *ImageResource { return m.icon }
 
 type iconTableModel struct {
@@ -115,11 +115,11 @@ type iconTableModel struct {
 	calls int
 }
 
-func (m *iconTableModel) Len() int                 { return 1000 }
-func (m *iconTableModel) ID(int) string            { return "row" }
-func (m *iconTableModel) Columns() int             { return 2 }
-func (m *iconTableModel) Header(int) string        { return "Column" }
-func (m *iconTableModel) Cell(int, int) string     { return "Cell" }
+func (m *iconTableModel) Len() int             { return 1000 }
+func (m *iconTableModel) ID(int) string        { return "row" }
+func (m *iconTableModel) Columns() int         { return 2 }
+func (m *iconTableModel) Header(int) string    { return "Column" }
+func (m *iconTableModel) Cell(int, int) string { return "Cell" }
 func (m *iconTableModel) CellIcon(_, col int) *ImageResource {
 	m.calls++
 	if col == 0 {

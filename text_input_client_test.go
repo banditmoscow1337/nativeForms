@@ -9,14 +9,14 @@ import (
 
 type sampleTextInput struct {
 	State
-	snapshot TextInputState
-	active   bool
-	composes bool
-	requested int
-	start, end int
-	value string
+	snapshot                   TextInputState
+	active                     bool
+	composes                   bool
+	requested                  int
+	start, end                 int
+	value                      string
 	selectedStart, selectedEnd int
-	resets, blinks int
+	resets, blinks             int
 }
 
 func (c *sampleTextInput) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
@@ -31,10 +31,10 @@ func (c *sampleTextInput) SelectTextRange(start, end int) bool {
 	c.selectedStart, c.selectedEnd = start, end
 	return true
 }
-func (c *sampleTextInput) CaretRect() Rect { return Rect{X: 12, Y: 34, W: 1, H: 18} }
+func (c *sampleTextInput) CaretRect() Rect          { return Rect{X: 12, Y: 34, W: 1, H: 18} }
 func (c *sampleTextInput) TextInputComposing() bool { return c.composes }
-func (c *sampleTextInput) ResetCaretBlink() { c.resets++ }
-func (c *sampleTextInput) BlinkCaret() { c.blinks++ }
+func (c *sampleTextInput) ResetCaretBlink()         { c.resets++ }
+func (c *sampleTextInput) BlinkCaret()              { c.blinks++ }
 func (c *sampleTextInput) Handle(event Event) bool {
 	if event.Type == KeyDown && event.Key == KeyEscape && c.composes {
 		c.composes = false

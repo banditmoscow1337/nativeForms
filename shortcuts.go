@@ -3,8 +3,8 @@ package nativeforms
 type ShortcutID uint64
 
 type Shortcut struct {
-	Key          Key
-	Mods         int
+	Key  Key
+	Mods int
 	// Scope limits the shortcut to a focused component and its descendants.
 	// A nil Scope registers an application shortcut.
 	Scope        Component

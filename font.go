@@ -249,7 +249,7 @@ func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 
 func glyphForRune(character rune) glyphInfo {
 	FontAtlas()
-	
+
 	switch character {
 	case '\r', '\n', '\u0085', '\u2028', '\u2029', '\u00ad', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff':
 		return glyphInfo{}

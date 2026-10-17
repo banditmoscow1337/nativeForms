@@ -286,9 +286,9 @@ func (d *Document) applySorted(root *piece, edits []Edit) *piece {
 }
 
 type piece struct {
-	left, right *piece
-	text        string
-	priority    uint64
+	left, right         *piece
+	text                string
+	priority            uint64
 	bytes, lines, utf16 int
 }
 

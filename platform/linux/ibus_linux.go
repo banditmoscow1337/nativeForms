@@ -28,9 +28,9 @@ type linuxIME struct {
 	screenX, screenY                    int
 	scale                               float32
 	preedit                             string
-	surrounding                        string
-	surroundingBase, surroundingCursor int
-	surroundingValid                  bool
+	surrounding                         string
+	surroundingBase, surroundingCursor  int
+	surroundingValid                    bool
 }
 
 func openLinuxIME(m *ui.Manager) *linuxIME {

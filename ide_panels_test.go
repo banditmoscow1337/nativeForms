@@ -10,10 +10,10 @@ type mutablePanelTree struct {
 	children map[string][]string
 }
 
-func (m *mutablePanelTree) Roots() int { return len(m.roots) }
-func (m *mutablePanelTree) Root(i int) string { return m.roots[i] }
-func (m *mutablePanelTree) Label(id string) string { return id }
-func (m *mutablePanelTree) Children(id string) int { return len(m.children[id]) }
+func (m *mutablePanelTree) Roots() int                    { return len(m.roots) }
+func (m *mutablePanelTree) Root(i int) string             { return m.roots[i] }
+func (m *mutablePanelTree) Label(id string) string        { return id }
+func (m *mutablePanelTree) Children(id string) int        { return len(m.children[id]) }
 func (m *mutablePanelTree) Child(id string, i int) string { return m.children[id][i] }
 
 func TestVirtualTreeModelChanged(t *testing.T) {

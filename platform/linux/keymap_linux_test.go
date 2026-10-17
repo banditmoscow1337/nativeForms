@@ -41,10 +41,10 @@ func TestSurroundingTextKeepsLocalOffsetsAndUTF8Boundaries(t *testing.T) {
 
 func TestWaylandEditorKeyTranslation(t *testing.T) {
 	for _, tc := range []struct {
-		code uint32
+		code  uint32
 		shift bool
-		key ui.Key
-		r rune
+		key   ui.Key
+		r     rune
 	}{
 		{15, false, ui.KeyTab, 0}, {104, false, ui.KeyPageUp, 0},
 		{109, false, ui.KeyPageDown, 0}, {110, false, ui.KeyInsert, 0},
