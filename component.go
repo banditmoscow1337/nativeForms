@@ -101,16 +101,7 @@ func (state *State) ellipsizeText(text string, width float32, spec FontSpec) str
 }
 
 func (state *State) Measure(constraints Constraints) Vec2 {
-	size := state.preferred
-	size.X = maxFloat32(size.X, state.minimum.X)
-	size.Y = maxFloat32(size.Y, state.minimum.Y)
-	if state.maximum.X > 0 {
-		size.X = minFloat32(size.X, state.maximum.X)
-	}
-	if state.maximum.Y > 0 {
-		size.Y = minFloat32(size.Y, state.maximum.Y)
-	}
-	return constraints.Constrain(size)
+	return measureWithState(state, state.preferred, constraints)
 }
 
 func (state *State) Arrange(rect Rect)    { state.rect = rect }
@@ -619,4 +610,22 @@ func NewSpacer(width, height float32) *Spacer {
 	spacer.owner = spacer
 	spacer.preferred = Vec2{X: width, Y: height}
 	return spacer
+}
+
+func measureWithState(state *State, desired Vec2, constraints Constraints) Vec2 {
+	if state.preferred.X > 0 {
+		desired.X = state.preferred.X
+	}
+	if state.preferred.Y > 0 {
+		desired.Y = state.preferred.Y
+	}
+	desired.X = maxFloat32(desired.X, state.minimum.X)
+	desired.Y = maxFloat32(desired.Y, state.minimum.Y)
+	if state.maximum.X > 0 {
+		desired.X = minFloat32(desired.X, state.maximum.X)
+	}
+	if state.maximum.Y > 0 {
+		desired.Y = minFloat32(desired.Y, state.maximum.Y)
+	}
+	return constraints.Constrain(desired)
 }

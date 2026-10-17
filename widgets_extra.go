@@ -88,16 +88,10 @@ func NewRadioGroup(options []RadioOption, selected string, onChange func(string)
 }
 
 func (r *RadioGroup) SetSelected(id string) {
-	for _, option := range r.Options {
-		if option.ID == id {
-			if id != r.SelectedID {
-				r.SelectedID = id
-				r.invalidatePaint()
-				if r.OnChange != nil {
-					r.OnChange(id)
-				}
-			}
-			return
+	if selectRadioOption(r.Options, &r.SelectedID, id) {
+		r.invalidatePaint()
+		if r.OnChange != nil {
+			r.OnChange(id)
 		}
 	}
 }
@@ -423,18 +417,26 @@ func NewComboBox(options []RadioOption, selected string, onChange func(string)) 
 }
 
 func (c *ComboBox) SetSelected(id string) {
-	for _, option := range c.Options {
-		if option.ID == id {
-			if c.SelectedID != id {
-				c.SelectedID = id
-				c.invalidatePaint()
-				if c.OnChange != nil {
-					c.OnChange(id)
-				}
-			}
-			return
+	if selectRadioOption(c.Options, &c.SelectedID, id) {
+		c.invalidatePaint()
+		if c.OnChange != nil {
+			c.OnChange(id)
 		}
 	}
+}
+
+// selectRadioOption updates a shared option selection only for a known, new ID.
+func selectRadioOption(options []RadioOption, selected *string, id string) bool {
+	for _, option := range options {
+		if option.ID == id {
+			if *selected == id {
+				return false
+			}
+			*selected = id
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ComboBox) Measure(limits Constraints) Vec2 {
