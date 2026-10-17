@@ -409,31 +409,26 @@ func parseSimpleGlyph(b []byte, count int) (outline, error) {
 type floatPoint struct{ x, y float32 }
 type segment struct{ a, b floatPoint }
 
-func (f *TrueTypeFace) drawGlyph(atlas *image.NRGBA, id uint16, cellX, cellY int) error {
-	o, err := f.glyph(id, 0)
-	if err != nil {
-		return err
-	}
-	if len(o.points) == 0 {
-		return nil
-	}
-	scale := float32(fontReferenceSize) / float32(f.units)
-	transform := func(p fontPoint) floatPoint {
-		return floatPoint{x: float32(cellX) + 5 + p.x*scale, y: float32(cellY) + 52 - p.y*scale}
-	}
+// outlineSegments flattens TrueType contours after applying the caller's transform.
+func outlineSegments(o outline, transform func(fontPoint) floatPoint) ([]segment, bool) {
 	var segments []segment
 	start := 0
 	addCurve := func(a, b, c floatPoint) {
 		last := a
 		for i := 1; i <= 12; i++ {
 			t := float32(i) / 12
-			next := floatPoint{x: (1-t)*(1-t)*a.x + 2*(1-t)*t*b.x + t*t*c.x,
-				y: (1-t)*(1-t)*a.y + 2*(1-t)*t*b.y + t*t*c.y}
+			next := floatPoint{
+				x: (1-t)*(1-t)*a.x + 2*(1-t)*t*b.x + t*t*c.x,
+				y: (1-t)*(1-t)*a.y + 2*(1-t)*t*b.y + t*t*c.y,
+			}
 			segments = append(segments, segment{last, next})
 			last = next
 		}
 	}
 	for _, end := range o.ends {
+		if end < start || end >= len(o.points) {
+			return nil, false
+		}
 		contour := o.points[start : end+1]
 		start = end + 1
 		if len(contour) == 0 {
@@ -470,6 +465,25 @@ func (f *TrueTypeFace) drawGlyph(atlas *image.NRGBA, id uint16, cellX, cellY int
 			}
 		}
 		segments = append(segments, segment{current, transform(begin)})
+	}
+	return segments, true
+}
+
+func (f *TrueTypeFace) drawGlyph(atlas *image.NRGBA, id uint16, cellX, cellY int) error {
+	o, err := f.glyph(id, 0)
+	if err != nil {
+		return err
+	}
+	if len(o.points) == 0 {
+		return nil
+	}
+	scale := float32(fontReferenceSize) / float32(f.units)
+	transform := func(p fontPoint) floatPoint {
+		return floatPoint{x: float32(cellX) + 5 + p.x*scale, y: float32(cellY) + 52 - p.y*scale}
+	}
+	segments, ok := outlineSegments(o, transform)
+	if !ok {
+		return fmt.Errorf("invalid glyph outline")
 	}
 	if len(segments) == 0 {
 		return nil

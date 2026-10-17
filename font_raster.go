@@ -16,60 +16,9 @@ func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alph
 		}
 		return floatPoint{x: x, y: -p.y * scale}
 	}
-	var segments []segment
-	start := 0
-	addCurve := func(a, b, c floatPoint) {
-		last := a
-		for i := 1; i <= 12; i++ {
-			t := float32(i) / 12
-			next := floatPoint{
-				x: (1-t)*(1-t)*a.x + 2*(1-t)*t*b.x + t*t*c.x,
-				y: (1-t)*(1-t)*a.y + 2*(1-t)*t*b.y + t*t*c.y,
-			}
-			segments = append(segments, segment{last, next})
-			last = next
-		}
-	}
-	for _, end := range o.ends {
-		if end < start || end >= len(o.points) {
-			return nil, Vec2{}
-		}
-		contour := o.points[start : end+1]
-		start = end + 1
-		if len(contour) == 0 {
-			continue
-		}
-		last, first := contour[len(contour)-1], contour[0]
-		begin := first
-		if !first.on {
-			if last.on {
-				begin = last
-			} else {
-				begin = fontPoint{x: (first.x + last.x) * 0.5, y: (first.y + last.y) * 0.5, on: true}
-			}
-		}
-		current := transform(begin)
-		for i := 0; i < len(contour); {
-			next := contour[i]
-			if next.on {
-				target := transform(next)
-				segments = append(segments, segment{current, target})
-				current = target
-				i++
-			} else {
-				after := contour[(i+1)%len(contour)]
-				if !after.on {
-					after = fontPoint{x: (next.x + after.x) * 0.5, y: (next.y + after.y) * 0.5, on: true}
-					i++
-				} else {
-					i += 2
-				}
-				target := transform(after)
-				addCurve(current, transform(next), target)
-				current = target
-			}
-		}
-		segments = append(segments, segment{current, transform(begin)})
+	segments, ok := outlineSegments(o, transform)
+	if !ok {
+		return nil, Vec2{}
 	}
 	if len(segments) == 0 {
 		return nil, Vec2{}
