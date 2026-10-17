@@ -4,6 +4,7 @@
 import argparse
 import json
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 from statistics import median
@@ -36,12 +37,17 @@ def summarize(path):
     frames = []
     actions = []
     summary = None
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    truncated = False
+    for number, line in enumerate(lines, 1):
         if not line.strip():
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
+            if number == len(lines) and not line.endswith("\n"):
+                truncated = True
+                break
             raise ValueError(f"{path}:{number}: {exc}") from exc
         kind = record.get("Kind", record.get("kind"))
         if kind == "manifest":
@@ -53,7 +59,7 @@ def summarize(path):
         elif kind == "summary":
             summary = record
     if manifest is None:
-        raise ValueError(f"{path}: missing manifest")
+        raise ValueError(f"{path}: missing manifest ({'empty trace' if not lines else 'invalid trace'}; see matching .log)")
     print(f"{path}: {manifest.get('Scenario', 'unknown')} pattern={manifest.get('Pattern', 'unknown')} "
           f"requested={manifest.get('Graphics', 'unknown')} revision={manifest.get('Revision', 'unknown')}")
     print(f"  target={manifest.get('OS')}/{manifest.get('Arch')} "
@@ -81,6 +87,8 @@ def summarize(path):
         print(f"  texture uploads={sum(frame.get('TextureUploads', 0) for frame in frames)} "
               f"bytes={sum(frame.get('UploadBytes', 0) for frame in frames)}; "
               f"mask atlas fallbacks={sum(frame.get('MaskAtlasFallbacks', 0) for frame in frames)}")
+    if truncated:
+        print("  incomplete: truncated final JSON record")
     if summary is None:
         print("  incomplete: missing summary record")
     else:
@@ -91,12 +99,14 @@ def summarize(path):
             f"{summary.get('skipped_actions', 0)}"
         )
 
-    return manifest, frames
+    return manifest, frames, summary is not None and not truncated
 
 
 def compare(software, hardware):
-    a, af = software
-    b, bf = hardware
+    a, af, a_complete = software
+    b, bf, b_complete = hardware
+    if not a_complete or not b_complete:
+        raise ValueError("comparison rejected: incomplete trace")
     keys = ("Scenario", "Pattern", "Count", "Width", "Height", "Interval", "Warmup", "OS", "Arch", "OSVersion", "Display", "CPU", "GPU", "PowerProfile", "Revision")
     differences = [key for key in keys if a.get(key) != b.get(key)]
     if differences:
@@ -116,6 +126,8 @@ def compare(software, hardware):
 
 
 def check_fallback(initialization, runtime):
+    if not initialization[2] or not runtime[2]:
+        raise ValueError("fallback check rejected: incomplete trace")
     init_frames, render_frames = initialization[1], runtime[1]
     if not init_frames or any(
         not frame.get("Backend", "").startswith("software/")
@@ -142,13 +154,35 @@ if __name__ == "__main__":
     parser.add_argument("--compare", action="store_true", help="compare two files, software then hardware")
     parser.add_argument("--check-fallback", action="store_true", help="validate init and render fault traces")
     arguments = parser.parse_args()
-    runs = [summarize(file) for file in arguments.files]
+    if (arguments.compare or arguments.check_fallback) and len(arguments.files) != 2:
+        parser.error("--compare and --check-fallback each require two files")
+    runs = []
+    failed = False
+    for file in arguments.files:
+        try:
+            run = summarize(file)
+        except (OSError, ValueError) as exc:
+            print(f"invalid trace: {exc}")
+            run = None
+        runs.append(run)
+        failed |= run is None or not run[2]
     if arguments.compare:
-        if len(runs) != 2:
-            parser.error("--compare requires two files: software then hardware")
-        compare(*runs)
+        if None in runs:
+            print("comparison rejected: invalid trace")
+        else:
+            try:
+                compare(*runs)
+            except ValueError as exc:
+                print(exc)
+                failed = True
     if arguments.check_fallback:
-        if len(runs) != 2:
-            parser.error("--check-fallback requires init and render fault traces")
-        check_fallback(*runs)
+        if None in runs:
+            print("fallback check rejected: invalid trace")
+        else:
+            try:
+                check_fallback(*runs)
+            except ValueError as exc:
+                print(exc)
+                failed = True
+    sys.exit(1 if failed else 0)
 
