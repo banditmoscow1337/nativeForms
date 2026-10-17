@@ -232,8 +232,9 @@ func describeAccessible(c Component) AccessibilityNode {
 		}
 		n.Actions |= AccessibilityActivate
 	case *Slider:
+		minimum, maximum := w.bounds()
 		n.Role, n.Name, n.Value = RoleSlider, w.Text, w.formattedValue()
-		n.Range = &AccessibleRange{Min: w.Min, Max: w.Max, Value: w.Value, Step: w.Step}
+		n.Range = &AccessibleRange{Min: minimum, Max: maximum, Value: w.Value, Step: w.Step}
 		n.Actions |= AccessibilityIncrement | AccessibilityDecrement | AccessibilitySetValue
 	case *ProgressBar:
 		value := clampFloat32(w.Value, 0, 1)
@@ -326,10 +327,7 @@ func (m *Manager) PerformAccessibilityAction(id AccessibleID, action Accessibili
 			}
 			next = float32(v)
 		case AccessibilityIncrement, AccessibilityDecrement:
-			step := w.Step
-			if step <= 0 {
-				step = (w.Max - w.Min) / 20
-			}
+			step := w.stepSize()
 			if action == AccessibilityDecrement {
 				step = -step
 			}

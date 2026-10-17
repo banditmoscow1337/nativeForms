@@ -1,7 +1,5 @@
 package nativeforms
 
-import "math"
-
 type Vec2 struct {
 	X float32
 	Y float32
@@ -198,11 +196,4 @@ func minFloat32(a, b float32) float32 {
 		return a
 	}
 	return b
-}
-
-func roundToStep(value, step float32) float32 {
-	if step <= 0 {
-		return value
-	}
-	return float32(math.Round(float64(value/step))) * step
 }
