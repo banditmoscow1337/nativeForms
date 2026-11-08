@@ -87,6 +87,8 @@ type metalBackend struct {
 	atlasPipeline, imagePipeline  objc.ID
 	slots                         [metalInFlight]metalSlot
 	images                        map[render.TextureKey]metalImage
+	batchTextures                 []objc.ID
+	maskScratch                   []byte
 	used                          int64
 	mesh                          render.Mesh
 	masks                         *render.GlyphAtlas
@@ -254,12 +256,43 @@ func uploadMetalImage(texture objc.ID, source image.Image) error {
 	if b.Empty() {
 		return fmt.Errorf("darwin: empty Metal texture")
 	}
+	if rgba, ok := source.(*image.RGBA); ok && b.Min == (image.Point{}) && rgba.Stride == b.Dx()*4 {
+		uploadMetalPixels(texture, metalRegion{W: uint64(b.Dx()), H: uint64(b.Dy()), Depth: 1}, rgba.Pix, rgba.Stride)
+		return nil
+	}
 	pixels := make([]byte, b.Dx()*b.Dy()*4)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			r, g, blue, a := source.At(x, y).RGBA()
-			i := ((y-b.Min.Y)*b.Dx() + x - b.Min.X) * 4
-			pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = byte(r>>8), byte(g>>8), byte(blue>>8), byte(a>>8)
+	switch src := source.(type) {
+	case *image.NRGBA:
+		w, h := b.Dx(), b.Dy()
+		for y := 0; y < h; y++ {
+			so := src.PixOffset(b.Min.X, b.Min.Y+y)
+			do := y * w * 4
+			row := src.Pix[so : so+w*4]
+			dst := pixels[do : do+w*4]
+			for i := 0; i < len(row); i += 4 {
+				a := uint32(row[i+3])
+				dst[i] = byte((uint32(row[i])*a + 127) / 255)
+				dst[i+1] = byte((uint32(row[i+1])*a + 127) / 255)
+				dst[i+2] = byte((uint32(row[i+2])*a + 127) / 255)
+				dst[i+3] = byte(a)
+			}
+		}
+	case *ui.ImageResource:
+		w, h := b.Dx(), b.Dy()
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				c := src.RGBAAt(b.Min.X+x, b.Min.Y+y)
+				i := (y*w + x) * 4
+				pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = c.R, c.G, c.B, c.A
+			}
+		}
+	default:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				r, g, blue, a := source.At(x, y).RGBA()
+				i := ((y-b.Min.Y)*b.Dx() + x - b.Min.X) * 4
+				pixels[i], pixels[i+1], pixels[i+2], pixels[i+3] = byte(r>>8), byte(g>>8), byte(blue>>8), byte(a>>8)
+			}
 		}
 	}
 	uploadMetalPixels(texture, metalRegion{W: uint64(b.Dx()), H: uint64(b.Dy()), Depth: 1}, pixels, b.Dx()*4)
@@ -303,11 +336,11 @@ func (b *metalBackend) Close() error {
 func (b *metalBackend) prepareSlot(slot *metalSlot, bytes, width, height int) error {
 	if slot.command != 0 {
 		start := time.Now()
-		if objc.Send[uint64](slot.command, selector("status")) < metalCommandComplete {
-			slot.command.Send(selector("waitUntilCompleted"))
+		if msgSendUint0(slot.command, selector("status")) < metalCommandComplete {
+			msgSend0(slot.command, selector("waitUntilCompleted"))
 		}
 		b.stats.GPUWait = time.Since(start)
-		status := objc.Send[uint64](slot.command, selector("status"))
+		status := msgSendUint0(slot.command, selector("status"))
 		if status == metalCommandComplete {
 			begin := objc.Send[float64](slot.command, selector("GPUStartTime"))
 			end := objc.Send[float64](slot.command, selector("GPUEndTime"))
@@ -315,8 +348,8 @@ func (b *metalBackend) prepareSlot(slot *metalSlot, bytes, width, height int) er
 				b.stats.CompletedGPU = time.Duration((end - begin) * float64(time.Second))
 			}
 		}
-		failure := slot.command.Send(selector("error"))
-		slot.command.Send(selector("release"))
+		failure := msgSend0(slot.command, selector("error"))
+		msgSend0(slot.command, selector("release"))
 		slot.command = 0
 		if status == metalCommandError {
 			return fmt.Errorf("%w: %v", render.ErrDeviceLost, metalError("command buffer", failure))
@@ -362,7 +395,11 @@ func (b *metalBackend) prepareSlot(slot *metalSlot, bytes, width, height int) er
 func (b *metalBackend) uploadMasks(slot *metalSlot) {
 	for _, update := range b.masks.UpdatesSince(slot.maskUpdates) {
 		r, mask := update.Rect, update.Mask
-		pixels := make([]byte, r.Dx()*r.Dy()*4)
+		needed := r.Dx() * r.Dy() * 4
+		if cap(b.maskScratch) < needed {
+			b.maskScratch = make([]byte, needed)
+		}
+		pixels := b.maskScratch[:needed]
 		for y := 0; y < r.Dy(); y++ {
 			for x := 0; x < r.Dx(); x++ {
 				i := (y*r.Dx() + x) * 4
@@ -458,7 +495,7 @@ func (b *metalBackend) RenderAtScale(frame ui.Frame, _ *image.RGBA, scale float3
 		return err
 	}
 	if bytes > 0 {
-		pointer := objc.Send[unsafe.Pointer](slot.buffer, selector("contents"))
+		pointer := unsafe.Pointer(uintptr(msgSend0(slot.buffer, selector("contents"))))
 		if pointer == nil {
 			return fmt.Errorf("darwin: Metal buffer is unmapped: %w", render.ErrDeviceLost)
 		}
@@ -468,7 +505,12 @@ func (b *metalBackend) RenderAtScale(frame ui.Frame, _ *image.RGBA, scale float3
 	b.uploadMasks(slot)
 	// Load all new images before encoding. Present commands only refer to
 	// immutable textures; the Metal command buffer retains their references.
-	textures := make([]objc.ID, len(mesh.Batches))
+	if cap(b.batchTextures) < len(mesh.Batches) {
+		b.batchTextures = make([]objc.ID, len(mesh.Batches))
+	} else {
+		b.batchTextures = b.batchTextures[:len(mesh.Batches)]
+	}
+	textures := b.batchTextures
 	for i, batch := range mesh.Batches {
 		switch batch.Texture {
 		case (render.TextureKey{}):
@@ -489,35 +531,40 @@ func (b *metalBackend) RenderAtScale(frame ui.Frame, _ *image.RGBA, scale float3
 		b.layer.Send(selector("setDrawableSize:"), size{W: float64(width), H: float64(height)})
 		b.drawableWidth, b.drawableHeight, b.drawableScale = width, height, scale
 	}
-	drawable := b.layer.Send(selector("nextDrawable"))
+	drawable := msgSend0(b.layer, selector("nextDrawable"))
 	if drawable == 0 {
 		return fmt.Errorf("darwin: Metal drawable unavailable: %w", render.ErrDeviceLost)
 	}
-	pass := class("MTLRenderPassDescriptor").Send(selector("renderPassDescriptor"))
-	attachment := pass.Send(selector("colorAttachments")).Send(selector("objectAtIndexedSubscript:"), uint64(0))
+	pass := msgSend0(class("MTLRenderPassDescriptor"), selector("renderPassDescriptor"))
+	attachment := msgSend1(msgSend0(pass, selector("colorAttachments")), selector("objectAtIndexedSubscript:"), 0)
+	drawableTex := msgSend0(drawable, selector("texture"))
 	if b.samples > 1 {
-		attachment.Send(selector("setTexture:"), slot.color)
-		attachment.Send(selector("setResolveTexture:"), drawable.Send(selector("texture")))
-		attachment.Send(selector("setStoreAction:"), uint64(2)) // resolve
+		msgSend1(attachment, selector("setTexture:"), uintptr(slot.color))
+		msgSend1(attachment, selector("setResolveTexture:"), uintptr(drawableTex))
+		msgSend1(attachment, selector("setStoreAction:"), 2) // resolve
 	} else {
-		attachment.Send(selector("setTexture:"), drawable.Send(selector("texture")))
-		attachment.Send(selector("setStoreAction:"), uint64(1)) // store
+		msgSend1(attachment, selector("setTexture:"), uintptr(drawableTex))
+		msgSend1(attachment, selector("setStoreAction:"), 1) // store
 	}
-	attachment.Send(selector("setLoadAction:"), uint64(2)) // clear
+	msgSend1(attachment, selector("setLoadAction:"), 2) // clear
 	attachment.Send(selector("setClearColor:"), metalClearColor{})
-	command := b.queue.Send(selector("commandBuffer"))
+	command := msgSend0(b.queue, selector("commandBuffer"))
 	if command == 0 {
 		return fmt.Errorf("darwin: Metal command buffer unavailable: %w", render.ErrDeviceLost)
 	}
-	encoder := command.Send(selector("renderCommandEncoderWithDescriptor:"), pass)
+	encoder := msgSend1(command, selector("renderCommandEncoderWithDescriptor:"), uintptr(pass))
 	if encoder == 0 {
 		return fmt.Errorf("darwin: Metal render encoder unavailable: %w", render.ErrDeviceLost)
 	}
 	viewport := [2]float32{float32(frame.Width), float32(frame.Height)}
 	if bytes > 0 {
-		encoder.Send(selector("setVertexBuffer:offset:atIndex:"), slot.buffer, uint64(0), uint64(0))
-		encoder.Send(selector("setVertexBytes:length:atIndex:"), unsafe.Pointer(&viewport[0]), uint64(8), uint64(1))
+		msgSend3(encoder, selector("setVertexBuffer:offset:atIndex:"), uintptr(slot.buffer), 0, 0)
+		msgSend3(encoder, selector("setVertexBytes:length:atIndex:"), uintptr(unsafe.Pointer(&viewport[0])), 8, 1)
 	}
+	selSetPipeline := selector("setRenderPipelineState:")
+	selSetTexture := selector("setFragmentTexture:atIndex:")
+	selSetSampler := selector("setFragmentSamplerState:atIndex:")
+	selDraw := selector("drawPrimitives:vertexStart:vertexCount:")
 	for i, batch := range mesh.Batches {
 		pipeline, sampler := b.atlasPipeline, b.nearest
 		if batch.Image != nil {
@@ -526,15 +573,15 @@ func (b *metalBackend) RenderAtScale(frame ui.Frame, _ *image.RGBA, scale float3
 				sampler = b.linear
 			}
 		}
-		encoder.Send(selector("setRenderPipelineState:"), pipeline)
-		encoder.Send(selector("setFragmentTexture:atIndex:"), textures[i], uint64(0))
-		encoder.Send(selector("setFragmentSamplerState:atIndex:"), sampler, uint64(0))
-		encoder.Send(selector("drawPrimitives:vertexStart:vertexCount:"), uint64(metalTriangle), uint64(batch.First), uint64(batch.Count))
+		msgSend1(encoder, selSetPipeline, uintptr(pipeline))
+		msgSend2(encoder, selSetTexture, uintptr(textures[i]), 0)
+		msgSend2(encoder, selSetSampler, uintptr(sampler), 0)
+		msgSend3(encoder, selDraw, metalTriangle, uintptr(batch.First), uintptr(batch.Count))
 	}
-	encoder.Send(selector("endEncoding"))
-	command.Send(selector("presentDrawable:"), drawable)
-	slot.command = command.Send(selector("retain"))
-	command.Send(selector("commit"))
+	msgSend0(encoder, selector("endEncoding"))
+	msgSend1(command, selector("presentDrawable:"), uintptr(drawable))
+	slot.command = msgSend0(command, selector("retain"))
+	msgSend0(command, selector("commit"))
 	b.trimImages()
 	b.stats.Submit = time.Since(start)
 	return nil

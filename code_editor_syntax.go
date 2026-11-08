@@ -53,6 +53,11 @@ func scanGoLine(line string, state goLexState, styles bool) ([]StyledRange, goLe
 	if styles {
 		spans = make([]StyledRange, 0, 8)
 	}
+	return scanGoLineInto(line, state, styles, spans)
+}
+
+func scanGoLineInto(line string, state goLexState, styles bool, spans []StyledRange) ([]StyledRange, goLexState) {
+	spans = spans[:0]
 	appendStyle := func(start, end int, style CodeStyle) {
 		if styles && start < end {
 			spans = append(spans, StyledRange{Start: start, End: end, Style: style})

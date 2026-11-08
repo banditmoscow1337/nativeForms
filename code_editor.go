@@ -3,9 +3,9 @@ package nativeforms
 import (
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/banditmoscow1337/nativeForms/editor"
 )
@@ -39,6 +39,21 @@ type CodeEditor struct {
 	lastPoint        Vec2
 	clicks           int
 	completionPopup  PopupID
+
+	scratchDisplay   []rune
+	scratchOffsets   []int
+	scratchColumns   []int
+	scratchCarets    []float32
+	scratchStyles    []CodeStyle
+	scratchSpans     []StyledRange
+	scratchLineBytes []byte
+	numBuf           [20]byte
+	crossPieceLines  map[int]string
+	lineNumberCache  []string
+	gutterDigits     int
+	gutterSpec       FontSpec
+	gutterFontGen    uint64
+	gutterCachedW    float32
 }
 
 var _ Component = (*CodeEditor)(nil)
@@ -50,8 +65,17 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 	}
 	e := &CodeEditor{
 		Document: document, Font: FontSpec{Family: "monospace", Size: 14},
-		TabWidth: 4, breakpoints: make(map[int]bool), lexStates: []goLexState{goNormal},
-		lastVersion: document.Version(), caretVisible: true,
+		TabWidth: 4, breakpoints: make(map[int]bool),
+		lexStates:        make([]goLexState, 1, max(16, document.LineCount()+1)),
+		lastVersion:      document.Version(),
+		caretVisible:     true,
+		scratchDisplay:   make([]rune, 0, 256),
+		scratchOffsets:   make([]int, 0, 256),
+		scratchColumns:   make([]int, 0, 256),
+		scratchCarets:    make([]float32, 0, 256),
+		scratchStyles:    make([]CodeStyle, 0, 256),
+		scratchSpans:     make([]StyledRange, 0, 32),
+		scratchLineBytes: make([]byte, 0, 256),
 	}
 	e.owner = e
 	e.focusable = true
@@ -70,7 +94,8 @@ func (e *CodeEditor) SetDocument(document *editor.Document) {
 	e.Caret, e.Anchor = 0, 0
 	e.scrollX, e.scrollY = 0, 0
 	e.styles, e.semantic = nil, nil
-	e.lexStates = []goLexState{goNormal}
+	clear(e.crossPieceLines)
+	e.lexStates = append(e.lexStates[:0], goNormal)
 	e.rebuildLexStates(0)
 	e.lastVersion = document.Version()
 	e.breakpoints = make(map[int]bool)
@@ -118,7 +143,8 @@ func (e *CodeEditor) syncDocument() {
 		return
 	}
 	e.lastVersion = e.Document.Version()
-	e.lexStates = []goLexState{goNormal}
+	clear(e.crossPieceLines)
+	e.lexStates = append(e.lexStates[:0], goNormal)
 	e.rebuildLexStates(0)
 	e.styles, e.semantic = nil, nil
 	e.Caret = e.validCaret(e.Caret)
@@ -153,9 +179,30 @@ func (e *CodeEditor) rowHeight() float32 {
 	return e.fontSpec().Size * 1.25
 }
 
+const nineDigits = "99999999999999999999"
+
+func countDecimalDigits(n int) int {
+	digits := 1
+	for n >= 10 {
+		n /= 10
+		digits++
+	}
+	return min(digits, len(nineDigits))
+}
+
 func (e *CodeEditor) gutterWidth() float32 {
-	digits := len(strconv.Itoa(max(1, e.Document.LineCount())))
-	return maxFloat32(48, e.textWidth(strings.Repeat("9", digits), e.fontSpec())+24)
+	digits := countDecimalDigits(max(1, e.Document.LineCount()))
+	spec := e.fontSpec()
+	gen := e.fontContext().layoutGeneration()
+	if e.gutterDigits == digits && e.gutterSpec == spec && e.gutterFontGen == gen && e.gutterCachedW > 0 {
+		return e.gutterCachedW
+	}
+	w := maxFloat32(48, e.textWidth(nineDigits[:digits], spec)+24)
+	e.gutterDigits = digits
+	e.gutterSpec = spec
+	e.gutterFontGen = gen
+	e.gutterCachedW = w
+	return w
 }
 
 func (e *CodeEditor) contentRect() Rect {
@@ -200,31 +247,85 @@ type codeLineLayout struct {
 	display          []rune
 	offsets, columns []int
 	carets           []float32
+	hasTabs          bool
+}
+
+func (e *CodeEditor) sliceLine(line, start, end int, transient bool) string {
+	if start >= end {
+		return ""
+	}
+	if s, ok := e.Document.SliceSinglePiece(start, end); ok {
+		return s
+	}
+	if transient && e.fontContext() == nil && !hasTextShaper() {
+		buf, err := e.Document.AppendRange(e.scratchLineBytes[:0], start, end)
+		if err == nil {
+			e.scratchLineBytes = buf
+			return unsafe.String(unsafe.SliceData(buf), len(buf))
+		}
+	}
+	if s, ok := e.crossPieceLines[line]; ok {
+		return s
+	}
+	s, _ := e.Document.Slice(start, end)
+	if e.crossPieceLines == nil {
+		e.crossPieceLines = make(map[int]string, 16)
+	}
+	e.crossPieceLines[line] = s
+	return s
 }
 
 func (e *CodeEditor) layoutLine(line string) codeLineLayout {
-	layout := codeLineLayout{offsets: []int{0}, columns: []int{0}}
+	offsets := append(e.scratchOffsets[:0], 0)
+	columns := append(e.scratchColumns[:0], 0)
+	display := e.scratchDisplay[:0]
 	width := e.TabWidth
 	if width <= 0 {
 		width = 4
 	}
+	hasTabs := false
 	column := 0
 	for at, r := range line {
 		if r == '\t' {
+			hasTabs = true
 			spaces := width - column%width
 			for i := 0; i < spaces; i++ {
-				layout.display = append(layout.display, ' ')
+				display = append(display, ' ')
 			}
 			column += spaces
 		} else {
-			layout.display = append(layout.display, r)
+			display = append(display, r)
 			column++
 		}
-		layout.offsets = append(layout.offsets, at+utf8.RuneLen(r))
-		layout.columns = append(layout.columns, len(layout.display))
+		offsets = append(offsets, at+utf8.RuneLen(r))
+		columns = append(columns, len(display))
 	}
-	layout.carets = e.caretPositions(string(layout.display), e.fontSpec())
-	return layout
+	e.scratchOffsets = offsets
+	e.scratchColumns = columns
+	e.scratchDisplay = display
+	var carets []float32
+	spec := e.fontSpec()
+	if !hasTabs {
+		if e.fontContext() == nil && !hasTextShaper() {
+			carets = textCaretPositionsRunesInto(display, spec.Size, e.scratchCarets[:0])
+		} else {
+			carets = e.caretPositionsInto(line, spec, e.scratchCarets[:0])
+		}
+	} else {
+		if e.fontContext() == nil && !hasTextShaper() {
+			carets = textCaretPositionsRunesInto(display, spec.Size, e.scratchCarets[:0])
+		} else {
+			carets = e.caretPositionsInto(string(display), spec, e.scratchCarets[:0])
+		}
+	}
+	e.scratchCarets = carets
+	return codeLineLayout{
+		display: display,
+		offsets: offsets,
+		columns: columns,
+		carets:  carets,
+		hasTabs: hasTabs,
+	}
 }
 
 func (l codeLineLayout) xAt(byteOffset int) float32 {
@@ -236,7 +337,12 @@ func (l codeLineLayout) xAt(byteOffset int) float32 {
 }
 
 func (l codeLineLayout) byteAtX(line string, x float32) int {
-	runes := []rune(line)
+	var runes []rune
+	if !l.hasTabs {
+		runes = l.display
+	} else {
+		runes = []rune(line)
+	}
 	best, distance := 0, float32(1e30)
 	for i, offset := range l.offsets {
 		if !graphemeBreak(runes, i) {
@@ -267,7 +373,7 @@ func (e *CodeEditor) CaretRect() Rect {
 	pos, _ := e.Document.UTF16Position(at)
 	line := pos.Line
 	start, end, _ := e.Document.LineRange(line)
-	text, _ := e.Document.Slice(start, end)
+	text := e.sliceLine(line, start, end, true)
 	layout := e.layoutLine(text)
 	view := e.contentRect()
 	x := view.X + layout.xAt(at-start) - e.scrollX
@@ -333,29 +439,67 @@ func (e *CodeEditor) rebuildLexStates(fromLine int) {
 	}
 	if fromLine < 0 || fromLine >= len(e.lexStates) {
 		fromLine = 0
-		e.lexStates = []goLexState{goNormal}
+		e.lexStates = append(e.lexStates[:0], goNormal)
 	}
 	count := e.Document.LineCount()
+	if cap(e.lexStates) < count+1 {
+		grown := make([]goLexState, len(e.lexStates), max(count+1, cap(e.lexStates)*2))
+		copy(grown, e.lexStates)
+		e.lexStates = grown
+	}
 	if fromLine >= count {
-		e.lexStates = e.lexStates[:count]
+		e.lexStates = e.lexStates[:count+1]
 		return
 	}
-	start, _, _ := e.Document.LineRange(fromLine)
-	text, _ := e.Document.Slice(start, e.Document.Len())
 	e.lexStates = e.lexStates[:fromLine+1]
 	state := e.lexStates[fromLine]
 	for line := fromLine; line < count; line++ {
-		end := strings.IndexByte(text, '\n')
-		segment := text
-		if end >= 0 {
-			segment = text[:end]
-		}
-		segment = strings.TrimSuffix(segment, "\r")
-		_, state = scanGoLine(segment, state, false)
+		start, end, _ := e.Document.LineRange(line)
+		segment := e.sliceLine(line, start, end, true)
+		_, state = scanGoLineInto(segment, state, false, nil)
 		e.lexStates = append(e.lexStates, state)
-		if end >= 0 {
-			text = text[end+1:]
+	}
+}
+
+func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines int) {
+	if e.Document == nil {
+		return
+	}
+	count := e.Document.LineCount()
+	if fromLine < 0 || len(e.lexStates) == 0 || fromLine >= len(e.lexStates) {
+		e.rebuildLexStates(0)
+		return
+	}
+	delta := insertedLines - removedLines
+	if len(e.lexStates)+delta != count+1 {
+		e.rebuildLexStates(fromLine)
+		return
+	}
+	if delta > 0 {
+		if cap(e.lexStates) < count+1 {
+			grown := make([]goLexState, len(e.lexStates)+delta, max(count+1, cap(e.lexStates)*2))
+			copy(grown, e.lexStates[:fromLine+1])
+			copy(grown[fromLine+1+insertedLines:], e.lexStates[fromLine+1+removedLines:])
+			e.lexStates = grown
+		} else {
+			oldLen := len(e.lexStates)
+			e.lexStates = e.lexStates[:count+1]
+			copy(e.lexStates[fromLine+1+insertedLines:], e.lexStates[fromLine+1+removedLines:oldLen])
 		}
+	} else if delta < 0 {
+		copy(e.lexStates[fromLine+1+insertedLines:], e.lexStates[fromLine+1+removedLines:])
+		e.lexStates = e.lexStates[:count+1]
+	}
+	state := e.lexStates[fromLine]
+	minScanEnd := min(count, fromLine+max(1, insertedLines+1))
+	for line := fromLine; line < count; line++ {
+		start, end, _ := e.Document.LineRange(line)
+		segment := e.sliceLine(line, start, end, true)
+		_, state = scanGoLineInto(segment, state, false, nil)
+		if line+1 >= minScanEnd && e.lexStates[line+1] == state {
+			return
+		}
+		e.lexStates[line+1] = state
 	}
 }
 
@@ -376,12 +520,41 @@ func (e *CodeEditor) applyStyleRanges(dst []CodeStyle, layout codeLineLayout, li
 }
 
 func (e *CodeEditor) rowStyles(text string, layout codeLineLayout, line, start int) []CodeStyle {
-	styles := make([]CodeStyle, len(layout.offsets)-1)
-	local, _ := lexGoLine(text, e.goStateAt(line))
+	n := max(0, len(layout.offsets)-1)
+	var styles []CodeStyle
+	if cap(e.scratchStyles) < n {
+		styles = make([]CodeStyle, n)
+	} else {
+		styles = e.scratchStyles[:n]
+		clear(styles)
+	}
+	e.scratchStyles = styles
+	local, _ := scanGoLineInto(text, e.goStateAt(line), true, e.scratchSpans[:0])
+	e.scratchSpans = local
 	e.applyStyleRanges(styles, layout, 0, local)
 	e.applyStyleRanges(styles, layout, start, e.styles)
 	e.applyStyleRanges(styles, layout, start, e.semantic)
 	return styles
+}
+
+func (e *CodeEditor) lineNumberString(num int) string {
+	if num < 100 {
+		return strconv.Itoa(num)
+	}
+	for len(e.lineNumberCache) <= num {
+		if cap(e.lineNumberCache) <= num {
+			grown := make([]string, len(e.lineNumberCache), max(num+64, cap(e.lineNumberCache)*2))
+			copy(grown, e.lineNumberCache)
+			e.lineNumberCache = grown
+		}
+		e.lineNumberCache = e.lineNumberCache[:num+1]
+	}
+	if s := e.lineNumberCache[num]; s != "" {
+		return s
+	}
+	s := strconv.Itoa(num)
+	e.lineNumberCache[num] = s
+	return s
 }
 
 func (e *CodeEditor) Paint(c *Canvas) {
@@ -400,7 +573,7 @@ func (e *CodeEditor) Paint(c *Canvas) {
 	c.PushClip(view)
 	for line := first; line < last; line++ {
 		start, end, _ := e.Document.LineRange(line)
-		text, _ := e.Document.Slice(start, end)
+		text := e.sliceLine(line, start, end, true)
 		layout := e.layoutLine(text)
 		y := view.Y + float32(line)*h - e.scrollY
 		e.paintCodeLine(c, layout, text, line, start, end, view.X-e.scrollX, y, h)
@@ -410,13 +583,28 @@ func (e *CodeEditor) Paint(c *Canvas) {
 		c.Line(Vec2{X: caret.X, Y: caret.Y + 2}, Vec2{X: caret.X, Y: caret.Y + h - 2}, 1, c.theme.AccentHover)
 	}
 	c.PopClip()
+	spec := e.fontSpec()
+	atlasOnly := c.fonts == nil && !hasTextShaper()
 	for line := first; line < last; line++ {
 		y := view.Y + float32(line)*h - e.scrollY
 		if e.breakpoints[line] {
 			c.RoundedRect(Rect{X: e.rect.X + 7, Y: y + (h-10)/2, W: 10, H: 10}, 5, c.theme.Danger)
 		}
-		c.TextStyled(strconv.Itoa(line+1), Rect{X: e.rect.X + 19, Y: y, W: gutter - 25, H: h},
-			e.fontSpec(), TextRight, c.theme.MutedText)
+		var label string
+		if atlasOnly {
+			n := line + 1
+			pos := len(e.numBuf)
+			for n > 0 {
+				pos--
+				e.numBuf[pos] = byte('0' + n%10)
+				n /= 10
+			}
+			label = unsafe.String(&e.numBuf[pos], len(e.numBuf)-pos)
+		} else {
+			label = e.lineNumberString(line + 1)
+		}
+		c.TextStyled(label, Rect{X: e.rect.X + 19, Y: y, W: gutter - 25, H: h},
+			spec, TextRight, c.theme.MutedText)
 	}
 }
 
@@ -432,6 +620,7 @@ func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string
 		c.Rect(Rect{X: left, Y: y, W: maxFloat32(0, right-left), H: h}, c.theme.Selection)
 	}
 	styles := e.rowStyles(text, layout, line, start)
+	spec := e.fontSpec()
 	for from := 0; from < len(styles); {
 		to := from + 1
 		for to < len(styles) && styles[to] == styles[from] {
@@ -445,9 +634,14 @@ func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string
 		}
 		left := layout.carets[layout.columns[from]]
 		right := layout.carets[layout.columns[to]]
-		fragment := string(layout.display[layout.columns[from]:layout.columns[to]])
+		var fragment string
+		if !layout.hasTabs {
+			fragment = text[layout.offsets[from]:layout.offsets[to]]
+		} else {
+			fragment = string(layout.display[layout.columns[from]:layout.columns[to]])
+		}
 		c.TextStyled(fragment, Rect{X: x + left, Y: y, W: maxFloat32(1, right-left+2), H: h},
-			e.fontSpec(), TextLeft, color)
+			spec, TextLeft, color)
 		from = to
 	}
 	preeditAt := min(e.Caret, e.Anchor)

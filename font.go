@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"math"
 	"os"
 	"runtime"
 	"strings"
@@ -26,7 +25,11 @@ type glyphInfo struct {
 	visible      bool
 }
 
+const fastGlyphLimit = 0x530
+
 var scalableGlyphs map[rune]glyphInfo
+var fastGlyphs [fastGlyphLimit]glyphInfo
+var fastGlyphsValid [fastGlyphLimit]bool
 var atlasOnce sync.Once
 var atlasImage image.Image
 var fontMu sync.Mutex
@@ -227,6 +230,10 @@ func buildFontAtlas(faces []*TrueTypeFace) image.Image {
 			drawBitmapGlyph(atlas, glyphRows[byte(key)], x*fontCellSize, y*fontCellSize)
 		}
 		scalableGlyphs[character] = glyph
+		if character >= 0 && character < fastGlyphLimit {
+			fastGlyphs[character] = glyph
+			fastGlyphsValid[character] = true
+		}
 	}
 	return atlas
 }
@@ -248,24 +255,33 @@ func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 }
 
 func glyphForRune(character rune) glyphInfo {
-	FontAtlas()
-
+	if !atlasReady {
+		FontAtlas()
+	}
+	if character >= 32 && character < fastGlyphLimit {
+		if character == '\u0085' || character == '\u00ad' {
+			return glyphInfo{}
+		}
+		if character == '\u00a0' {
+			return fastGlyphs[' ']
+		}
+		if fastGlyphsValid[character] {
+			return fastGlyphs[character]
+		}
+	}
 	switch character {
 	case '\r', '\n', '\u0085', '\u2028', '\u2029', '\u00ad', '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff':
 		return glyphInfo{}
 	case '\t':
-		return glyphInfo{advance: scalableGlyphs[' '].advance * 4}
+		return glyphInfo{advance: fastGlyphs[' '].advance * 4}
 	case '\u202f', '\u2009':
-		return glyphInfo{advance: scalableGlyphs[' '].advance * 0.6}
+		return glyphInfo{advance: fastGlyphs[' '].advance * 0.6}
 	}
 	if glyph, ok := scalableGlyphs[character]; ok {
 		return glyph
 	}
-	if character == '\u00a0' {
-		return scalableGlyphs[' ']
-	}
-	if glyph, ok := scalableGlyphs['?']; ok {
-		return glyph
+	if fastGlyphsValid['?'] {
+		return fastGlyphs['?']
 	}
 	return glyphInfo{advance: 0.6}
 }
@@ -274,14 +290,29 @@ func MeasureText(text string, size float32) Vec2 {
 	if size <= 0 {
 		return Vec2{}
 	}
-	lines := strings.Split(normalizeTextBreaks(text), "\n")
+	text = normalizeTextBreaks(text)
 	maxWidth := float32(0)
-	for _, line := range lines {
-		maxWidth = float32(math.Max(float64(maxWidth), float64(measureTextLine(line, size))))
+	lineCount := 0
+	for start := 0; ; {
+		lineCount++
+		end := strings.IndexByte(text[start:], '\n')
+		var line string
+		if end < 0 {
+			line = text[start:]
+		} else {
+			line = text[start : start+end]
+		}
+		if w := measureTextLine(line, size); w > maxWidth {
+			maxWidth = w
+		}
+		if end < 0 {
+			break
+		}
+		start += end + 1
 	}
 	return Vec2{
 		X: maxWidth,
-		Y: float32(len(lines)) * size * 1.2,
+		Y: float32(lineCount) * size * 1.2,
 	}
 }
 

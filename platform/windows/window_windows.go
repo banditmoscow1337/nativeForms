@@ -5,6 +5,7 @@ package windows
 import (
 	"fmt"
 	"image"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -392,7 +393,9 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 		if err != nil {
 			return err
 		}
-		w.placeCandidate(hwnd)
+		if w.manager.TextInputFocused() {
+			w.placeCandidate(hwnd)
+		}
 		uploadStart := trace.Start()
 		dirty := software.UpdateBGRA(w.dib, w.framebuffer, w.dibValid)
 		trace.RecordDamage(dirty.Dx(), dirty.Dy())
@@ -405,7 +408,8 @@ func (w *Window) paint(hwnd, dc uintptr) error {
 	result := call(win.stretchDIBits, dc, 0, 0, uintptr(width), uintptr(height), 0, 0,
 		uintptr(width), uintptr(height), pointer(&w.dib[0]), pointer(&info), dibRGBColors, srccopy)
 	trace.Record(ui.PhasePresent, presentStart)
-	keep(w.dib, &info)
+	runtime.KeepAlive(w.dib)
+	runtime.KeepAlive(&info)
 	if int32(result) == -1 {
 		return fmt.Errorf("windows: StretchDIBits failed")
 	}

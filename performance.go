@@ -114,6 +114,22 @@ func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, wid
 	return trace
 }
 
+func (manager *Manager) initFrameTrace(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
+	if observer == nil {
+		return nil
+	}
+	trace := &manager.traceStorage
+	*trace = FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
+	trace.sample.Width, trace.sample.Height = width, height
+	if trace.trackAllocations {
+		var mem runtime.MemStats
+		runtime.ReadMemStats(&mem)
+		trace.startAlloc = mem.TotalAlloc
+		trace.startObjects = mem.Mallocs
+	}
+	return trace
+}
+
 // RecordDamage reports the conservative pixel region uploaded to the OS.
 func (trace *FrameTrace) RecordDamage(width, height int) {
 	if trace != nil && !trace.finished && width > 0 && height > 0 {

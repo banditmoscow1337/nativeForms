@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 type FontSpec struct {
@@ -443,10 +444,26 @@ func (ctx *FontContext) Layout(text string, request FontSpec) TextLayout {
 	return line
 }
 
+func (ctx *FontContext) faceForSingle(r rune, order []int) (int, uint16, bool) {
+	if invisibleRune(r) {
+		if len(order) > 0 {
+			return order[0], 0, true
+		}
+		return -1, 0, false
+	}
+	for _, index := range order {
+		id := ctx.faces[index].face.glyphIndex(r)
+		if id != 0 || unicode.IsSpace(r) {
+			return index, id, true
+		}
+	}
+	return -1, 0, false
+}
+
 func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	spec := normalFontSpec(request)
 	if ctx == nil {
-		line := TextLayout{Carets: make([]float32, len([]rune(text))+1)}
+		line := TextLayout{Carets: make([]float32, utf8.RuneCountInString(text)+1)}
 		line.Ascent, line.Descent, line.LineGap = spec.Size*0.85, spec.Size*0.25, spec.Size*0.1
 		return line
 	}
@@ -463,7 +480,10 @@ func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	order := ctx.orderedFaces(spec)
 	for _, index := range order {
-		hhea := ctx.faces[index].face.tables["hhea"]
+		hhea := ctx.faces[index].face.hhea
+		if len(hhea) == 0 {
+			hhea = ctx.faces[index].face.tables["hhea"]
+		}
 		units := float32(ctx.faces[index].face.units)
 		if ascent := float32(i16(hhea, 4)) / units * spec.Size; ascent > line.Ascent {
 			line.Ascent = ascent
@@ -491,37 +511,62 @@ func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	var priorFace = -1
 	var priorID uint16
 	var priorAdvance float32
+	var singleSlice [1]rune
+	var idsStack [8]uint16
+	var markStack [8]int
 	for at := 0; at < len(r); {
 		end := nextGrapheme(r, at)
 		cluster := r[at:end]
 		if len(cluster) == 2 {
 			if composed := composeRussian(cluster[0], cluster[1]); composed != 0 {
-				if _, _, ok := ctx.faceFor([]rune{composed}, order); ok {
-					cluster = []rune{composed}
+				if _, _, ok := ctx.faceForSingle(composed, order); ok {
+					singleSlice[0] = composed
+					cluster = singleSlice[:1]
 				}
 			}
 		}
-		index, ids, ok := ctx.faceFor(cluster, order)
-		markFaces := make([]int, len(cluster))
-		if !ok {
-			if len(cluster) > 1 {
-				var base []uint16
-				index, base, ok = ctx.faceFor(cluster[:1], order)
-				if ok {
+		var index int
+		var ids []uint16
+		var markFaces []int
+		var ok bool
+		if len(cluster) == 1 {
+			var singleID uint16
+			index, singleID, ok = ctx.faceForSingle(cluster[0], order)
+			if ok {
+				idsStack[0] = singleID
+				markStack[0] = index
+				ids = idsStack[:1]
+				markFaces = markStack[:1]
+			}
+		} else {
+			index, ids, ok = ctx.faceFor(cluster, order)
+			if len(cluster) <= len(markStack) {
+				markFaces = markStack[:len(cluster)]
+			} else {
+				markFaces = make([]int, len(cluster))
+			}
+			if !ok {
+				baseIdx, baseID, baseOK := ctx.faceForSingle(cluster[0], order)
+				if baseOK {
+					index, ok = baseIdx, true
 					markFaces[0] = index
-					ids = make([]uint16, len(cluster))
-					ids[0] = base[0]
+					if len(cluster) <= len(idsStack) {
+						ids = idsStack[:len(cluster)]
+					} else {
+						ids = make([]uint16, len(cluster))
+					}
+					ids[0] = baseID
 					for j := 1; j < len(cluster); j++ {
-						markFaces[j] = -1
-						if source, mark, found := ctx.faceFor(cluster[j:j+1], order); found {
-							markFaces[j], ids[j] = source, mark[0]
+						markFaces[j], ids[j] = -1, 0
+						if source, mark, found := ctx.faceForSingle(cluster[j], order); found {
+							markFaces[j], ids[j] = source, mark
 						}
 					}
 				}
-			}
-		} else {
-			for j := range markFaces {
-				markFaces[j] = index
+			} else {
+				for j := range markFaces {
+					markFaces[j] = index
+				}
 			}
 		}
 		if ok && index == priorFace && len(ids) > 0 {
@@ -671,11 +716,23 @@ func (ctx *FontContext) CaretX(text string, spec FontSpec, at int) float32 {
 
 func (ctx *FontContext) Measure(text string, spec FontSpec) Vec2 {
 	spec = normalFontSpec(spec)
+	text = normalizeTextBreaks(text)
 	maxWidth, height := float32(0), float32(0)
-	for _, s := range strings.Split(normalizeTextBreaks(text), "\n") {
+	for start := 0; ; {
+		end := strings.IndexByte(text[start:], '\n')
+		var s string
+		if end < 0 {
+			s = text[start:]
+		} else {
+			s = text[start : start+end]
+		}
 		line := ctx.layoutShared(s, spec)
 		maxWidth = maxFloat32(maxWidth, line.Advance)
 		height += line.Height()
+		if end < 0 {
+			break
+		}
+		start += end + 1
 	}
 	return Vec2{X: maxWidth, Y: height}
 }

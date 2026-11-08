@@ -7,7 +7,30 @@ import (
 
 var textBreakReplacer = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u0085", "\n", "\u2028", "\n", "\u2029", "\n")
 
-func normalizeTextBreaks(text string) string { return textBreakReplacer.Replace(text) }
+func hasNonLFTextBreak(text string) bool {
+	for i := 0; i < len(text); i++ {
+		b := text[i]
+		if b == '\r' {
+			return true
+		}
+		if b >= 0x80 {
+			if b == 0xc2 && i+1 < len(text) && text[i+1] == 0x85 {
+				return true
+			}
+			if b == 0xe2 && i+2 < len(text) && text[i+1] == 0x80 && (text[i+2] == 0xa8 || text[i+2] == 0xa9) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeTextBreaks(text string) string {
+	if !hasNonLFTextBreak(text) {
+		return text
+	}
+	return textBreakReplacer.Replace(text)
+}
 
 func hardTextBreak(r []rune, at int) int {
 	if at >= len(r) {
@@ -77,8 +100,31 @@ func fittedTextWidthWith(r []rune, start, end int, size float32, measure func(st
 	return measure(string(r[start:end]), size)
 }
 
+func fittedAtlasWidthRunes(r []rune, start, end int, size float32) float32 {
+	for end > start && wrappingSpace(r[end-1]) {
+		end--
+	}
+	return walkAtlasRunes(r[start:end], size, nil, nil)
+}
+
 func wrappedLineEnd(r []rune, start, end int, width, size float32) int {
 	return wrappedLineEndWith(r, start, end, width, size, measureTextLine)
+}
+
+func wrappedLineEndAtlas(r []rune, start, end int, width, size float32) int {
+	if width <= 0 || size <= 0 || fittedAtlasWidthRunes(r, start, end, size) <= width {
+		return end
+	}
+	lo, hi := start, end
+	for lo < hi {
+		mid := lo + (hi-lo+1)/2
+		if fittedAtlasWidthRunes(r, start, mid, size) <= width {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return finishWrappedLineEnd(r, start, end, lo)
 }
 
 func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure func(string, float32) float32) int {
@@ -94,6 +140,10 @@ func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure f
 			hi = mid - 1
 		}
 	}
+	return finishWrappedLineEnd(r, start, end, lo)
+}
+
+func finishWrappedLineEnd(r []rune, start, end, lo int) int {
 	fit := nearestGrapheme(r, lo)
 	for at := fit; at > start; at = previousGrapheme(r, at) {
 		if textBreakOpportunity(r[:end], at) {

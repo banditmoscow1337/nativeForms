@@ -357,6 +357,9 @@ func (w *Window) cancelMarked() {
 	}
 }
 func (w *Window) syncInputFocus() {
+	if !w.manager.TextInputFocused() && w.inputIdentity == nil {
+		return
+	}
 	s, ok := w.manager.TextInputState()
 	var id *ui.State
 	if ok {
@@ -366,10 +369,10 @@ func (w *Window) syncInputFocus() {
 		w.cancelMarked()
 		w.inputIdentity = id
 	}
-	if w.view != 0 {
-		context := w.view.Send(selector("inputContext"))
+	if w.view != 0 && ok {
+		context := msgSend0(w.view, selector("inputContext"))
 		if context != 0 {
-			context.Send(selector("invalidateCharacterCoordinates"))
+			msgSend0(context, selector("invalidateCharacterCoordinates"))
 		}
 	}
 }

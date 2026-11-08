@@ -3,6 +3,7 @@ package nativeforms
 import (
 	"image"
 	"sync"
+	"unicode/utf8"
 )
 
 type ShapedText struct {
@@ -57,18 +58,26 @@ func shapeTextRaster(text string, size, scale float32) (ShapedText, float32, boo
 	return result, 1, success
 }
 
+func hasTextShaper() bool {
+	textShaping.RLock()
+	ok := textShaping.engine != nil
+	textShaping.RUnlock()
+	return ok
+}
+
 func TextCaretX(text string, size float32, runeIndex int) float32 {
-	r := []rune(text)
-	runeIndex = min(max(0, runeIndex), len(r))
+	if runeIndex <= 0 {
+		return 0
+	}
 	if line, ok := shapeText(text, size); ok {
-		if len(line.Carets) == len(r)+1 {
+		count := utf8.RuneCountInString(text)
+		runeIndex = min(runeIndex, count)
+		if len(line.Carets) == count+1 {
 			return line.Carets[runeIndex]
 		}
-		return measureTextLine(string(r[:runeIndex]), size)
+		return measureTextLine(text[:textByteOffset(text, runeIndex)], size)
 	}
-	positions := make([]float32, len(r)+1)
-	walkAtlasText(text, size, positions, nil)
-	return positions[runeIndex]
+	return walkAtlasCaretX(text, size, runeIndex)
 }
 func (canvas *Canvas) mask(mask *image.Alpha, rect Rect, tint Color) {
 	if mask == nil || mask.Bounds().Empty() || rect.Empty() || len(canvas.clips) == 0 {
@@ -116,19 +125,69 @@ func tessellateMask(c DrawCommand, dst []Vertex) []Vertex {
 }
 
 func textCaretPositions(text string, size float32) []float32 {
-	count := len([]rune(text))
+	count := utf8.RuneCountInString(text)
 	if shaped, ok := shapeText(text, size); ok {
 		if len(shaped.Carets) == count+1 {
 			return shaped.Carets
 		}
-		runes := []rune(text)
 		positions := make([]float32, count+1)
-		for i := 1; i <= count; i++ {
-			positions[i] = measureTextLine(string(runes[:i]), size)
+		idx := 0
+		for offset := range text {
+			if idx > 0 {
+				positions[idx] = measureTextLine(text[:offset], size)
+			}
+			idx++
+		}
+		if count > 0 {
+			positions[count] = measureTextLine(text, size)
 		}
 		return positions
 	}
 	positions := make([]float32, count+1)
 	walkAtlasText(text, size, positions, nil)
 	return positions
+}
+
+func textCaretPositionsInto(text string, size float32, dst []float32) []float32 {
+	count := utf8.RuneCountInString(text)
+	if shaped, ok := shapeText(text, size); ok {
+		if len(shaped.Carets) == count+1 {
+			return shaped.Carets
+		}
+		if cap(dst) < count+1 {
+			dst = make([]float32, count+1)
+		} else {
+			dst = dst[:count+1]
+		}
+		dst[0] = 0
+		idx := 0
+		for offset := range text {
+			if idx > 0 {
+				dst[idx] = measureTextLine(text[:offset], size)
+			}
+			idx++
+		}
+		if count > 0 {
+			dst[count] = measureTextLine(text, size)
+		}
+		return dst
+	}
+	if cap(dst) < count+1 {
+		dst = make([]float32, count+1)
+	} else {
+		dst = dst[:count+1]
+	}
+	walkAtlasText(text, size, dst, nil)
+	return dst
+}
+
+func textCaretPositionsRunesInto(runes []rune, size float32, dst []float32) []float32 {
+	count := len(runes)
+	if cap(dst) < count+1 {
+		dst = make([]float32, count+1)
+	} else {
+		dst = dst[:count+1]
+	}
+	walkAtlasRunes(runes, size, dst, nil)
+	return dst
 }

@@ -1,7 +1,10 @@
 package nativeforms
 
 func (f *TrueTypeFace) atlasKerning(left, right uint16) float32 {
-	table := f.tables["kern"]
+	table := f.kern
+	if table == nil && f.tables != nil {
+		table = f.tables["kern"]
+	}
 	if len(table) < 4 || u16(table, 0) != 0 {
 		return 0
 	}

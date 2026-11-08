@@ -11,6 +11,10 @@ import (
 type TrueTypeFace struct {
 	data       []byte
 	tables     map[string][]byte
+	head, hhea []byte
+	maxp, hmtx []byte
+	loca, glyf []byte
+	kern       []byte
 	units      uint16
 	glyphCount uint16
 	metrics    uint16
@@ -103,6 +107,13 @@ func ParseTrueType(data []byte) (*TrueTypeFace, error) {
 	if len(f.cmap) == 0 {
 		return nil, fmt.Errorf("unsupported Unicode cmap")
 	}
+	f.head = f.tables["head"]
+	f.hhea = f.tables["hhea"]
+	f.maxp = f.tables["maxp"]
+	f.hmtx = f.tables["hmtx"]
+	f.loca = f.tables["loca"]
+	f.glyf = f.tables["glyf"]
+	f.kern = f.tables["kern"]
 	return f, nil
 }
 
@@ -191,7 +202,11 @@ func (f *TrueTypeFace) advance(id uint16) float32 {
 	if index >= int(f.metrics) {
 		index = int(f.metrics) - 1
 	}
-	return float32(u16(f.tables["hmtx"], index*4)) / float32(f.units)
+	hmtx := f.hmtx
+	if len(hmtx) == 0 {
+		hmtx = f.tables["hmtx"]
+	}
+	return float32(u16(hmtx, index*4)) / float32(f.units)
 }
 
 type fontPoint struct {
@@ -207,7 +222,10 @@ func (f *TrueTypeFace) glyph(id uint16, depth int) (outline, error) {
 	if id >= f.glyphCount || depth > 8 {
 		return outline{}, fmt.Errorf("invalid composite glyph")
 	}
-	loca, glyf := f.tables["loca"], f.tables["glyf"]
+	loca, glyf := f.loca, f.glyf
+	if len(loca) == 0 {
+		loca, glyf = f.tables["loca"], f.tables["glyf"]
+	}
 	var start, end uint32
 	if f.locaFormat == 0 {
 		start = uint32(u16(loca, int(id)*2)) * 2
@@ -502,8 +520,8 @@ func (f *TrueTypeFace) drawGlyph(atlas *image.NRGBA, id uint16, cellX, cellY int
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
 			hits := 0
-			for _, offsetY := range []float32{0.25, 0.75} {
-				for _, offsetX := range []float32{0.25, 0.75} {
+			for _, offsetY := range [...]float32{0.25, 0.75} {
+				for _, offsetX := range [...]float32{0.25, 0.75} {
 					px, py := float32(x)+offsetX, float32(y)+offsetY
 					winding := 0
 					for _, s := range segments {

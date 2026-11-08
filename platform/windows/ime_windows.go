@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"runtime"
 	"unicode/utf16"
 	"unsafe"
 
@@ -22,7 +23,7 @@ func (w *Window) composition(hwnd, flags uintptr) {
 		}
 		units := make([]uint16, (int(length)+1)/2)
 		copied := int32(call(win.immGetComposition, context, which, pointer(&units[0]), uintptr(len(units)*2)))
-		keep(units)
+		runtime.KeepAlive(units)
 		if copied <= 0 {
 			return ""
 		}
@@ -57,5 +58,5 @@ func (w *Window) placeCandidateWithContext(context uintptr) {
 		Position: point{X: x, Y: y + int32(caret.H*scale)},
 		Area:     rect{Left: x, Top: y, Right: x + 2, Bottom: y + int32(caret.H*scale)}}
 	call(win.immSetCandidate, context, uintptr(unsafe.Pointer(&form)))
-	keep(&form)
+	runtime.KeepAlive(&form)
 }

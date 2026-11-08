@@ -28,11 +28,23 @@ type TextField struct {
 	compositionBase                  *textFieldLayout
 	compositionText                  string
 	compositionStart, compositionEnd int
+	editorStorage                    TextEditor
+	layoutStorage                    textFieldLayout
+	singleLine                       [1]textLine
+	singleLineText                   string
+	shortRunes                       [32]rune
+	caretScratch                     []float32
+	snapValid                        bool
+	snapVersion                      uint64
+	snapCaret, snapAnchor, snapMax   int
+	snapState                        TextInputState
 }
 
 func NewTextField(text string, onChange func(string)) *TextField {
-	f := &TextField{Text: text, Cursor: len([]rune(text)), OnChange: onChange, caretVisible: true}
-	f.editor = NewTextEditor(text)
+	n := utf8.RuneCountInString(text)
+	f := &TextField{Text: text, Cursor: n, OnChange: onChange, caretVisible: true}
+	f.editorStorage = TextEditor{Text: text, Caret: n, Anchor: n}
+	f.editor = &f.editorStorage
 	f.owner = f
 	f.focusable = true
 	f.minimum = Vec2{X: 180}
@@ -94,16 +106,26 @@ func (f *TextField) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
 		return TextInputState{}, false
 	}
 	e := f.Editor()
-	state := TextInputState{Password: f.Password, Multiline: f.Multiline}
 	if f.Password {
-		return state, true
+		return TextInputState{Password: true, Multiline: f.Multiline}, true
 	}
+	if f.snapValid && f.snapVersion == e.version && f.snapCaret == e.Caret &&
+		f.snapAnchor == e.Anchor && f.snapMax == maxBytes && f.snapState.Multiline == f.Multiline {
+		return f.snapState, true
+	}
+	state := TextInputState{Password: f.Password, Multiline: f.Multiline}
 	cursor := textByteOffset(e.Text, e.Caret)
 	anchor := textByteOffset(e.Text, e.Anchor)
 	state.Text, state.Base = surroundingWindow(e.Text, cursor, anchor, maxBytes)
 	state.Cursor = cursor - state.Base
 	state.Anchor = anchor - state.Base
 	state.UTF16Base = utf16Units(e.Text[:state.Base])
+	f.snapValid = true
+	f.snapVersion = e.version
+	f.snapCaret = e.Caret
+	f.snapAnchor = e.Anchor
+	f.snapMax = maxBytes
+	f.snapState = state
 	return state, true
 }
 
@@ -292,16 +314,27 @@ func (f *TextField) lineHeight(spec FontSpec) float32 {
 }
 
 func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
-	var result []textLine
-	measure := func(s string, _ float32) float32 { return f.textWidth(s, spec) }
-	textShaping.RLock()
-	atlasOnly := f.fontContext() == nil && textShaping.engine == nil
-	textShaping.RUnlock()
+	atlasOnly := f.fontContext() == nil && !hasTextShaper()
 	runeWidth := func(start, end int) float32 {
 		if atlasOnly {
 			return walkAtlasRunes(r[start:end], spec.Size, nil, nil)
 		}
+		if !f.Multiline && !f.Password && start == 0 && end == len(r) && len(r) == utf8.RuneCountInString(f.editor.Text) {
+			return f.textWidth(f.editor.Text, spec)
+		}
 		return f.textWidth(string(r[start:end]), spec)
+	}
+	if !f.Multiline {
+		f.singleLine[0] = textLine{0, len(r), runeWidth(0, len(r))}
+		return f.singleLine[:1]
+	}
+	var result []textLine
+	if len(r) > 64 {
+		result = make([]textLine, 0, max(8, len(r)/16))
+	}
+	var measure func(string, float32) float32
+	if !atlasOnly {
+		measure = func(s string, _ float32) float32 { return f.textWidth(s, spec) }
 	}
 	for start := 0; ; {
 		end := start
@@ -315,7 +348,12 @@ func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 				result = append(result, textLine{at, end, fullWidth})
 				break
 			}
-			limit := wrappedLineEndWith(r, at, end, width, spec.Size, measure)
+			var limit int
+			if atlasOnly {
+				limit = wrappedLineEndAtlas(r, at, end, width, spec.Size)
+			} else {
+				limit = wrappedLineEndWith(r, at, end, width, spec.Size, measure)
+			}
 			lineWidth := fullWidth
 			if limit < end {
 				lineWidth = runeWidth(at, limit)
@@ -366,6 +404,19 @@ func (f *TextField) textGeometry() (Rect, []rune, []textLine, float32) {
 	return inner, cache.runes, cache.lines, lineHeight
 }
 
+func (f *TextField) lineStringAt(i int, r []rune, line textLine) string {
+	if line.start >= line.end {
+		return ""
+	}
+	if !f.Multiline && f.singleLineText != "" && f.editor.Preedit == "" && line.start == 0 && line.end == len(r) {
+		return f.singleLineText
+	}
+	if f.layoutCache != nil {
+		return f.layoutCache.lineText(i, r, line)
+	}
+	return string(r[line.start:line.end])
+}
+
 func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeight float32) Vec2 {
 	caret := f.editor.Caret
 	if f.editor.Preedit != "" {
@@ -377,7 +428,14 @@ func (f *TextField) caretPoint(inner Rect, r []rune, lines []textLine, lineHeigh
 		i = min(i, len(lines)-1)
 		line := lines[i]
 		end := min(max(caret, line.start), line.end)
-		return Vec2{X: inner.X + f.caretX(string(r[line.start:line.end]), f.fontSpec(), end-line.start) - f.scrollX,
+		spec := f.fontSpec()
+		var cx float32
+		if f.fontContext() == nil && !hasTextShaper() {
+			cx = walkAtlasRunesCaretX(r[line.start:line.end], spec.Size, end-line.start)
+		} else {
+			cx = f.caretX(f.lineStringAt(i, r, line), spec, end-line.start)
+		}
+		return Vec2{X: inner.X + cx - f.scrollX,
 			Y: inner.Y + float32(i)*lineHeight - f.scrollY}
 	}
 	return Vec2{X: inner.X, Y: inner.Y}
@@ -433,11 +491,13 @@ func (f *TextField) Paint(c *Canvas) {
 	a, b := f.editor.selection()
 	composing := f.editor.Preedit != ""
 	preeditStart := a
-	preeditEnd := a + len([]rune(f.editor.Preedit))
+	preeditEnd := a + utf8.RuneCountInString(f.editor.Preedit)
 	if composing {
 		a = preeditStart + max(0, min(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 		b = preeditStart + max(0, max(f.editor.PreeditCaret, f.editor.PreeditAnchor))
 	}
+	spec := f.fontSpec()
+	atlasOnly := c.fonts == nil && !hasTextShaper()
 	first := max(0, int(f.scrollY/lineHeight)-1)
 	last := min(len(lines), int((f.scrollY+inner.H)/lineHeight)+2)
 	for i := first; i < last; i++ {
@@ -447,17 +507,30 @@ func (f *TextField) Paint(c *Canvas) {
 			continue
 		}
 		x := inner.X - f.scrollX
-		text := string(r[line.start:line.end])
 		from, to := max(a, line.start), min(b, line.end)
-		if from < to {
-			positions := f.caretPositions(text, f.fontSpec())
-			left := x + positions[from-line.start]
-			right := x + positions[to-line.start]
-			c.Rect(Rect{X: min(left, right), Y: y, W: absFloat32(right - left), H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
-		}
-		if line.start < line.end {
-			c.TextStyled(text, Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
-				f.fontSpec(), TextLeft, c.theme.Text)
+		if atlasOnly {
+			if from < to {
+				left := x + walkAtlasRunesCaretX(r[line.start:line.end], spec.Size, from-line.start)
+				right := x + walkAtlasRunesCaretX(r[line.start:line.end], spec.Size, to-line.start)
+				c.Rect(Rect{X: min(left, right), Y: y, W: absFloat32(right - left), H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
+			}
+			if line.start < line.end {
+				c.textSingleLineRunes(r[line.start:line.end], Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
+					spec.Size, c.theme.Text)
+			}
+		} else {
+			text := f.lineStringAt(i, r, line)
+			if from < to {
+				positions := f.caretPositionsInto(text, spec, f.caretScratch[:0])
+				f.caretScratch = positions
+				left := x + positions[from-line.start]
+				right := x + positions[to-line.start]
+				c.Rect(Rect{X: min(left, right), Y: y, W: absFloat32(right - left), H: lineHeight}, c.theme.Accent.WithAlpha(0.5))
+			}
+			if line.start < line.end {
+				c.TextStyled(text, Rect{X: x, Y: y, W: maxFloat32(inner.W+f.scrollX, line.width+2), H: lineHeight},
+					spec, TextLeft, c.theme.Text)
+			}
 		}
 	}
 	if f.Focused() && composing {
@@ -586,11 +659,11 @@ func (f *TextField) Handle(event Event) bool {
 		}
 		f.composing = true
 		e.Preedit = event.Text
-		e.PreeditCaret = len([]rune(event.Text))
+		e.PreeditCaret = utf8.RuneCountInString(event.Text)
 		e.PreeditAnchor = e.PreeditCaret
 		if event.CompositionSelection {
 			e.PreeditCaret = min(e.PreeditCaret, max(-1, event.CompositionCursor))
-			e.PreeditAnchor = min(len([]rune(event.Text)), max(-1, event.CompositionAnchor))
+			e.PreeditAnchor = min(utf8.RuneCountInString(event.Text), max(-1, event.CompositionAnchor))
 		}
 		f.invalidatePaint()
 		return true

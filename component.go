@@ -86,6 +86,13 @@ func (state *State) caretPositions(text string, spec FontSpec) []float32 {
 	return textCaretPositions(text, spec.Size)
 }
 
+func (state *State) caretPositionsInto(text string, spec FontSpec, dst []float32) []float32 {
+	if fonts := state.fontContext(); fonts != nil {
+		return fonts.layoutShared(text, spec).Carets
+	}
+	return textCaretPositionsInto(text, spec.Size, dst)
+}
+
 func (state *State) wrapText(text string, width float32, spec FontSpec) string {
 	if state.fontContext() != nil {
 		return wrapTextWith(text, width, spec.Size, func(s string, _ float32) float32 { return state.textWidth(s, spec) })

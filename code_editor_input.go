@@ -57,11 +57,13 @@ func (e *CodeEditor) ReplaceTextRange(start, end int, value string) bool {
 	if err != nil || change.Version == change.BeforeVersion {
 		return false
 	}
-	e.shiftBreakpoints(pos.Line, strings.Count(removed, "\n"), strings.Count(value, "\n"))
+	removedLines := strings.Count(removed, "\n")
+	insertedLines := strings.Count(value, "\n")
+	e.shiftBreakpoints(pos.Line, removedLines, insertedLines)
 	e.Caret = e.validCaret(start + len(value))
 	e.Anchor = e.Caret
 	e.composing, e.preedit = false, ""
-	e.changed(change, pos.Line)
+	e.changedWithDelta(change, pos.Line, removedLines, insertedLines)
 	return true
 }
 
@@ -85,13 +87,25 @@ func (e *CodeEditor) shiftBreakpoints(first, removed, inserted int) {
 
 func (e *CodeEditor) changed(change editor.Change, fromLine int) {
 	e.lastVersion = e.Document.Version()
+	clear(e.crossPieceLines)
 	e.styles, e.semantic = nil, nil
 	if fromLine < 0 || len(e.lexStates) == 0 {
-		e.lexStates = []goLexState{goNormal}
+		e.lexStates = append(e.lexStates[:0], goNormal)
 	} else {
 		e.lexStates = e.lexStates[:min(len(e.lexStates), fromLine+1)]
 	}
 	e.rebuildLexStates(max(0, fromLine))
+	e.moved(false)
+	if e.OnChange != nil {
+		e.OnChange(change)
+	}
+}
+
+func (e *CodeEditor) changedWithDelta(change editor.Change, fromLine, removedLines, insertedLines int) {
+	e.lastVersion = e.Document.Version()
+	clear(e.crossPieceLines)
+	e.styles, e.semantic = nil, nil
+	e.updateLexStatesFrom(fromLine, removedLines, insertedLines)
 	e.moved(false)
 	if e.OnChange != nil {
 		e.OnChange(change)
@@ -292,6 +306,21 @@ func (e *CodeEditor) history(redo bool) {
 		e.Caret = e.validCaret(last.Start + len(last.Text))
 	}
 	e.Anchor = e.Caret
+	if len(change.Edits) == 1 {
+		edit := change.Edits[0]
+		if pos, err := e.Document.UTF16Position(edit.Start); err == nil {
+			if edit.Start == edit.End && !strings.Contains(edit.Text, "\n") && len(e.lexStates) == e.Document.LineCount()+1 {
+				e.changedWithDelta(change, pos.Line, 0, 0)
+				return
+			}
+			if edit.Text == "" && len(e.lexStates) == e.Document.LineCount()+1 {
+				e.changedWithDelta(change, pos.Line, 0, 0)
+				return
+			}
+			e.changed(change, pos.Line)
+			return
+		}
+	}
 	e.changed(change, -1)
 }
 

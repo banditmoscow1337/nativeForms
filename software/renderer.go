@@ -321,8 +321,8 @@ func (renderer *Renderer) line(dst *image.RGBA, c ui.DrawCommand) {
 	for y := top; y < bottom; y++ {
 		for x := left; x < right; x++ {
 			coverage := float32(0)
-			for _, sy := range []float32{0.25, 0.75} {
-				for _, sx := range []float32{0.25, 0.75} {
+			for _, sy := range [...]float32{0.25, 0.75} {
+				for _, sx := range [...]float32{0.25, 0.75} {
 					px, py := float32(x)+sx, float32(y)+sy
 					if px < c.Clip.X || px >= c.Clip.X+c.Clip.W ||
 						py < c.Clip.Y || py >= c.Clip.Y+c.Clip.H {

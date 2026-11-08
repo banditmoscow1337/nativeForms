@@ -95,10 +95,104 @@ func Capabilities() platform.Capabilities {
 
 func (w *Window) Capabilities() platform.Capabilities { return Capabilities() }
 
-var appMu sync.Mutex
+var (
+	appMu         sync.Mutex
+	selectorMu    sync.RWMutex
+	selectorCache = make(map[string]objc.SEL, 128)
+	classMu       sync.RWMutex
+	classCache    = make(map[string]objc.ID, 32)
+	objcOnce      sync.Once
+	objcMsgSend   uintptr
+)
 
-func selector(name string) objc.SEL { return objc.RegisterName(name) }
-func class(name string) objc.ID     { return objc.ID(objc.GetClass(name)) }
+func ensureObjcMsgSend() uintptr {
+	if objcMsgSend != 0 {
+		return objcMsgSend
+	}
+	objcOnce.Do(func() {
+		if lib, err := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_GLOBAL|purego.RTLD_LAZY); err == nil {
+			objcMsgSend, _ = purego.Dlsym(lib, "objc_msgSend")
+		}
+	})
+	return objcMsgSend
+}
+
+func msgSend0(id objc.ID, sel objc.SEL) objc.ID {
+	if id == 0 {
+		return 0
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel))
+	return objc.ID(r)
+}
+
+func msgSend1(id objc.ID, sel objc.SEL, a0 uintptr) objc.ID {
+	if id == 0 {
+		return 0
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel), a0)
+	return objc.ID(r)
+}
+
+func msgSend2(id objc.ID, sel objc.SEL, a0, a1 uintptr) objc.ID {
+	if id == 0 {
+		return 0
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel), a0, a1)
+	return objc.ID(r)
+}
+
+func msgSend3(id objc.ID, sel objc.SEL, a0, a1, a2 uintptr) objc.ID {
+	if id == 0 {
+		return 0
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel), a0, a1, a2)
+	return objc.ID(r)
+}
+
+func msgSendBool0(id objc.ID, sel objc.SEL) bool {
+	if id == 0 {
+		return false
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel))
+	return uint8(r) != 0
+}
+
+func msgSendUint0(id objc.ID, sel objc.SEL) uint64 {
+	if id == 0 {
+		return 0
+	}
+	r, _, _ := purego.SyscallN(ensureObjcMsgSend(), uintptr(id), uintptr(sel))
+	return uint64(r)
+}
+
+func selector(name string) objc.SEL {
+	selectorMu.RLock()
+	sel, ok := selectorCache[name]
+	selectorMu.RUnlock()
+	if ok {
+		return sel
+	}
+	sel = objc.RegisterName(name)
+	selectorMu.Lock()
+	selectorCache[name] = sel
+	selectorMu.Unlock()
+	return sel
+}
+
+func class(name string) objc.ID {
+	classMu.RLock()
+	cls, ok := classCache[name]
+	classMu.RUnlock()
+	if ok {
+		return cls
+	}
+	cls = objc.ID(objc.GetClass(name))
+	classMu.Lock()
+	classCache[name] = cls
+	classMu.Unlock()
+	return cls
+}
+
 func nsString(value string) objc.ID {
 	return class("NSString").Send(selector("stringWithUTF8String:"), value)
 }
@@ -256,9 +350,9 @@ func (a *App) Run() error {
 		if a.autoQuit && len(app.windows) == 0 {
 			break
 		}
-		iteration := class("NSAutoreleasePool").Send(selector("new"))
+		iteration := msgSend0(class("NSAutoreleasePool"), selector("new"))
 		err := app.step(mode)
-		iteration.Send(selector("drain"))
+		msgSend0(iteration, selector("drain"))
 		if err != nil {
 			return err
 		}
@@ -356,10 +450,10 @@ func (a *application) step(mode objc.ID) error {
 			continue
 		}
 		w.manager.ProcessPending()
-		if !objc.Send[bool](w.window, selector("isVisible")) {
+		if !msgSendBool0(w.window, selector("isVisible")) {
 			continue
 		}
-		key := objc.Send[bool](w.window, selector("isKeyWindow"))
+		key := msgSendBool0(w.window, selector("isKeyWindow"))
 		if w.wasKey && !key {
 			w.cancelMarked()
 			w.manager.CancelPointerCapture()

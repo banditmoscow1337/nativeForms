@@ -41,9 +41,14 @@ func BuildWithAtlas(list *DisplayList, mesh Mesh, atlas *GlyphAtlas) (Mesh, erro
 	if list == nil {
 		return Mesh{}, fmt.Errorf("render: nil display list")
 	}
+	return buildCommands(list.commands, mesh, atlas)
+}
+
+func buildCommands(commands []ui.DrawCommand, mesh Mesh, atlas *GlyphAtlas) (Mesh, error) {
 	mesh.Vertices = mesh.Vertices[:0]
 	mesh.Batches = mesh.Batches[:0]
-	for _, command := range list.commands {
+	for i := range commands {
+		command := commands[i]
 		if command.Kind > ui.CommandRoundedRect {
 			return Mesh{}, fmt.Errorf("render: unsupported command %d", command.Kind)
 		}
@@ -66,11 +71,11 @@ func BuildWithAtlas(list *DisplayList, mesh Mesh, atlas *GlyphAtlas) (Mesh, erro
 				key = MaskTexture
 				mesh.Vertices = appendAtlasMask(mesh.Vertices, command, rect, atlas.Size())
 			} else {
-				mesh.scratch = ui.Tessellate([]ui.DrawCommand{command}, mesh.scratch)
+				mesh.scratch = ui.Tessellate(commands[i:i+1], mesh.scratch)
 				mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
 			}
 		} else {
-			mesh.scratch = ui.Tessellate([]ui.DrawCommand{command}, mesh.scratch)
+			mesh.scratch = ui.Tessellate(commands[i:i+1], mesh.scratch)
 			mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
 		}
 		count := len(mesh.Vertices) - first
@@ -93,7 +98,7 @@ func BuildFrame(frame ui.Frame, mesh Mesh, atlas *GlyphAtlas) (Mesh, error) {
 	if frame.Width <= 0 || frame.Height <= 0 {
 		return Mesh{}, fmt.Errorf("render: invalid frame dimensions")
 	}
-	return BuildWithAtlas(&DisplayList{width: frame.Width, height: frame.Height, commands: frame.Commands}, mesh, atlas)
+	return buildCommands(frame.Commands, mesh, atlas)
 }
 
 func appendAtlasMask(dst []ui.Vertex, c ui.DrawCommand, region image.Rectangle, size int) []ui.Vertex {

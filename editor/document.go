@@ -439,10 +439,82 @@ func byteAt(root *piece, offset int) byte {
 }
 
 func readRange(root *piece, start, end int) string {
+	if start >= end {
+		return ""
+	}
+	n := root
+	s, e := start, end
+	for n != nil {
+		left := pieceBytes(n.left)
+		if e <= left {
+			n = n.left
+		} else if s >= left+len(n.text) {
+			s -= left + len(n.text)
+			e -= left + len(n.text)
+			n = n.right
+		} else if s >= left && e <= left+len(n.text) {
+			return n.text[s-left : e-left]
+		} else {
+			break
+		}
+	}
 	var b strings.Builder
 	b.Grow(end - start)
 	appendRange(&b, root, start, end)
 	return b.String()
+}
+
+// SliceSinglePiece returns a substring without allocating when [start, end)
+// resides completely inside one piece node.
+func (d *Document) SliceSinglePiece(start, end int) (string, bool) {
+	if !validRange(d.root, start, end) {
+		return "", false
+	}
+	if start == end {
+		return "", true
+	}
+	n := d.root
+	for n != nil {
+		left := pieceBytes(n.left)
+		if end <= left {
+			n = n.left
+		} else if start >= left+len(n.text) {
+			start -= left + len(n.text)
+			end -= left + len(n.text)
+			n = n.right
+		} else if start >= left && end <= left+len(n.text) {
+			return n.text[start-left : end-left], true
+		} else {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// AppendRange appends the byte range [start, end) to dst without intermediate
+// heap allocations when capacity is sufficient.
+func (d *Document) AppendRange(dst []byte, start, end int) ([]byte, error) {
+	if !validRange(d.root, start, end) {
+		return dst, ErrRange
+	}
+	return appendRangeBytes(dst, d.root, start, end), nil
+}
+
+func appendRangeBytes(dst []byte, root *piece, start, end int) []byte {
+	if root == nil || start >= end {
+		return dst
+	}
+	left := pieceBytes(root.left)
+	if start < left {
+		dst = appendRangeBytes(dst, root.left, start, min(end, left))
+	}
+	if start < left+len(root.text) && end > left {
+		dst = append(dst, root.text[max(0, start-left):min(len(root.text), end-left)]...)
+	}
+	if end > left+len(root.text) {
+		dst = appendRangeBytes(dst, root.right, max(0, start-left-len(root.text)), end-left-len(root.text))
+	}
+	return dst
 }
 
 func appendRange(b *strings.Builder, root *piece, start, end int) {

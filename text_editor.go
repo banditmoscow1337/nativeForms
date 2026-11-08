@@ -1,6 +1,9 @@
 package nativeforms
 
-import "unicode"
+import (
+	"unicode"
+	"unicode/utf8"
+)
 
 type TextEditor struct {
 	Text                        string
@@ -26,7 +29,7 @@ type editSnapshot struct {
 }
 
 func NewTextEditor(text string) *TextEditor {
-	n := len([]rune(text))
+	n := utf8.RuneCountInString(text)
 	return &TextEditor{Text: text, Caret: n, Anchor: n}
 }
 
@@ -34,7 +37,7 @@ func (e *TextEditor) SetText(text string) {
 	e.version++
 	e.lastEdit = textEdit{}
 	e.Text = text
-	e.Caret = len([]rune(text))
+	e.Caret = utf8.RuneCountInString(text)
 	e.Anchor = e.Caret
 	e.Preedit = ""
 	e.undo = nil
@@ -57,7 +60,7 @@ func (e *TextEditor) Selection() string {
 	return string(r[a:b])
 }
 
-func (e *TextEditor) SelectAll() { e.Anchor = 0; e.Caret = len([]rune(e.Text)) }
+func (e *TextEditor) SelectAll() { e.Anchor = 0; e.Caret = utf8.RuneCountInString(e.Text) }
 
 func (e *TextEditor) Move(to int, extend bool) {
 	r := []rune(e.Text)
@@ -108,7 +111,7 @@ func (e *TextEditor) Replace(value string) bool {
 	e.version++
 	e.lastEdit = textEdit{base: base, version: e.version, start: a, end: b, insert: value}
 	e.Text = updated
-	e.Caret = a + len([]rune(value))
+	e.Caret = a + utf8.RuneCountInString(value)
 	updatedRunes := []rune(updated)
 	if !graphemeBreak(updatedRunes, e.Caret) {
 		e.Caret = nextGrapheme(updatedRunes, e.Caret)

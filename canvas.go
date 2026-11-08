@@ -81,19 +81,39 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		canvas.paintTextLine(line, bounds, align, tint, bounds.Y+(bounds.H-line.Height())*0.5)
 		return
 	}
-	lines := strings.Split(text, "\n")
-	layouts := make([]TextLayout, len(lines))
 	height := float32(0)
 	textStart := canvas.trace.Start()
-	for i, line := range lines {
-		layouts[i] = canvas.fonts.layoutShared(line, spec)
-		height += layouts[i].Height()
+	for start := 0; ; {
+		end := strings.IndexByte(text[start:], '\n')
+		var part string
+		if end < 0 {
+			part = text[start:]
+		} else {
+			part = text[start : start+end]
+		}
+		height += canvas.fonts.layoutShared(part, spec).Height()
+		if end < 0 {
+			break
+		}
+		start += end + 1
 	}
 	canvas.trace.Record(PhaseTextLayout, textStart)
 	y := bounds.Y + (bounds.H-height)*0.5
-	for _, line := range layouts {
+	for start := 0; ; {
+		end := strings.IndexByte(text[start:], '\n')
+		var part string
+		if end < 0 {
+			part = text[start:]
+		} else {
+			part = text[start : start+end]
+		}
+		line := canvas.fonts.layoutShared(part, spec)
 		canvas.paintTextLine(line, bounds, align, tint, y)
 		y += line.Height()
+		if end < 0 {
+			break
+		}
+		start += end + 1
 	}
 }
 
@@ -271,49 +291,123 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 			lastLine = false
 		}
 		line := text[lineStart:lineEnd]
-		textStart := canvas.trace.Start()
-		lineWidth := measureTextLine(line, size)
-		canvas.trace.Record(PhaseTextLayout, textStart)
 		x := bounds.X
-		switch align {
-		case TextCenter:
-			x += (bounds.W - lineWidth) * 0.5
-		case TextRight:
-			x += bounds.W - lineWidth
+		if align != TextLeft {
+			textStart := canvas.trace.Start()
+			lineWidth := measureTextLine(line, size)
+			canvas.trace.Record(PhaseTextLayout, textStart)
+			switch align {
+			case TextCenter:
+				x += (bounds.W - lineWidth) * 0.5
+			case TextRight:
+				x += bounds.W - lineWidth
+			}
 		}
-		pixelScale := canvas.displayScale
-		if !(pixelScale > 0 && pixelScale <= 8) {
-			pixelScale = 1
-		}
-		shapeStart := canvas.trace.Start()
-		shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale)
-		canvas.trace.Record(PhaseTextLayout, shapeStart)
-		if ok {
-			if mask := shaped.Mask; mask != nil {
-				if canvas.trace != nil {
-					canvas.trace.sample.Glyphs++
+		if hasTextShaper() {
+			pixelScale := canvas.displayScale
+			if !(pixelScale > 0 && pixelScale <= 8) {
+				pixelScale = 1
+			}
+			shapeStart := canvas.trace.Start()
+			shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale)
+			canvas.trace.Record(PhaseTextLayout, shapeStart)
+			if ok {
+				if mask := shaped.Mask; mask != nil {
+					if canvas.trace != nil {
+						canvas.trace.sample.Glyphs++
+					}
+					canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
 				}
-				canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
+			} else {
+				canvas.emitAtlasLine(line, x, y, size, tint)
 			}
 		} else {
-			walkAtlasText(line, size, nil, func(glyph glyphInfo, offset float32) {
-				if canvas.trace != nil {
-					canvas.trace.sample.Glyphs++
-				}
-				cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-				cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-				cell := float32(fontCellSize) / fontAtlasSize
-				canvas.quad(
-					Rect{X: x + offset, Y: y - size*0.12, W: size * float32(fontCellSize) / fontReferenceSize, H: size * float32(fontCellSize) / fontReferenceSize},
-					Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-				)
-			})
+			canvas.emitAtlasLine(line, x, y, size, tint)
 		}
 		if lastLine {
 			break
 		}
 		lineStart = lineEnd + 1
 		y += lineHeight
+	}
+}
+
+func (canvas *Canvas) emitAtlasLine(line string, x, y, size float32, tint Color) {
+	var previous glyphInfo
+	offset := float32(0)
+	cell := float32(fontCellSize) / fontAtlasSize
+	quadSize := size * float32(fontCellSize) / fontReferenceSize
+	quadY := y - size*0.12
+	for i := 0; i < len(line); {
+		character, width := utf8.DecodeRuneInString(line[i:])
+		if i+width < len(line) && (character == 'Е' || character == 'е' || character == 'И' || character == 'и') {
+			nextRune, nextWidth := utf8.DecodeRuneInString(line[i+width:])
+			if composed := composeRussian(character, nextRune); composed != 0 {
+				character = composed
+				width += nextWidth
+			}
+		}
+		glyph := glyphForRune(character)
+		if glyph.face != nil && glyph.face == previous.face {
+			offset += maxFloat32(-previous.advance*size, glyph.face.atlasKerning(previous.id, glyph.id)*size)
+		}
+		if glyph.visible {
+			if canvas.trace != nil {
+				canvas.trace.sample.Glyphs++
+			}
+			cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
+			cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
+			canvas.quad(
+				Rect{X: x + offset, Y: quadY, W: quadSize, H: quadSize},
+				Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
+			)
+		}
+		offset += maxFloat32(0, glyph.advance*size)
+		previous = glyph
+		i += width
+	}
+}
+
+func (canvas *Canvas) textSingleLineRunes(runes []rune, bounds Rect, size float32, tint Color) {
+	if size <= 0 || bounds.Empty() || tint.A <= 0 || len(runes) == 0 {
+		return
+	}
+	if canvas.trace != nil {
+		canvas.trace.sample.TextRunes += len(runes)
+	}
+	lineHeight := size * 1.2
+	y := bounds.Y + (bounds.H-lineHeight)*0.5
+	x := bounds.X
+	var previous glyphInfo
+	offset := float32(0)
+	cell := float32(fontCellSize) / fontAtlasSize
+	quadSize := size * float32(fontCellSize) / fontReferenceSize
+	quadY := y - size*0.12
+	for i := 0; i < len(runes); {
+		character, count := runes[i], 1
+		if i+1 < len(runes) {
+			if composed := composeRussian(character, runes[i+1]); composed != 0 {
+				character, count = composed, 2
+			}
+		}
+		glyph := glyphForRune(character)
+		if glyph.face != nil && glyph.face == previous.face {
+			offset += maxFloat32(-previous.advance*size, glyph.face.atlasKerning(previous.id, glyph.id)*size)
+		}
+		if glyph.visible {
+			if canvas.trace != nil {
+				canvas.trace.sample.Glyphs++
+			}
+			cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
+			cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
+			canvas.quad(
+				Rect{X: x + offset, Y: quadY, W: quadSize, H: quadSize},
+				Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
+			)
+		}
+		offset += maxFloat32(0, glyph.advance*size)
+		previous = glyph
+		i += count
 	}
 }
 
@@ -383,18 +477,11 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 				continue
 			}
 			nx, ny := -dy/length*c.Width*0.5, dx/length*c.Width*0.5
-			polygon := []Vec2{
-				{X: c.From.X + nx, Y: c.From.Y + ny},
-				{X: c.To.X + nx, Y: c.To.Y + ny},
-				{X: c.To.X - nx, Y: c.To.Y - ny},
-				{X: c.From.X - nx, Y: c.From.Y - ny},
-			}
-			polygon = clipPolygon(polygon, c.Clip)
-			for i := 1; i+1 < len(polygon); i++ {
-				dst = append(dst, v(polygon[0].X, polygon[0].Y),
-					v(polygon[i].X, polygon[i].Y),
-					v(polygon[i+1].X, polygon[i+1].Y))
-			}
+			p0 := Vec2{X: c.From.X + nx, Y: c.From.Y + ny}
+			p1 := Vec2{X: c.To.X + nx, Y: c.To.Y + ny}
+			p2 := Vec2{X: c.To.X - nx, Y: c.To.Y - ny}
+			p3 := Vec2{X: c.From.X - nx, Y: c.From.Y - ny}
+			dst = emitClippedN(4, [4]Vec2{p0, p1, p2, p3}, c.Clip, uv, c.Tint, dst)
 		}
 	}
 	return dst
@@ -408,23 +495,29 @@ func tessellateRoundedRect(c DrawCommand, dst []Vertex) []Vertex {
 		return dst
 	}
 	r := c.Rect
+	if intersect(r, c.Clip).Empty() {
+		return dst
+	}
 	radius := minFloat32(maxFloat32(0, c.Radius), minFloat32(r.W, r.H)*0.5)
 	uv := float32(0.5 / fontAtlasSize)
-	appendPolygon := func(points []Vec2) {
-		points = clipPolygon(points, c.Clip)
-		vertex := func(p Vec2) Vertex {
-			return Vertex{X: p.X, Y: p.Y, U: uv, V: uv,
-				R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
-		}
-		for i := 1; i+1 < len(points); i++ {
-			dst = append(dst, vertex(points[0]), vertex(points[i]), vertex(points[i+1]))
-		}
+	unclipped := r.X >= c.Clip.X && r.Y >= c.Clip.Y && r.X+r.W <= c.Clip.X+c.Clip.W && r.Y+r.H <= c.Clip.Y+c.Clip.H
+	vertex := func(p Vec2) Vertex {
+		return Vertex{X: p.X, Y: p.Y, U: uv, V: uv,
+			R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
 	}
 	appendRect := func(x, y, w, h float32) {
-		if w > 0 && h > 0 {
-			appendPolygon([]Vec2{{X: x, Y: y}, {X: x + w, Y: y},
-				{X: x + w, Y: y + h}, {X: x, Y: y + h}})
+		if w <= 0 || h <= 0 {
+			return
 		}
+		rc := intersect(Rect{X: x, Y: y, W: w, H: h}, c.Clip)
+		if rc.Empty() {
+			return
+		}
+		p0 := Vec2{X: rc.X, Y: rc.Y}
+		p1 := Vec2{X: rc.X + rc.W, Y: rc.Y}
+		p2 := Vec2{X: rc.X + rc.W, Y: rc.Y + rc.H}
+		p3 := Vec2{X: rc.X, Y: rc.Y + rc.H}
+		dst = append(dst, vertex(p0), vertex(p1), vertex(p2), vertex(p0), vertex(p2), vertex(p3))
 	}
 	if radius == 0 {
 		appendRect(r.X, r.Y, r.W, r.H)
@@ -442,10 +535,16 @@ func tessellateRoundedRect(c DrawCommand, dst []Vertex) []Vertex {
 			return Vec2{X: cx + radius*float32(math.Cos(float64(angle))),
 				Y: cy + radius*float32(math.Sin(float64(angle)))}
 		}
+		prev := point(start)
 		for i := 0; i < segments; i++ {
-			a := start + float32(i)*float32(math.Pi/2)/float32(segments)
 			b := start + float32(i+1)*float32(math.Pi/2)/float32(segments)
-			appendPolygon([]Vec2{center, point(a), point(b)})
+			next := point(b)
+			if unclipped {
+				dst = append(dst, vertex(center), vertex(prev), vertex(next))
+			} else {
+				dst = emitClippedN(3, [4]Vec2{center, prev, next}, c.Clip, uv, c.Tint, dst)
+			}
+			prev = next
 		}
 	}
 	corner(r.X+radius, r.Y+radius, math.Pi)
@@ -455,15 +554,123 @@ func tessellateRoundedRect(c DrawCommand, dst []Vertex) []Vertex {
 	return dst
 }
 
+// emitClippedN clips a 3- or 4-vertex convex polygon against r using purely
+// stack-local arrays (no pointer/slice parameters that could escape) and appends
+// the resulting triangle fan directly to dst.
+func emitClippedN(n int, poly [4]Vec2, r Rect, uv float32, tint Color, dst []Vertex) []Vertex {
+	if r.Empty() || n < 3 {
+		return dst
+	}
+	var bufA, bufB [16]Vec2
+	right := r.X + r.W
+	bottom := r.Y + r.H
+
+	// Edge 1: p.X >= r.X
+	na := 0
+	prev := poly[n-1]
+	wasIn := prev.X >= r.X
+	for i := 0; i < n; i++ {
+		cur := poly[i]
+		isIn := cur.X >= r.X
+		if isIn != wasIn {
+			t := (r.X - prev.X) / (cur.X - prev.X)
+			bufA[na] = Vec2{X: r.X, Y: prev.Y + t*(cur.Y-prev.Y)}
+			na++
+		}
+		if isIn {
+			bufA[na] = cur
+			na++
+		}
+		prev, wasIn = cur, isIn
+	}
+	if na < 3 {
+		return dst
+	}
+
+	// Edge 2: p.X <= right
+	nb := 0
+	prev = bufA[na-1]
+	wasIn = prev.X <= right
+	for i := 0; i < na; i++ {
+		cur := bufA[i]
+		isIn := cur.X <= right
+		if isIn != wasIn {
+			t := (right - prev.X) / (cur.X - prev.X)
+			bufB[nb] = Vec2{X: right, Y: prev.Y + t*(cur.Y-prev.Y)}
+			nb++
+		}
+		if isIn {
+			bufB[nb] = cur
+			nb++
+		}
+		prev, wasIn = cur, isIn
+	}
+	if nb < 3 {
+		return dst
+	}
+
+	// Edge 3: p.Y >= r.Y
+	na = 0
+	prev = bufB[nb-1]
+	wasIn = prev.Y >= r.Y
+	for i := 0; i < nb; i++ {
+		cur := bufB[i]
+		isIn := cur.Y >= r.Y
+		if isIn != wasIn {
+			t := (r.Y - prev.Y) / (cur.Y - prev.Y)
+			bufA[na] = Vec2{X: prev.X + t*(cur.X-prev.X), Y: r.Y}
+			na++
+		}
+		if isIn {
+			bufA[na] = cur
+			na++
+		}
+		prev, wasIn = cur, isIn
+	}
+	if na < 3 {
+		return dst
+	}
+
+	// Edge 4: p.Y <= bottom
+	nb = 0
+	prev = bufA[na-1]
+	wasIn = prev.Y <= bottom
+	for i := 0; i < na; i++ {
+		cur := bufA[i]
+		isIn := cur.Y <= bottom
+		if isIn != wasIn {
+			t := (bottom - prev.Y) / (cur.Y - prev.Y)
+			bufB[nb] = Vec2{X: prev.X + t*(cur.X-prev.X), Y: bottom}
+			nb++
+		}
+		if isIn {
+			bufB[nb] = cur
+			nb++
+		}
+		prev, wasIn = cur, isIn
+	}
+	if nb < 3 {
+		return dst
+	}
+
+	v0 := Vertex{X: bufB[0].X, Y: bufB[0].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
+	for i := 1; i+1 < nb; i++ {
+		v1 := Vertex{X: bufB[i].X, Y: bufB[i].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
+		v2 := Vertex{X: bufB[i+1].X, Y: bufB[i+1].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
+		dst = append(dst, v0, v1, v2)
+	}
+	return dst
+}
+
 func clipPolygon(points []Vec2, r Rect) []Vec2 {
-	if r.Empty() {
+	if r.Empty() || len(points) == 0 {
 		return nil
 	}
 	type edge struct {
 		inside func(Vec2) bool
 		at     func(Vec2, Vec2) Vec2
 	}
-	edges := []edge{
+	edges := [...]edge{
 		{func(p Vec2) bool { return p.X >= r.X }, func(a, b Vec2) Vec2 {
 			t := (r.X - a.X) / (b.X - a.X)
 			return Vec2{X: r.X, Y: a.Y + t*(b.Y-a.Y)}

@@ -1,6 +1,9 @@
 package nativeforms
 
-import "sort"
+import (
+	"sort"
+	"unicode/utf8"
+)
 
 // textFieldLayout owns an index of wrapped visual lines. Scrolling and caret
 // queries reuse it; Replace only rewraps the paragraphs touched by the edit.
@@ -8,6 +11,7 @@ import "sort"
 type textFieldLayout struct {
 	runes             []rune
 	lines             []textLine
+	lineStrings       map[int]string
 	width             float32
 	spec              FontSpec
 	fonts             *FontContext
@@ -16,12 +20,56 @@ type textFieldLayout struct {
 	multiline, masked bool
 }
 
+func (c *textFieldLayout) lineText(index int, r []rune, line textLine) string {
+	if line.start >= line.end {
+		return ""
+	}
+	if c != nil && len(c.runes) > 0 && &r[0] == &c.runes[0] {
+		if s, ok := c.lineStrings[index]; ok {
+			return s
+		}
+		if c.lineStrings == nil {
+			c.lineStrings = make(map[int]string, 32)
+		}
+		s := string(r[line.start:line.end])
+		c.lineStrings[index] = s
+		return s
+	}
+	return string(r[line.start:line.end])
+}
+
 func (f *TextField) layoutFor(width float32, spec FontSpec) *textFieldLayout {
 	fonts := f.fontContext()
 	version := fonts.layoutGeneration()
 	c := f.layoutCache
 	if c != nil && c.version == f.editor.version && c.width == width && c.spec == spec &&
 		c.fonts == fonts && c.fontGeneration == version && c.multiline == f.Multiline && c.masked == f.Password {
+		return c
+	}
+	if !f.Multiline {
+		c = &f.layoutStorage
+		*c = textFieldLayout{width: width, spec: spec, fonts: fonts, fontGeneration: version,
+			version: f.editor.version, multiline: false, masked: f.Password}
+		n := utf8.RuneCountInString(f.editor.Text)
+		if n <= len(f.shortRunes) {
+			buf := f.shortRunes[:0]
+			for _, r := range f.editor.Text {
+				buf = append(buf, r)
+			}
+			c.runes = buf
+		} else {
+			c.runes = []rune(f.editor.Text)
+		}
+		if f.Password {
+			maskPasswordRunes(c.runes, fonts != nil)
+		}
+		c.lines = f.lines(c.runes, width, spec)
+		if !f.Password && len(c.lines) == 1 && c.lines[0].start == 0 && c.lines[0].end == len(c.runes) {
+			f.singleLineText = f.editor.Text
+		} else {
+			f.singleLineText = ""
+		}
+		f.layoutCache = c
 		return c
 	}
 	c = &textFieldLayout{width: width, spec: spec, fonts: fonts, fontGeneration: version,
@@ -36,7 +84,7 @@ func (f *TextField) layoutFor(width float32, spec FontSpec) *textFieldLayout {
 }
 
 func (c *textFieldLayout) applyEdit(f *TextField, edit textEdit) bool {
-	if c == nil || edit.version == 0 || c.version != edit.base || edit.version != f.editor.version ||
+	if c == nil || !c.multiline || edit.version == 0 || c.version != edit.base || edit.version != f.editor.version ||
 		c.multiline != f.Multiline || c.masked || c.fonts != f.fontContext() ||
 		c.fontGeneration != c.fonts.layoutGeneration() {
 		return false
@@ -102,5 +150,8 @@ func (c *textFieldLayout) replaceRange(f *TextField, a, b int, insert []rune) {
 	for i := first + len(updated); i < len(c.lines); i++ {
 		c.lines[i].start += delta
 		c.lines[i].end += delta
+	}
+	if len(c.lineStrings) > 0 {
+		clear(c.lineStrings)
 	}
 }
