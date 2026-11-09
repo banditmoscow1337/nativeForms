@@ -46,39 +46,30 @@ func (f *TextField) layoutFor(width float32, spec FontSpec) *textFieldLayout {
 		c.fonts == fonts && c.fontGeneration == version && c.multiline == f.Multiline && c.masked == f.Password {
 		return c
 	}
-	if !f.Multiline {
-		c = &f.layoutStorage
-		*c = textFieldLayout{width: width, spec: spec, fonts: fonts, fontGeneration: version,
-			version: f.editor.version, multiline: false, masked: f.Password}
-		n := utf8.RuneCountInString(f.editor.Text)
-		if n <= len(f.shortRunes) {
-			buf := f.shortRunes[:0]
-			for _, r := range f.editor.Text {
-				buf = append(buf, r)
-			}
-			c.runes = buf
-		} else {
-			c.runes = []rune(f.editor.Text)
-		}
-		if f.Password {
-			maskPasswordRunes(c.runes, fonts != nil)
-		}
-		c.lines = f.lines(c.runes, width, spec)
-		if !f.Password && len(c.lines) == 1 && c.lines[0].start == 0 && c.lines[0].end == len(c.runes) {
-			f.singleLineText = f.editor.Text
-		} else {
-			f.singleLineText = ""
-		}
-		f.layoutCache = c
-		return c
+	c = &f.layoutStorage
+	*c = textFieldLayout{
+		width: width, spec: spec, fonts: fonts, fontGeneration: version,
+		version: f.editor.version, multiline: f.Multiline, masked: f.Password,
 	}
-	c = &textFieldLayout{width: width, spec: spec, fonts: fonts, fontGeneration: version,
-		version: f.editor.version, multiline: f.Multiline, masked: f.Password}
-	c.runes = []rune(f.editor.Text)
+	n := utf8.RuneCountInString(f.editor.Text)
+	if n <= len(f.shortRunes) {
+		buf := f.shortRunes[:0]
+		for _, r := range f.editor.Text {
+			buf = append(buf, r)
+		}
+		c.runes = buf
+	} else {
+		c.runes = []rune(f.editor.Text)
+	}
 	if f.Password {
 		maskPasswordRunes(c.runes, fonts != nil)
 	}
 	c.lines = f.lines(c.runes, width, spec)
+	if !f.Multiline && !f.Password && len(c.lines) == 1 && c.lines[0].start == 0 && c.lines[0].end == len(c.runes) {
+		f.singleLineText = f.editor.Text
+	} else {
+		f.singleLineText = ""
+	}
 	f.layoutCache = c
 	return c
 }

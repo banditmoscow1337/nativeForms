@@ -256,10 +256,9 @@ func describeAccessible(c Component) AccessibilityNode {
 			n.State |= AccessibleProtected
 		} else {
 			n.Value = e.Text
-			runes := []rune(e.Text)
 			n.Selection = &AccessibleSelection{
-				Anchor: len(string(runes[:min(max(e.Anchor, 0), len(runes))])),
-				Cursor: len(string(runes[:min(max(e.Caret, 0), len(runes))])),
+				Anchor: textByteOffset(e.Text, e.Anchor),
+				Cursor: textByteOffset(e.Text, e.Caret),
 			}
 		}
 	}

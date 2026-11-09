@@ -4,6 +4,30 @@ import (
 	"fmt"
 )
 
+func resolveFontSpec(spec FontSpec, fontSize, themeSize float32) FontSpec {
+	if fontSize > 0 {
+		spec.Size = fontSize
+	}
+	if spec.Size <= 0 {
+		spec.Size = themeSize
+	}
+	return spec
+}
+
+func controlColors(state *State, theme *Theme) (background, border Color) {
+	background = theme.Control
+	border = theme.Border
+	if !state.Enabled() {
+		background = theme.Disabled
+	} else if state.Pressed() {
+		background = theme.ControlPressed
+	} else if state.Hovered() || state.Focused() {
+		background = theme.ControlHover
+		border = theme.Accent
+	}
+	return background, border
+}
+
 type Label struct {
 	State
 	Text     string
@@ -50,14 +74,7 @@ func (label *Label) Measure(constraints Constraints) Vec2 {
 }
 
 func (label *Label) fontSpec() FontSpec {
-	spec := label.Font
-	if label.FontSize > 0 {
-		spec.Size = label.FontSize
-	}
-	if spec.Size <= 0 {
-		spec.Size = label.Theme().FontSize
-	}
-	return spec
+	return resolveFontSpec(label.Font, label.FontSize, label.Theme().FontSize)
 }
 
 func (label *Label) Baseline() float32 {
@@ -135,27 +152,11 @@ func (button *Button) Measure(constraints Constraints) Vec2 {
 }
 
 func (button *Button) fontSpec() FontSpec {
-	spec := button.Font
-	if button.FontSize > 0 {
-		spec.Size = button.FontSize
-	}
-	if spec.Size <= 0 {
-		spec.Size = button.Theme().FontSize
-	}
-	return spec
+	return resolveFontSpec(button.Font, button.FontSize, button.Theme().FontSize)
 }
 
 func (button *Button) Paint(canvas *Canvas) {
-	background := canvas.theme.Control
-	border := canvas.theme.Border
-	if !button.Enabled() {
-		background = canvas.theme.Disabled
-	} else if button.Pressed() {
-		background = canvas.theme.ControlPressed
-	} else if button.Hovered() || button.Focused() {
-		background = canvas.theme.ControlHover
-		border = canvas.theme.Accent
-	}
+	background, border := controlColors(&button.State, canvas.theme)
 	canvas.Rect(button.rect, background)
 	canvas.Border(button.rect, 1, border)
 	spec := button.fontSpec()
@@ -255,16 +256,7 @@ func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
 }
 
 func (toggle *Toggle) Paint(canvas *Canvas) {
-	background := canvas.theme.Control
-	border := canvas.theme.Border
-	if !toggle.Enabled() {
-		background = canvas.theme.Disabled
-	} else if toggle.Pressed() {
-		background = canvas.theme.ControlPressed
-	} else if toggle.Hovered() || toggle.Focused() {
-		background = canvas.theme.ControlHover
-		border = canvas.theme.Accent
-	}
+	background, border := controlColors(&toggle.State, canvas.theme)
 	canvas.Rect(toggle.rect, background)
 	canvas.Border(toggle.rect, 1, border)
 	inner := toggle.rect.Inset(Symmetric(14, 4))
@@ -332,10 +324,11 @@ func (bar *ProgressBar) Paint(canvas *Canvas) {
 	if fill.A <= 0 {
 		fill = canvas.theme.Accent
 	}
+	clamped := clampFloat32(bar.Value, 0, 1)
 	canvas.Rect(bar.rect, background)
-	canvas.Rect(Rect{X: bar.rect.X, Y: bar.rect.Y, W: bar.rect.W * clampFloat32(bar.Value, 0, 1), H: bar.rect.H}, fill)
+	canvas.Rect(Rect{X: bar.rect.X, Y: bar.rect.Y, W: bar.rect.W * clamped, H: bar.rect.H}, fill)
 	canvas.Border(bar.rect, 1, canvas.theme.Border)
 	if bar.ShowValue {
-		canvas.Text(fmt.Sprintf("%d%%", int(clampFloat32(bar.Value, 0, 1)*100+0.5)), bar.rect, canvas.theme.FontSize*0.8, TextCenter, canvas.theme.Text)
+		canvas.Text(fmt.Sprintf("%d%%", int(clamped*100+0.5)), bar.rect, canvas.theme.FontSize*0.8, TextCenter, canvas.theme.Text)
 	}
 }

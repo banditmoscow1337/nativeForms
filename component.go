@@ -137,6 +137,11 @@ func (state *State) Add(children ...Component) {
 			applyTheme(child, state.theme)
 		}
 	}
+	if state.manager != nil {
+		if panel, ok := state.owner.(*Panel); ok {
+			panel.ensureLayoutCapacity(len(panel.children))
+		}
+	}
 	state.invalidateLayout()
 }
 
@@ -278,6 +283,11 @@ func bindTree(component Component, parent Component, manager *Manager) {
 	state.owner = component
 	state.parent = parent
 	state.manager = manager
+	if manager != nil {
+		if panel, ok := component.(*Panel); ok && len(panel.children) > 0 {
+			panel.ensureLayoutCapacity(len(panel.children))
+		}
+	}
 	for _, child := range state.children {
 		bindTree(child, component, manager)
 	}
@@ -324,6 +334,24 @@ func NewStack(direction Direction, gap float32) *Panel {
 	panel := NewPanel(direction)
 	panel.Gap = gap
 	return panel
+}
+
+func (panel *Panel) ensureLayoutCapacity(n int) {
+	if n <= 0 {
+		return
+	}
+	if cap(panel.layoutChildren) < n {
+		panel.layoutChildren = make([]Component, 0, n)
+	}
+	if cap(panel.layoutSizes) < n {
+		panel.layoutSizes = make([]Vec2, 0, n)
+	}
+	if cap(panel.layoutWeights) < n {
+		panel.layoutWeights = make([]float32, n)
+	}
+	if cap(panel.layoutActive) < n {
+		panel.layoutActive = make([]bool, n)
+	}
 }
 
 func (panel *Panel) Measure(constraints Constraints) Vec2 {
@@ -395,6 +423,7 @@ func (panel *Panel) Arrange(rect Rect) {
 }
 
 func (panel *Panel) arrangeStack(inner Rect) {
+	panel.ensureLayoutCapacity(len(panel.children))
 	children := panel.layoutChildren[:0]
 	sizes := panel.layoutSizes[:0]
 	mainAvailable := inner.W
@@ -436,17 +465,8 @@ func (panel *Panel) arrangeStack(inner Rect) {
 		total += panel.Gap * float32(len(children)-1)
 	}
 	delta := mainAvailable - total
-	if cap(panel.layoutWeights) < len(children) {
-		panel.layoutWeights = make([]float32, len(children))
-	} else {
-		panel.layoutWeights = panel.layoutWeights[:len(children)]
-	}
-	if cap(panel.layoutActive) < len(children) {
-		panel.layoutActive = make([]bool, len(children))
-	} else {
-		panel.layoutActive = panel.layoutActive[:len(children)]
-	}
-	weights, active := panel.layoutWeights, panel.layoutActive
+	weights := panel.layoutWeights[:len(children)]
+	active := panel.layoutActive[:len(children)]
 	weight := float32(0)
 	for i, child := range children {
 		state := child.UIState()

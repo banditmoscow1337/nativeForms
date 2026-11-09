@@ -174,6 +174,22 @@ func ibusText(v any) string {
 	text, _ := fields[2].(string)
 	return text
 }
+func runeByteOffset(text string, runeIdx int) (int, bool) {
+	if runeIdx < 0 {
+		return 0, false
+	}
+	count := 0
+	for offset := range text {
+		if count == runeIdx {
+			return offset, true
+		}
+		count++
+	}
+	if count == runeIdx {
+		return len(text), true
+	}
+	return 0, false
+}
 func (i *linuxIME) signal(m dbMessage) {
 	if m.path != i.path || m.iface != ibusContext {
 		return
@@ -220,11 +236,12 @@ func (i *linuxIME) signal(m dbMessage) {
 		if !ok {
 			return
 		}
-		runes := []rune(i.surrounding)
 		a := utf8.RuneCountInString(i.surrounding[:i.surroundingCursor]) + int(offset)
 		b := int64(a) + int64(count)
-		if a >= 0 && b >= int64(a) && b <= int64(len(runes)) {
-			if i.manager.ReplaceTextRange(i.surroundingBase+len(string(runes[:a])), i.surroundingBase+len(string(runes[:int(b)])), "") {
+		if a >= 0 && b >= int64(a) && b <= int64(len(i.surrounding)) {
+			startByte, okA := runeByteOffset(i.surrounding, a)
+			endByte, okB := runeByteOffset(i.surrounding, int(b))
+			if okA && okB && i.manager.ReplaceTextRange(i.surroundingBase+startByte, i.surroundingBase+endByte, "") {
 				i.delivered = true
 			}
 		}

@@ -290,38 +290,33 @@ func (ctx *FontContext) Advance(text string, request FontSpec) float32 {
 	priorFace := -1
 	var priorID uint16
 	var priorAdvance float32
+	var singleSlice [1]rune
 	for at := 0; at < len(r); {
 		end := nextGrapheme(r, at)
 		cluster := r[at:end]
 		if len(cluster) == 2 {
 			if composed := composeRussian(cluster[0], cluster[1]); composed != 0 {
-				if _, _, ok := ctx.faceFor([]rune{composed}, order); ok {
-					cluster = []rune{composed}
+				if _, _, ok := ctx.faceForSingle(composed, order); ok {
+					singleSlice[0] = composed
+					cluster = singleSlice[:1]
 				}
 			}
 		}
 		index, id, ok := -1, uint16(0), false
 		if len(cluster) == 1 {
-			for _, candidate := range order {
-				id = ctx.faces[candidate].face.glyphIndex(cluster[0])
-				if id != 0 || invisibleRune(cluster[0]) || unicode.IsSpace(cluster[0]) {
-					index, ok = candidate, true
-					break
-				}
-			}
+			index, id, ok = ctx.faceForSingle(cluster[0], order)
 		} else {
 			if selected, ids, found := ctx.faceFor(cluster, order); found {
 				index, id, ok = selected, ids[0], true
-			} else if selected, ids, found := ctx.faceFor(cluster[:1], order); found {
-				index, id, ok = selected, ids[0], true
+			} else {
+				index, id, ok = ctx.faceForSingle(cluster[0], order)
 			}
 		}
 		if !ok {
 			step := spec.Size * 0.6
 			if invisibleRune(r[at]) || unicode.Is(unicode.Mn, r[at]) {
 				step = 0
-			}
-			if unicode.IsSpace(r[at]) {
+			} else if unicode.IsSpace(r[at]) {
 				step = spec.Size * 0.33
 			}
 			advance += step
@@ -386,9 +381,18 @@ func invisibleRune(r rune) bool {
 	return false
 }
 
+func (ctx *FontContext) putCachedMask(key glyphKey, mask *image.Alpha, offset Vec2) {
+	if mask != nil && len(mask.Pix) <= ctx.limit {
+		cost := len(mask.Pix)
+		entry := ctx.lru.PushFront(cachedGlyph{key: key, mask: mask, offset: offset, bytes: cost})
+		ctx.cache[key] = entry
+		ctx.bytes += cost
+		ctx.evict()
+	}
+}
+
 func (ctx *FontContext) maskFor(index int, id uint16, spec FontSpec) (*image.Alpha, Vec2) {
 	face := ctx.faces[index]
-
 	physical := max(1, int(math.Round(float64(spec.Size*spec.Scale*4))))
 	bolder := 0
 	if spec.Weight >= 600 && face.weight < 600 {
@@ -405,15 +409,7 @@ func (ctx *FontContext) maskFor(index int, id uint16, spec FontSpec) (*image.Alp
 		return nil, Vec2{}
 	}
 	mask, offset := rasterOutline(out, float32(physical)/4/float32(face.face.units), key.italic, key.bold)
-	if mask != nil {
-		cost := len(mask.Pix)
-		if cost <= ctx.limit {
-			entry := ctx.lru.PushFront(cachedGlyph{key: key, mask: mask, offset: offset, bytes: cost})
-			ctx.cache[key] = entry
-			ctx.bytes += cost
-			ctx.evict()
-		}
-	}
+	ctx.putCachedMask(key, mask, offset)
 	return mask, offset
 }
 
@@ -426,12 +422,7 @@ func (ctx *FontContext) fallbackMaskFor(character rune, spec FontSpec) (*image.A
 		return g.mask, g.offset
 	}
 	mask, offset := asciiMask(character, spec.Size*spec.Scale)
-	if mask != nil && len(mask.Pix) <= ctx.limit {
-		entry := ctx.lru.PushFront(cachedGlyph{key: key, mask: mask, offset: offset, bytes: len(mask.Pix)})
-		ctx.cache[key] = entry
-		ctx.bytes += len(mask.Pix)
-		ctx.evict()
-	}
+	ctx.putCachedMask(key, mask, offset)
 	return mask, offset
 }
 
@@ -480,11 +471,9 @@ func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	line := TextLayout{Carets: make([]float32, len(r)+1)}
 	order := ctx.orderedFaces(spec)
 	for _, index := range order {
-		hhea := ctx.faces[index].face.hhea
-		if len(hhea) == 0 {
-			hhea = ctx.faces[index].face.tables["hhea"]
-		}
-		units := float32(ctx.faces[index].face.units)
+		f := ctx.faces[index].face
+		hhea := f.table("hhea", f.hhea)
+		units := float32(f.units)
 		if ascent := float32(i16(hhea, 4)) / units * spec.Size; ascent > line.Ascent {
 			line.Ascent = ascent
 		}
@@ -584,8 +573,7 @@ func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 			advance := spec.Size * 0.6
 			if invisibleRune(r[at]) || unicode.Is(unicode.Mn, r[at]) {
 				advance = 0
-			}
-			if unicode.IsSpace(r[at]) {
+			} else if unicode.IsSpace(r[at]) {
 				advance = spec.Size * 0.33
 			}
 			if advance > 0 && !unicode.IsSpace(r[at]) {
@@ -655,6 +643,27 @@ func (ctx *FontContext) layoutShared(text string, request FontSpec) TextLayout {
 	return line
 }
 
+func scaleBitmapRows(rows []byte, scale int) *image.Alpha {
+	mask := image.NewAlpha(image.Rect(0, 0, scale*5, scale*len(rows)))
+	for y, row := range rows {
+		if row == 0 {
+			continue
+		}
+		for x := 0; x < 5; x++ {
+			if row&(1<<uint(4-x)) == 0 {
+				continue
+			}
+			for dy := 0; dy < scale; dy++ {
+				base := (y*scale+dy)*mask.Stride + x*scale
+				for dx := 0; dx < scale; dx++ {
+					mask.Pix[base+dx] = 255
+				}
+			}
+		}
+	}
+	return mask
+}
+
 func asciiMask(character rune, physical float32) (*image.Alpha, Vec2) {
 	rows, ok := glyphRows[byte(character)]
 	if !ok {
@@ -664,49 +673,23 @@ func asciiMask(character rune, physical float32) (*image.Alpha, Vec2) {
 	if scale > 256 {
 		return nil, Vec2{}
 	}
-	mask := image.NewAlpha(image.Rect(0, 0, scale*5, scale*7))
-	for y, row := range rows {
-		for x := 0; x < 5; x++ {
-			if row&(1<<uint(4-x)) == 0 {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				for dx := 0; dx < scale; dx++ {
-					mask.Pix[(y*scale+dy)*mask.Stride+x*scale+dx] = 255
-				}
-			}
-		}
-	}
-	return mask, Vec2{Y: -float32(scale * 7)}
+	return scaleBitmapRows(rows[:], scale), Vec2{Y: -float32(scale * 7)}
 }
 
 func accentMask(mark rune, physical float32) (*image.Alpha, Vec2) {
-	var pattern [7]byte
+	var pattern [3]byte
 	switch mark {
 	case '\u0301':
-		pattern = [7]byte{0x02, 0x04, 0x08}
+		pattern = [3]byte{0x02, 0x04, 0x08}
 	case '\u0308':
-		pattern = [7]byte{0x0a, 0x0a}
+		pattern = [3]byte{0x0a, 0x0a}
 	case '\u0306':
-		pattern = [7]byte{0x11, 0x0e}
+		pattern = [3]byte{0x11, 0x0e}
 	default:
 		return nil, Vec2{}
 	}
 	scale := max(1, int(math.Round(float64(physical/12))))
-	mask := image.NewAlpha(image.Rect(0, 0, scale*5, scale*3))
-	for y, bits := range pattern {
-		for x := 0; x < 5; x++ {
-			if bits&(1<<uint(4-x)) == 0 {
-				continue
-			}
-			for dy := 0; dy < scale; dy++ {
-				for dx := 0; dx < scale; dx++ {
-					mask.Pix[(y*scale+dy)*mask.Stride+x*scale+dx] = 255
-				}
-			}
-		}
-	}
-	return mask, Vec2{}
+	return scaleBitmapRows(pattern[:], scale), Vec2{}
 }
 
 func (ctx *FontContext) CaretX(text string, spec FontSpec, at int) float32 {
@@ -742,5 +725,5 @@ func (ctx *FontContext) Ellipsize(text string, width float32, spec FontSpec) str
 	if glyphs := ctx.layoutShared(ellipsis, spec).Glyphs; len(glyphs) == 0 || glyphs[0].Face < 0 {
 		ellipsis = "..."
 	}
-	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.layoutShared(s, spec).Advance }, ellipsis)
+	return ellipsizeTextWith(text, width, func(s string) float32 { return ctx.Advance(s, spec) }, ellipsis)
 }

@@ -20,6 +20,20 @@ type TrueTypeFace struct {
 	metrics    uint16
 	locaFormat int16
 	cmap       []byte
+	kernParsed bool
+	hasKern    bool
+	kernLeft   [1024]uint64
+	kernPairs  map[uint32]int32
+}
+
+func (f *TrueTypeFace) table(name string, cached []byte) []byte {
+	if len(cached) > 0 {
+		return cached
+	}
+	if f.tables != nil {
+		return f.tables[name]
+	}
+	return nil
 }
 
 func ParseTrueType(data []byte) (*TrueTypeFace, error) {
@@ -114,6 +128,7 @@ func ParseTrueType(data []byte) (*TrueTypeFace, error) {
 	f.loca = f.tables["loca"]
 	f.glyf = f.tables["glyf"]
 	f.kern = f.tables["kern"]
+	f.parseKerning()
 	return f, nil
 }
 
@@ -127,7 +142,7 @@ func (f *TrueTypeFace) glyphIndex(r rune) uint16 {
 		return 0
 	}
 	if u16(c, 0) == 12 {
-		if r < 0 || len(c) < 16 {
+		if r < 0 {
 			return 0
 		}
 		n := int(u32(c, 12))
@@ -198,14 +213,8 @@ func (f *TrueTypeFace) advance(id uint16) float32 {
 	if id >= f.glyphCount {
 		return 0.6
 	}
-	index := int(id)
-	if index >= int(f.metrics) {
-		index = int(f.metrics) - 1
-	}
-	hmtx := f.hmtx
-	if len(hmtx) == 0 {
-		hmtx = f.tables["hmtx"]
-	}
+	index := min(int(id), int(f.metrics)-1)
+	hmtx := f.table("hmtx", f.hmtx)
 	return float32(u16(hmtx, index*4)) / float32(f.units)
 }
 
@@ -222,10 +231,7 @@ func (f *TrueTypeFace) glyph(id uint16, depth int) (outline, error) {
 	if id >= f.glyphCount || depth > 8 {
 		return outline{}, fmt.Errorf("invalid composite glyph")
 	}
-	loca, glyf := f.loca, f.glyf
-	if len(loca) == 0 {
-		loca, glyf = f.tables["loca"], f.tables["glyf"]
-	}
+	loca, glyf := f.table("loca", f.loca), f.table("glyf", f.glyf)
 	var start, end uint32
 	if f.locaFormat == 0 {
 		start = uint32(u16(loca, int(id)*2)) * 2
@@ -286,33 +292,20 @@ func (f *TrueTypeFace) glyph(id uint16, depth int) (outline, error) {
 			}
 			a, d = v, v
 		} else if flags&0x0040 != 0 {
-			v, e := readScale()
-			if e != nil {
-				return outline{}, e
-			}
-			a = v
-			v, e = readScale()
-			if e != nil {
-				return outline{}, e
-			}
-			d = v
-		} else if flags&0x0080 != 0 {
 			var e error
-			a, e = readScale()
-			if e != nil {
+			if a, e = readScale(); e != nil {
 				return outline{}, e
 			}
-			bx, e = readScale()
-			if e != nil {
+			if d, e = readScale(); e != nil {
 				return outline{}, e
 			}
-			cy, e = readScale()
-			if e != nil {
-				return outline{}, e
-			}
-			d, e = readScale()
-			if e != nil {
-				return outline{}, e
+		} else if flags&0x0080 != 0 {
+			for _, dst := range [...]*float32{&a, &bx, &cy, &d} {
+				v, e := readScale()
+				if e != nil {
+					return outline{}, e
+				}
+				*dst = v
 			}
 		}
 		child, e := f.glyph(id2, depth+1)
@@ -383,11 +376,11 @@ func parseSimpleGlyph(b []byte, count int) (outline, error) {
 	o.points = make([]fontPoint, n)
 	readCoordinates := func(xAxis bool) error {
 		value := int32(0)
+		short, positive := byte(2), byte(16)
+		if !xAxis {
+			short, positive = 4, 32
+		}
 		for i, flag := range flags {
-			short, positive := byte(2), byte(16)
-			if !xAxis {
-				short, positive = 4, 32
-			}
 			delta := int32(0)
 			if flag&short != 0 {
 				if p >= len(b) {
@@ -435,9 +428,10 @@ func outlineSegments(o outline, transform func(fontPoint) floatPoint) ([]segment
 		last := a
 		for i := 1; i <= 12; i++ {
 			t := float32(i) / 12
+			u := 1 - t
 			next := floatPoint{
-				x: (1-t)*(1-t)*a.x + 2*(1-t)*t*b.x + t*t*c.x,
-				y: (1-t)*(1-t)*a.y + 2*(1-t)*t*b.y + t*t*c.y,
+				x: u*u*a.x + 2*u*t*b.x + t*t*c.x,
+				y: u*u*a.y + 2*u*t*b.y + t*t*c.y,
 			}
 			segments = append(segments, segment{last, next})
 			last = next
@@ -506,45 +500,13 @@ func (f *TrueTypeFace) drawGlyph(atlas *image.NRGBA, id uint16, cellX, cellY int
 	if len(segments) == 0 {
 		return nil
 	}
-	minX, maxX, minY, maxY := segments[0].a.x, segments[0].a.x, segments[0].a.y, segments[0].a.y
-	for _, s := range segments {
-		minX = float32(math.Min(float64(minX), float64(s.b.x)))
-		maxX = float32(math.Max(float64(maxX), float64(s.b.x)))
-		minY = float32(math.Min(float64(minY), float64(s.b.y)))
-		maxY = float32(math.Max(float64(maxY), float64(s.b.y)))
-	}
+	minX, maxX, minY, maxY := segmentBounds(segments)
 	left := max(cellX, int(math.Floor(float64(minX))))
 	top := max(cellY, int(math.Floor(float64(minY))))
 	right := min(cellX+fontCellSize, int(math.Ceil(float64(maxX))))
 	bottom := min(cellY+fontCellSize, int(math.Ceil(float64(maxY))))
-	for y := top; y < bottom; y++ {
-		for x := left; x < right; x++ {
-			hits := 0
-			for _, offsetY := range [...]float32{0.25, 0.75} {
-				for _, offsetX := range [...]float32{0.25, 0.75} {
-					px, py := float32(x)+offsetX, float32(y)+offsetY
-					winding := 0
-					for _, s := range segments {
-						if s.a.y <= py && s.b.y > py || s.b.y <= py && s.a.y > py {
-							intersection := s.a.x + (py-s.a.y)*(s.b.x-s.a.x)/(s.b.y-s.a.y)
-							if intersection > px {
-								if s.b.y > s.a.y {
-									winding++
-								} else {
-									winding--
-								}
-							}
-						}
-					}
-					if winding != 0 {
-						hits++
-					}
-				}
-			}
-			if hits > 0 {
-				atlas.SetNRGBA(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: uint8(hits * 255 / 4)})
-			}
-		}
-	}
+	rasterSegments(segments, left, top, right, bottom, func(x, y, hits int) {
+		atlas.SetNRGBA(x, y, color.NRGBA{R: 255, G: 255, B: 255, A: uint8(hits * 255 / 4)})
+	})
 	return nil
 }

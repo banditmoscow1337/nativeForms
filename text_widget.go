@@ -1,6 +1,7 @@
 package nativeforms
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -211,14 +212,14 @@ func (f *TextField) insert(s string) bool {
 	if !f.Multiline {
 		s = strings.ReplaceAll(strings.ReplaceAll(s, "\r", ""), "\n", "")
 	}
+	r := []rune(f.editor.Text)
 	if f.Validate != nil {
 		a, b := f.editor.selection()
-		r := []rune(f.editor.Text)
 		if !f.Validate(string(r[:a]) + s + string(r[b:])) {
 			return false
 		}
 	}
-	if f.editor.Replace(s) {
+	if f.editor.replaceRunes(r, s) {
 		f.changed()
 		return true
 	}
@@ -250,12 +251,11 @@ func (f *TextField) delete(backward, word bool) bool {
 			b = nextGrapheme(r, b)
 		}
 	}
-	if f.Validate != nil {
-		if !f.Validate(string(r[:a]) + string(r[b:])) {
-			return false
-		}
+	if !f.Validate(string(r[:a]) + string(r[b:])) {
+		return false
 	}
-	if f.editor.Delete(backward, word) {
+	f.editor.Anchor, f.editor.Caret = a, b
+	if f.editor.replaceRunes(r, "") {
 		f.changed()
 		return true
 	}
@@ -313,38 +313,53 @@ func (f *TextField) lineHeight(spec FontSpec) float32 {
 	return spec.Size * 1.2
 }
 
+func (f *TextField) runeSliceWidth(r []rune, start, end int, spec FontSpec, atlasOnly bool) float32 {
+	if atlasOnly {
+		return walkAtlasRunes(r[start:end], spec.Size, nil, nil)
+	}
+	if !f.Multiline && !f.Password && start == 0 && end == len(r) && len(r) == utf8.RuneCountInString(f.editor.Text) {
+		return f.textWidth(f.editor.Text, spec)
+	}
+	return f.textWidth(string(r[start:end]), spec)
+}
+
 func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 	atlasOnly := f.fontContext() == nil && !hasTextShaper()
-	runeWidth := func(start, end int) float32 {
-		if atlasOnly {
-			return walkAtlasRunes(r[start:end], spec.Size, nil, nil)
-		}
-		if !f.Multiline && !f.Password && start == 0 && end == len(r) && len(r) == utf8.RuneCountInString(f.editor.Text) {
-			return f.textWidth(f.editor.Text, spec)
-		}
-		return f.textWidth(string(r[start:end]), spec)
-	}
 	if !f.Multiline {
-		f.singleLine[0] = textLine{0, len(r), runeWidth(0, len(r))}
+		f.singleLine[0] = textLine{0, len(r), f.runeSliceWidth(r, 0, len(r), spec, atlasOnly)}
 		return f.singleLine[:1]
 	}
 	var result []textLine
 	if len(r) > 64 {
-		result = make([]textLine, 0, max(8, len(r)/16))
+		est := 8
+		if len(r) == len(f.editor.Text) {
+			est = strings.Count(f.editor.Text, "\n") + 2
+		} else {
+			est = max(8, len(r)/16)
+		}
+		result = make([]textLine, 0, est)
 	}
 	var measure func(string, float32) float32
 	if !atlasOnly {
 		measure = func(s string, _ float32) float32 { return f.textWidth(s, spec) }
 	}
+	prevStart, prevEnd := -1, -1
+	var prevWidth float32
 	for start := 0; ; {
 		end := start
-		for end < len(r) && !(f.Multiline && hardTextBreak(r, end) != 0) {
+		for end < len(r) && hardTextBreak(r, end) == 0 {
 			end++
 		}
 		at := start
 		for at < end {
-			fullWidth := runeWidth(at, end)
-			if !f.Multiline || width <= 0 || fullWidth <= width {
+			var fullWidth float32
+			if prevStart >= 0 && end-at == prevEnd-prevStart && slices.Equal(r[at:end], r[prevStart:prevEnd]) {
+				fullWidth = prevWidth
+			} else {
+				fullWidth = f.runeSliceWidth(r, at, end, spec, atlasOnly)
+				prevStart, prevEnd, prevWidth = at, end, fullWidth
+			}
+			if width <= 0 || fullWidth <= width {
 				result = append(result, textLine{at, end, fullWidth})
 				break
 			}
@@ -356,7 +371,7 @@ func (f *TextField) lines(r []rune, width float32, spec FontSpec) []textLine {
 			}
 			lineWidth := fullWidth
 			if limit < end {
-				lineWidth = runeWidth(at, limit)
+				lineWidth = f.runeSliceWidth(r, at, limit, spec, atlasOnly)
 			}
 			result = append(result, textLine{at, limit, lineWidth})
 			at = limit
@@ -574,6 +589,20 @@ func (f *TextField) positionAt(x, y float32) int {
 	return best
 }
 
+func updateClickCount(event Event, lastClick *time.Time, lastPoint *Vec2, clicks *int) int {
+	point := Vec2{X: event.X, Y: event.Y}
+	if event.Clicks > 0 {
+		*clicks = event.Clicks
+	} else if time.Since(*lastClick) < 500*time.Millisecond &&
+		absFloat32(point.X-lastPoint.X) < 5 && absFloat32(point.Y-lastPoint.Y) < 5 {
+		*clicks = *clicks%3 + 1
+	} else {
+		*clicks = 1
+	}
+	*lastClick, *lastPoint = time.Now(), point
+	return *clicks
+}
+
 func (f *TextField) Handle(event Event) bool {
 	f.syncExternal()
 	e := f.editor
@@ -591,29 +620,19 @@ func (f *TextField) Handle(event Event) bool {
 		if event.Button != MouseLeft {
 			return false
 		}
-		point := Vec2{X: event.X, Y: event.Y}
-		if event.Clicks > 0 {
-			f.clicks = event.Clicks
-		} else if time.Since(f.lastClick) < 500*time.Millisecond && absFloat32(point.X-f.lastPoint.X) < 5 && absFloat32(point.Y-f.lastPoint.Y) < 5 {
-			f.clicks = f.clicks%3 + 1
-		} else {
-			f.clicks = 1
-		}
-		f.lastClick = time.Now()
-		f.lastPoint = point
 		pos := f.positionAt(event.X, event.Y)
 		r := []rune(e.Text)
-		switch f.clicks {
+		switch updateClickCount(event, &f.lastClick, &f.lastPoint, &f.clicks) {
 		case 2:
 			start, end := selectedWord(r, pos)
-			e.Move(start, false)
-			e.Move(end, true)
+			e.moveRunes(r, start, false)
+			e.moveRunes(r, end, true)
 		case 3:
 			start, end := lineBoundaries(r, pos)
-			e.Move(start, false)
-			e.Move(end, true)
+			e.moveRunes(r, start, false)
+			e.moveRunes(r, end, true)
 		default:
-			e.Move(pos, event.Mods&ModShift != 0)
+			e.moveRunes(r, pos, event.Mods&ModShift != 0)
 		}
 		f.moved()
 		return true
@@ -744,13 +763,12 @@ func (f *TextField) Handle(event Event) bool {
 			r := []rune(e.Text)
 			start, end := lineBoundaries(r, e.Caret)
 			if mod {
-				start = 0
-				end = len(r)
+				start, end = 0, len(r)
 			}
 			if event.Key == KeyHome {
-				e.Move(start, event.Mods&ModShift != 0)
+				e.moveRunes(r, start, event.Mods&ModShift != 0)
 			} else {
-				e.Move(end, event.Mods&ModShift != 0)
+				e.moveRunes(r, end, event.Mods&ModShift != 0)
 			}
 			f.moved()
 			return true

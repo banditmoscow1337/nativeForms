@@ -162,20 +162,24 @@ func (w *X11Window) setVisible(visible bool) {
 	}
 }
 
+func applyCloseDecision(decision platform.CloseAction, app *App, hide, closeFn func()) {
+	switch decision {
+	case platform.HideWindow:
+		hide()
+	case platform.QuitApp:
+		app.Quit()
+	case platform.CancelClose:
+	default:
+		closeFn()
+	}
+}
+
 func (w *X11Window) closeAction() {
 	decision := platform.CloseWindow
 	if w.options.OnCloseRequest != nil {
 		decision = w.options.OnCloseRequest(w)
 	}
-	switch decision {
-	case platform.HideWindow:
-		w.Hide()
-	case platform.QuitApp:
-		w.app.Quit()
-	case platform.CancelClose:
-	default:
-		w.Close()
-	}
+	applyCloseDecision(decision, w.app, w.Hide, w.Close)
 }
 
 func x11Display() (string, int, string, error) {
@@ -788,6 +792,64 @@ func x11Mods(state uint16) int {
 	return mods
 }
 
+func letterKey(r rune) ui.Key {
+	switch unicode.ToLower(r) {
+	case 'a':
+		return ui.KeyA
+	case 'b':
+		return ui.KeyB
+	case 'c':
+		return ui.KeyC
+	case 'd':
+		return ui.KeyD
+	case 'e':
+		return ui.KeyE
+	case 'f':
+		return ui.KeyF
+	case 'g':
+		return ui.KeyG
+	case 'h':
+		return ui.KeyH
+	case 'i':
+		return ui.KeyI
+	case 'j':
+		return ui.KeyJ
+	case 'k':
+		return ui.KeyK
+	case 'l':
+		return ui.KeyL
+	case 'm':
+		return ui.KeyM
+	case 'n':
+		return ui.KeyN
+	case 'o':
+		return ui.KeyO
+	case 'p':
+		return ui.KeyP
+	case 'q':
+		return ui.KeyQ
+	case 'r':
+		return ui.KeyR
+	case 's':
+		return ui.KeyS
+	case 't':
+		return ui.KeyT
+	case 'u':
+		return ui.KeyU
+	case 'v':
+		return ui.KeyV
+	case 'w':
+		return ui.KeyW
+	case 'x':
+		return ui.KeyX
+	case 'y':
+		return ui.KeyY
+	case 'z':
+		return ui.KeyZ
+	}
+	return ui.KeyUnknown
+}
+
 func x11Key(sym uint32) ui.Key {
 	switch sym {
 	case 0xff08:
@@ -887,61 +949,7 @@ func x11Key(sym uint32) ui.Key {
 	case '/', '?':
 		return ui.KeySlash
 	}
-	switch unicode.ToLower(rune(sym)) {
-	case 'a':
-		return ui.KeyA
-	case 'b':
-		return ui.KeyB
-	case 'c':
-		return ui.KeyC
-	case 'd':
-		return ui.KeyD
-	case 'e':
-		return ui.KeyE
-	case 'f':
-		return ui.KeyF
-	case 'g':
-		return ui.KeyG
-	case 'h':
-		return ui.KeyH
-	case 'i':
-		return ui.KeyI
-	case 'j':
-		return ui.KeyJ
-	case 'k':
-		return ui.KeyK
-	case 'l':
-		return ui.KeyL
-	case 'm':
-		return ui.KeyM
-	case 'n':
-		return ui.KeyN
-	case 'o':
-		return ui.KeyO
-	case 'p':
-		return ui.KeyP
-	case 'q':
-		return ui.KeyQ
-	case 'r':
-		return ui.KeyR
-	case 's':
-		return ui.KeyS
-	case 't':
-		return ui.KeyT
-	case 'u':
-		return ui.KeyU
-	case 'v':
-		return ui.KeyV
-	case 'w':
-		return ui.KeyW
-	case 'x':
-		return ui.KeyX
-	case 'y':
-		return ui.KeyY
-	case 'z':
-		return ui.KeyZ
-	}
-	return ui.KeyUnknown
+	return letterKey(rune(sym))
 }
 
 func (w *X11Window) handle(message []byte) bool {

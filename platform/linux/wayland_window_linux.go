@@ -310,15 +310,7 @@ func (w *WaylandWindow) closeAction() {
 	if w.Options.OnCloseRequest != nil {
 		decision = w.Options.OnCloseRequest(w)
 	}
-	switch decision {
-	case platform.HideWindow:
-		w.Hide()
-	case platform.QuitApp:
-		w.app.Quit()
-	case platform.CancelClose:
-	default:
-		w.Close()
-	}
+	applyCloseDecision(decision, w.app, w.Hide, w.Close)
 }
 
 func (w *WaylandWindow) Run() error {
@@ -1122,61 +1114,7 @@ func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 		return ui.KeyF12, 0
 	}
 	if letter := waylandUSLetters[code]; letter != 0 {
-		key := ui.KeyUnknown
-		switch letter {
-		case 'a':
-			key = ui.KeyA
-		case 'b':
-			key = ui.KeyB
-		case 'c':
-			key = ui.KeyC
-		case 'd':
-			key = ui.KeyD
-		case 'e':
-			key = ui.KeyE
-		case 'f':
-			key = ui.KeyF
-		case 'g':
-			key = ui.KeyG
-		case 'h':
-			key = ui.KeyH
-		case 'i':
-			key = ui.KeyI
-		case 'j':
-			key = ui.KeyJ
-		case 'k':
-			key = ui.KeyK
-		case 'l':
-			key = ui.KeyL
-		case 'm':
-			key = ui.KeyM
-		case 'n':
-			key = ui.KeyN
-		case 'o':
-			key = ui.KeyO
-		case 'p':
-			key = ui.KeyP
-		case 'q':
-			key = ui.KeyQ
-		case 'r':
-			key = ui.KeyR
-		case 's':
-			key = ui.KeyS
-		case 't':
-			key = ui.KeyT
-		case 'u':
-			key = ui.KeyU
-		case 'v':
-			key = ui.KeyV
-		case 'w':
-			key = ui.KeyW
-		case 'x':
-			key = ui.KeyX
-		case 'y':
-			key = ui.KeyY
-		case 'z':
-			key = ui.KeyZ
-		}
+		key := letterKey(letter)
 		if shift {
 			letter = unicode.ToUpper(letter)
 		}

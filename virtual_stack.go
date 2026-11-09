@@ -25,15 +25,31 @@ type StackModelUpdater interface {
 // Heights are indexed once and rebuilt when ModelChanged is called.
 type VirtualStack struct {
 	State
-	Model   StackModel
-	prefix  []float32
-	current map[string]Component
-	spare   map[string]Component
-	dirty   bool
+	Model          StackModel
+	prefix         []float32
+	current        map[string]Component
+	spare          map[string]Component
+	activeStart    int
+	activeEnd      int
+	activeKeys     []string
+	activeChildren []Component
+	scratchKeys    []string
+	dirty          bool
+	reconcileKeys  bool
 }
 
 func NewVirtualStack(model StackModel) *VirtualStack {
-	v := &VirtualStack{Model: model, dirty: true}
+	v := &VirtualStack{
+		Model:          model,
+		current:        make(map[string]Component, 64),
+		spare:          make(map[string]Component, 64),
+		activeKeys:     make([]string, 0, 64),
+		activeChildren: make([]Component, 0, 64),
+		scratchKeys:    make([]string, 0, 64),
+		dirty:          true,
+		reconcileKeys:  true,
+	}
+	v.children = make([]Component, 0, 64)
 	v.owner = v
 	return v
 }
@@ -60,10 +76,12 @@ func (v *VirtualStack) indexRows() {
 		v.prefix[i+1] = v.prefix[i] + h
 	}
 	v.dirty = false
+	v.reconcileKeys = true
 }
 
 func (v *VirtualStack) ModelChanged() {
 	v.dirty = true
+	v.reconcileKeys = true
 	v.indexRows()
 	v.Arrange(v.rect)
 	v.invalidateLayout()
@@ -96,13 +114,73 @@ func (v *VirtualStack) Arrange(r Rect) {
 		start, end = max(0, start-1), min(n, end+1)
 	}
 	if v.current == nil {
-		v.current = make(map[string]Component)
+		v.current = make(map[string]Component, 64)
 	}
 	if v.spare == nil {
-		v.spare = make(map[string]Component)
+		v.spare = make(map[string]Component, 64)
 	}
+
+	// Fast path when scrolling without ModelChanged: rows in the overlapping
+	// index window retain their keys and components without re-querying Key(i).
+	if !v.reconcileKeys && len(v.activeChildren) == v.activeEnd-v.activeStart && len(v.activeKeys) == len(v.activeChildren) {
+		for i := v.activeStart; i < v.activeEnd; i++ {
+			if i >= start && i < end {
+				continue
+			}
+			child := v.activeChildren[i-v.activeStart]
+			key := v.activeKeys[i-v.activeStart]
+			delete(v.current, key)
+			if child != nil {
+				if v.manager != nil {
+					v.manager.clearSubtreeInteraction(child.UIState())
+				}
+				bindTree(child, nil, nil)
+			}
+		}
+		nextKeys := v.scratchKeys[:0]
+		v.children = v.children[:0]
+		for i := start; i < end; i++ {
+			var key string
+			var child Component
+			if i >= v.activeStart && i < v.activeEnd {
+				offset := i - v.activeStart
+				key = v.activeKeys[offset]
+				child = v.activeChildren[offset]
+			} else {
+				key = v.Model.Key(i)
+				child = v.current[key]
+				if child != nil {
+					if updater, ok := v.Model.(StackModelUpdater); ok {
+						updater.Update(i, child)
+					}
+				} else {
+					child = v.Model.Build(i)
+					if child != nil {
+						bindTree(child, v, v.manager)
+						if v.themed {
+							applyTheme(child, v.theme)
+						}
+					}
+				}
+				if child != nil {
+					v.current[key] = child
+				}
+			}
+			nextKeys = append(nextKeys, key)
+			if child != nil {
+				v.children = append(v.children, child)
+				child.Arrange(Rect{X: r.X, Y: r.Y + v.prefix[i], W: r.W, H: v.prefix[i+1] - v.prefix[i]})
+			}
+		}
+		v.activeStart, v.activeEnd = start, end
+		v.activeKeys, v.scratchKeys = nextKeys, v.activeKeys[:0]
+		v.activeChildren = append(v.activeChildren[:0], v.children...)
+		return
+	}
+
 	clear(v.spare)
 	v.children = v.children[:0]
+	v.activeKeys = v.activeKeys[:0]
 	for i := start; i < end; i++ {
 		key := v.Model.Key(i)
 		child := v.current[key]
@@ -113,6 +191,7 @@ func (v *VirtualStack) Arrange(r Rect) {
 		} else {
 			child = v.Model.Build(i)
 			if child == nil {
+				v.activeKeys = append(v.activeKeys, key)
 				continue
 			}
 			bindTree(child, v, v.manager)
@@ -121,6 +200,7 @@ func (v *VirtualStack) Arrange(r Rect) {
 			}
 		}
 		v.spare[key] = child
+		v.activeKeys = append(v.activeKeys, key)
 		v.children = append(v.children, child)
 		child.Arrange(Rect{X: r.X, Y: r.Y + v.prefix[i], W: r.W, H: v.prefix[i+1] - v.prefix[i]})
 	}
@@ -133,6 +213,9 @@ func (v *VirtualStack) Arrange(r Rect) {
 		}
 	}
 	v.current, v.spare = v.spare, v.current
+	v.activeStart, v.activeEnd = start, end
+	v.activeChildren = append(v.activeChildren[:0], v.children...)
+	v.reconcileKeys = false
 }
 
 func (v *VirtualStack) Paint(*Canvas) {}

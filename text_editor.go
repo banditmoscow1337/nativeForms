@@ -45,11 +45,7 @@ func (e *TextEditor) SetText(text string) {
 }
 
 func (e *TextEditor) selection() (int, int) {
-	a, b := e.Anchor, e.Caret
-	if a > b {
-		a, b = b, a
-	}
-	return a, b
+	return min(e.Anchor, e.Caret), max(e.Anchor, e.Caret)
 }
 
 func (e *TextEditor) Selection() string {
@@ -62,14 +58,16 @@ func (e *TextEditor) Selection() string {
 
 func (e *TextEditor) SelectAll() { e.Anchor = 0; e.Caret = utf8.RuneCountInString(e.Text) }
 
-func (e *TextEditor) Move(to int, extend bool) {
-	r := []rune(e.Text)
-	to = min(max(to, 0), len(r))
-	to = nearestGrapheme(r, to)
+func (e *TextEditor) moveRunes(r []rune, to int, extend bool) {
+	to = nearestGrapheme(r, min(max(to, 0), len(r)))
 	e.Caret = to
 	if !extend {
 		e.Anchor = to
 	}
+}
+
+func (e *TextEditor) Move(to int, extend bool) {
+	e.moveRunes([]rune(e.Text), to, extend)
 }
 
 func (e *TextEditor) Step(direction int, word, extend bool) {
@@ -77,26 +75,25 @@ func (e *TextEditor) Step(direction int, word, extend bool) {
 	if !extend && e.Caret != e.Anchor && !word {
 		a, b := e.selection()
 		if direction < 0 {
-			e.Move(a, false)
+			e.moveRunes(r, a, false)
 		} else {
-			e.Move(b, false)
+			e.moveRunes(r, b, false)
 		}
 		return
 	}
 	if word {
-		e.Move(wordBoundary(r, e.Caret, direction), extend)
+		e.moveRunes(r, wordBoundary(r, e.Caret, direction), extend)
 		return
 	}
 	if direction < 0 {
-		e.Move(previousGrapheme(r, e.Caret), extend)
+		e.moveRunes(r, previousGrapheme(r, e.Caret), extend)
 	} else {
-		e.Move(nextGrapheme(r, e.Caret), extend)
+		e.moveRunes(r, nextGrapheme(r, e.Caret), extend)
 	}
 }
 
-func (e *TextEditor) Replace(value string) bool {
+func (e *TextEditor) replaceRunes(r []rune, value string) bool {
 	a, b := e.selection()
-	r := []rune(e.Text)
 	a = min(max(a, 0), len(r))
 	b = min(max(b, a), len(r))
 	if a == b && value == "" {
@@ -121,12 +118,20 @@ func (e *TextEditor) Replace(value string) bool {
 	return true
 }
 
+func (e *TextEditor) Replace(value string) bool {
+	return e.replaceRunes([]rune(e.Text), value)
+}
+
 func (e *TextEditor) Delete(backward, word bool) bool {
+	r := []rune(e.Text)
 	if e.Caret == e.Anchor {
-		r := []rune(e.Text)
 		pos := e.Caret
 		if word {
-			pos = wordBoundary(r, pos, map[bool]int{true: -1, false: 1}[backward])
+			dir := 1
+			if backward {
+				dir = -1
+			}
+			pos = wordBoundary(r, pos, dir)
 		} else if backward {
 			pos = previousGrapheme(r, pos)
 		} else {
@@ -134,7 +139,7 @@ func (e *TextEditor) Delete(backward, word bool) bool {
 		}
 		e.Anchor = pos
 	}
-	return e.Replace("")
+	return e.replaceRunes(r, "")
 }
 
 func (e *TextEditor) record() {

@@ -5,7 +5,6 @@ package darwin
 import (
 	"fmt"
 	"structs"
-	"unicode/utf16"
 	"unicode/utf8"
 
 	ui "github.com/banditmoscow1337/nativeForms"
@@ -26,6 +25,13 @@ func registerView() error {
 	protocol := objc.GetProtocol("NSTextInputClient")
 	if protocol == nil {
 		return fmt.Errorf("darwin: NSTextInputClient unavailable")
+	}
+	dragAccept := func(self objc.ID, _ objc.SEL, sender objc.ID) uint64 {
+		w := viewWindows[self]
+		if w != nil && w.options.OnFilesDropped != nil && objc.Send[uint64](sender, selector("draggingSourceOperationMask"))&1 != 0 {
+			return 1
+		}
+		return 0
 	}
 	methods := []objc.MethodDef{
 		{Cmd: selector("windowShouldClose:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID) bool {
@@ -199,20 +205,8 @@ func registerView() error {
 				w.inputHandled = true
 			}
 		}},
-		{Cmd: selector("draggingEntered:"), Fn: func(self objc.ID, _ objc.SEL, sender objc.ID) uint64 {
-			w := viewWindows[self]
-			if w != nil && w.options.OnFilesDropped != nil && objc.Send[uint64](sender, selector("draggingSourceOperationMask"))&1 != 0 {
-				return 1
-			}
-			return 0
-		}},
-		{Cmd: selector("draggingUpdated:"), Fn: func(self objc.ID, _ objc.SEL, sender objc.ID) uint64 {
-			w := viewWindows[self]
-			if w != nil && w.options.OnFilesDropped != nil && objc.Send[uint64](sender, selector("draggingSourceOperationMask"))&1 != 0 {
-				return 1
-			}
-			return 0
-		}},
+		{Cmd: selector("draggingEntered:"), Fn: dragAccept},
+		{Cmd: selector("draggingUpdated:"), Fn: dragAccept},
 		{Cmd: selector("prepareForDragOperation:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID) bool {
 			w := viewWindows[self]
 			return w != nil && w.options.OnFilesDropped != nil
@@ -282,14 +276,16 @@ func plainString(value objc.ID) string {
 	}
 	return stringValue(value)
 }
+func utf16RuneUnits(r rune) uint64 {
+	if r > 0xffff {
+		return 2
+	}
+	return 1
+}
 func utf16Length(value string) uint64 {
 	n := uint64(0)
 	for _, r := range value {
-		if r > 0xffff {
-			n += 2
-		} else {
-			n++
-		}
+		n += utf16RuneUnits(r)
 	}
 	return n
 }
@@ -297,21 +293,25 @@ func utf16RangeBytes(value string, r nsRange) (int, int, bool) {
 	if r.Location == nsNotFound || r.Length > ^uint64(0)-r.Location {
 		return 0, 0, false
 	}
+	endTarget := r.Location + r.Length
 	a, b := -1, -1
 	pos := uint64(0)
 	for offset, c := range value {
 		if pos == r.Location {
 			a = offset
 		}
-		if pos == r.Location+r.Length {
+		if pos == endTarget {
 			b = offset
+			if a >= 0 {
+				return a, b, true
+			}
 		}
-		pos += uint64(len(utf16.Encode([]rune{c})))
+		pos += utf16RuneUnits(c)
 	}
 	if pos == r.Location {
 		a = len(value)
 	}
-	if pos == r.Location+r.Length {
+	if pos == endTarget {
 		b = len(value)
 	}
 	return a, b, a >= 0 && b >= a

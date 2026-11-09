@@ -63,10 +63,12 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 	if document == nil {
 		document, _ = editor.NewDocument("")
 	}
+	lineCount := document.LineCount()
 	e := &CodeEditor{
-		Document: document, Font: FontSpec{Family: "monospace", Size: 14},
-		TabWidth: 4, breakpoints: make(map[int]bool),
-		lexStates:        make([]goLexState, 1, max(16, document.LineCount()+1)),
+		Document:         document,
+		Font:             FontSpec{Family: "monospace", Size: 14},
+		TabWidth:         4,
+		lexStates:        make([]goLexState, lineCount+1, max(16, lineCount+1)),
 		lastVersion:      document.Version(),
 		caretVisible:     true,
 		scratchDisplay:   make([]rune, 0, 256),
@@ -81,7 +83,9 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 	e.focusable = true
 	e.clip = true
 	e.minimum = Vec2{X: 300, Y: 180}
-	e.rebuildLexStates(0)
+	if document.MayContainMultilineTokens() {
+		e.rebuildLexStates(0)
+	}
 	return e
 }
 
@@ -98,7 +102,7 @@ func (e *CodeEditor) SetDocument(document *editor.Document) {
 	e.lexStates = append(e.lexStates[:0], goNormal)
 	e.rebuildLexStates(0)
 	e.lastVersion = document.Version()
-	e.breakpoints = make(map[int]bool)
+	clear(e.breakpoints)
 	e.composing, e.preedit = false, ""
 	e.invalidateLayout()
 }
@@ -154,14 +158,7 @@ func (e *CodeEditor) syncDocument() {
 }
 
 func (e *CodeEditor) validCaret(at int) int {
-	at = min(max(0, at), e.Document.Len())
-	for at > 0 {
-		if _, err := e.Document.UTF16Position(at); err == nil {
-			break
-		}
-		at--
-	}
-	return at
+	return e.Document.ValidCaretOffset(at)
 }
 
 func (e *CodeEditor) fontSpec() FontSpec {
@@ -305,18 +302,12 @@ func (e *CodeEditor) layoutLine(line string) codeLineLayout {
 	e.scratchDisplay = display
 	var carets []float32
 	spec := e.fontSpec()
-	if !hasTabs {
-		if e.fontContext() == nil && !hasTextShaper() {
-			carets = textCaretPositionsRunesInto(display, spec.Size, e.scratchCarets[:0])
-		} else {
-			carets = e.caretPositionsInto(line, spec, e.scratchCarets[:0])
-		}
+	if e.fontContext() == nil && !hasTextShaper() {
+		carets = textCaretPositionsRunesInto(display, spec.Size, e.scratchCarets[:0])
+	} else if !hasTabs {
+		carets = e.caretPositionsInto(line, spec, e.scratchCarets[:0])
 	} else {
-		if e.fontContext() == nil && !hasTextShaper() {
-			carets = textCaretPositionsRunesInto(display, spec.Size, e.scratchCarets[:0])
-		} else {
-			carets = e.caretPositionsInto(string(display), spec, e.scratchCarets[:0])
-		}
+		carets = e.caretPositionsInto(string(display), spec, e.scratchCarets[:0])
 	}
 	e.scratchCarets = carets
 	return codeLineLayout{
@@ -356,12 +347,12 @@ func (l codeLineLayout) byteAtX(line string, x float32) int {
 }
 
 func (e *CodeEditor) lineAtCaret() (line, start, end int) {
-	pos, err := e.Document.UTF16Position(e.Caret)
+	line, err := e.Document.LineAtOffset(e.Caret)
 	if err != nil {
 		return 0, 0, 0
 	}
-	start, end, _ = e.Document.LineRange(pos.Line)
-	return pos.Line, start, end
+	start, end, _ = e.Document.LineRange(line)
+	return line, start, end
 }
 
 func (e *CodeEditor) CaretRect() Rect {
@@ -370,8 +361,7 @@ func (e *CodeEditor) CaretRect() Rect {
 	if e.composing && e.preedit != "" {
 		at = min(e.Caret, e.Anchor)
 	}
-	pos, _ := e.Document.UTF16Position(at)
-	line := pos.Line
+	line, _ := e.Document.LineAtOffset(at)
 	start, end, _ := e.Document.LineRange(line)
 	text := e.sliceLine(line, start, end, true)
 	layout := e.layoutLine(text)
@@ -399,16 +389,10 @@ func (e *CodeEditor) TextInputSnapshot(maxBytes int) (TextInputState, bool) {
 	maxBytes = min(length, max(maxBytes, b-a))
 	start := min(max(0, a-(maxBytes-(b-a))/2), length-maxBytes)
 	end := start + maxBytes
-	for start > 0 {
-		if _, err := e.Document.Slice(start, start); err == nil {
-			break
-		}
+	for start > 0 && !e.Document.ValidOffset(start) {
 		start--
 	}
-	for end < length {
-		if _, err := e.Document.Slice(end, end); err == nil {
-			break
-		}
+	for end < length && !e.Document.ValidOffset(end) {
 		end++
 	}
 	text, _ := e.Document.Slice(start, end)
@@ -437,28 +421,35 @@ func (e *CodeEditor) rebuildLexStates(fromLine int) {
 	if e.Document == nil {
 		return
 	}
+	count := e.Document.LineCount()
 	if fromLine < 0 || fromLine >= len(e.lexStates) {
 		fromLine = 0
-		e.lexStates = append(e.lexStates[:0], goNormal)
+		if len(e.lexStates) == 0 {
+			e.lexStates = make([]goLexState, count+1)
+		} else {
+			e.lexStates[0] = goNormal
+		}
 	}
-	count := e.Document.LineCount()
 	if cap(e.lexStates) < count+1 {
-		grown := make([]goLexState, len(e.lexStates), max(count+1, cap(e.lexStates)*2))
-		copy(grown, e.lexStates)
+		grown := make([]goLexState, count+1, max(count+1, cap(e.lexStates)*2))
+		copy(grown, e.lexStates[:fromLine+1])
 		e.lexStates = grown
+	} else {
+		e.lexStates = e.lexStates[:count+1]
 	}
 	if fromLine >= count {
-		e.lexStates = e.lexStates[:count+1]
 		return
 	}
-	e.lexStates = e.lexStates[:fromLine+1]
 	state := e.lexStates[fromLine]
-	for line := fromLine; line < count; line++ {
-		start, end, _ := e.Document.LineRange(line)
-		segment := e.sliceLine(line, start, end, true)
-		_, state = scanGoLineInto(segment, state, false, nil)
-		e.lexStates = append(e.lexStates, state)
+	if state == goNormal && !e.Document.MayContainMultilineTokens() {
+		clear(e.lexStates[fromLine+1 : count+1])
+		return
 	}
+	e.scratchLineBytes = e.Document.ScanLinesFrom(fromLine, e.scratchLineBytes[:0], func(line int, segment string) bool {
+		state = advanceGoLexState(segment, state)
+		e.lexStates[line+1] = state
+		return true
+	})
 }
 
 func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines int) {
@@ -492,15 +483,23 @@ func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines i
 	}
 	state := e.lexStates[fromLine]
 	minScanEnd := min(count, fromLine+max(1, insertedLines+1))
-	for line := fromLine; line < count; line++ {
-		start, end, _ := e.Document.LineRange(line)
-		segment := e.sliceLine(line, start, end, true)
-		_, state = scanGoLineInto(segment, state, false, nil)
+	if state == goNormal && !e.Document.MayContainMultilineTokens() {
+		for line := fromLine; line < count; line++ {
+			if line+1 >= minScanEnd && e.lexStates[line+1] == goNormal {
+				return
+			}
+			e.lexStates[line+1] = goNormal
+		}
+		return
+	}
+	e.scratchLineBytes = e.Document.ScanLinesFrom(fromLine, e.scratchLineBytes[:0], func(line int, segment string) bool {
+		state = advanceGoLexState(segment, state)
 		if line+1 >= minScanEnd && e.lexStates[line+1] == state {
-			return
+			return false
 		}
 		e.lexStates[line+1] = state
-	}
+		return true
+	})
 }
 
 func (e *CodeEditor) applyStyleRanges(dst []CodeStyle, layout codeLineLayout, lineStart int, ranges []StyledRange) {

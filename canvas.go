@@ -81,6 +81,8 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		canvas.paintTextLine(line, bounds, align, tint, bounds.Y+(bounds.H-line.Height())*0.5)
 		return
 	}
+	var stackLines [16]TextLayout
+	lines := stackLines[:0]
 	height := float32(0)
 	textStart := canvas.trace.Start()
 	for start := 0; ; {
@@ -91,7 +93,9 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 		} else {
 			part = text[start : start+end]
 		}
-		height += canvas.fonts.layoutShared(part, spec).Height()
+		line := canvas.fonts.layoutShared(part, spec)
+		lines = append(lines, line)
+		height += line.Height()
 		if end < 0 {
 			break
 		}
@@ -99,21 +103,9 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	}
 	canvas.trace.Record(PhaseTextLayout, textStart)
 	y := bounds.Y + (bounds.H-height)*0.5
-	for start := 0; ; {
-		end := strings.IndexByte(text[start:], '\n')
-		var part string
-		if end < 0 {
-			part = text[start:]
-		} else {
-			part = text[start : start+end]
-		}
-		line := canvas.fonts.layoutShared(part, spec)
+	for _, line := range lines {
 		canvas.paintTextLine(line, bounds, align, tint, y)
 		y += line.Height()
-		if end < 0 {
-			break
-		}
-		start += end + 1
 	}
 }
 
@@ -332,38 +324,32 @@ func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAli
 	}
 }
 
+func (canvas *Canvas) emitAtlasGlyph(glyph glyphInfo, x, quadY, quadSize float32, tint Color) {
+	if !glyph.visible {
+		return
+	}
+	if canvas.trace != nil {
+		canvas.trace.sample.Glyphs++
+	}
+	const cell = float32(fontCellSize) / fontAtlasSize
+	cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
+	cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
+	canvas.quad(
+		Rect{X: x, Y: quadY, W: quadSize, H: quadSize},
+		Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
+	)
+}
+
 func (canvas *Canvas) emitAtlasLine(line string, x, y, size float32, tint Color) {
 	var previous glyphInfo
 	offset := float32(0)
-	cell := float32(fontCellSize) / fontAtlasSize
 	quadSize := size * float32(fontCellSize) / fontReferenceSize
 	quadY := y - size*0.12
 	for i := 0; i < len(line); {
-		character, width := utf8.DecodeRuneInString(line[i:])
-		if i+width < len(line) && (character == 'Е' || character == 'е' || character == 'И' || character == 'и') {
-			nextRune, nextWidth := utf8.DecodeRuneInString(line[i+width:])
-			if composed := composeRussian(character, nextRune); composed != 0 {
-				character = composed
-				width += nextWidth
-			}
-		}
-		glyph := glyphForRune(character)
-		if glyph.face != nil && glyph.face == previous.face {
-			offset += maxFloat32(-previous.advance*size, glyph.face.atlasKerning(previous.id, glyph.id)*size)
-		}
-		if glyph.visible {
-			if canvas.trace != nil {
-				canvas.trace.sample.Glyphs++
-			}
-			cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-			cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-			canvas.quad(
-				Rect{X: x + offset, Y: quadY, W: quadSize, H: quadSize},
-				Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-			)
-		}
-		offset += maxFloat32(0, glyph.advance*size)
-		previous = glyph
+		character, width, _ := decodeComposedTextRune(line, i)
+		glyph, gx, nextX := stepAtlasGlyph(previous, character, size, offset)
+		canvas.emitAtlasGlyph(glyph, x+gx, quadY, quadSize, tint)
+		previous, offset = glyph, nextX
 		i += width
 	}
 }
@@ -380,33 +366,13 @@ func (canvas *Canvas) textSingleLineRunes(runes []rune, bounds Rect, size float3
 	x := bounds.X
 	var previous glyphInfo
 	offset := float32(0)
-	cell := float32(fontCellSize) / fontAtlasSize
 	quadSize := size * float32(fontCellSize) / fontReferenceSize
 	quadY := y - size*0.12
 	for i := 0; i < len(runes); {
-		character, count := runes[i], 1
-		if i+1 < len(runes) {
-			if composed := composeRussian(character, runes[i+1]); composed != 0 {
-				character, count = composed, 2
-			}
-		}
-		glyph := glyphForRune(character)
-		if glyph.face != nil && glyph.face == previous.face {
-			offset += maxFloat32(-previous.advance*size, glyph.face.atlasKerning(previous.id, glyph.id)*size)
-		}
-		if glyph.visible {
-			if canvas.trace != nil {
-				canvas.trace.sample.Glyphs++
-			}
-			cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-			cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-			canvas.quad(
-				Rect{X: x + offset, Y: quadY, W: quadSize, H: quadSize},
-				Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-			)
-		}
-		offset += maxFloat32(0, glyph.advance*size)
-		previous = glyph
+		character, count := decodeComposedSliceRune(runes, i)
+		glyph, gx, nextX := stepAtlasGlyph(previous, character, size, offset)
+		canvas.emitAtlasGlyph(glyph, x+gx, quadY, quadSize, tint)
+		previous, offset = glyph, nextX
 		i += count
 	}
 }
@@ -432,15 +398,12 @@ type Vertex struct {
 func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 	dst = dst[:0]
 	for _, c := range commands {
-		if c.Kind == CommandMask {
+		switch c.Kind {
+		case CommandMask:
 			dst = tessellateMask(c, dst)
-			continue
-		}
-		if c.Kind == CommandRoundedRect {
+		case CommandRoundedRect:
 			dst = tessellateRoundedRect(c, dst)
-			continue
-		}
-		if c.Kind == CommandQuad {
+		case CommandQuad:
 			r := intersect(c.Rect, c.Clip)
 			if r.Empty() {
 				continue
@@ -461,7 +424,7 @@ func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
 			x0, y0, x1, y1 := r.X, r.Y, r.X+r.W, r.Y+r.H
 			dst = append(dst, v(x0, y0, u0, v0), v(x1, y0, u1, v0), v(x0, y1, u0, v1),
 				v(x0, y1, u0, v1), v(x1, y0, u1, v0), v(x1, y1, u1, v1))
-		} else if c.Kind == CommandLine {
+		case CommandLine:
 			dx, dy := c.To.X-c.From.X, c.To.Y-c.From.Y
 			length := float32(math.Sqrt(float64(dx*dx + dy*dy)))
 			uv := float32(0.5 / fontAtlasSize)
@@ -660,54 +623,4 @@ func emitClippedN(n int, poly [4]Vec2, r Rect, uv float32, tint Color, dst []Ver
 		dst = append(dst, v0, v1, v2)
 	}
 	return dst
-}
-
-func clipPolygon(points []Vec2, r Rect) []Vec2 {
-	if r.Empty() || len(points) == 0 {
-		return nil
-	}
-	type edge struct {
-		inside func(Vec2) bool
-		at     func(Vec2, Vec2) Vec2
-	}
-	edges := [...]edge{
-		{func(p Vec2) bool { return p.X >= r.X }, func(a, b Vec2) Vec2 {
-			t := (r.X - a.X) / (b.X - a.X)
-			return Vec2{X: r.X, Y: a.Y + t*(b.Y-a.Y)}
-		}},
-		{func(p Vec2) bool { return p.X <= r.X+r.W }, func(a, b Vec2) Vec2 {
-			x := r.X + r.W
-			t := (x - a.X) / (b.X - a.X)
-			return Vec2{X: x, Y: a.Y + t*(b.Y-a.Y)}
-		}},
-		{func(p Vec2) bool { return p.Y >= r.Y }, func(a, b Vec2) Vec2 {
-			t := (r.Y - a.Y) / (b.Y - a.Y)
-			return Vec2{X: a.X + t*(b.X-a.X), Y: r.Y}
-		}},
-		{func(p Vec2) bool { return p.Y <= r.Y+r.H }, func(a, b Vec2) Vec2 {
-			y := r.Y + r.H
-			t := (y - a.Y) / (b.Y - a.Y)
-			return Vec2{X: a.X + t*(b.X-a.X), Y: y}
-		}},
-	}
-	for _, e := range edges {
-		if len(points) == 0 {
-			break
-		}
-		out := make([]Vec2, 0, len(points)+2)
-		previous := points[len(points)-1]
-		wasInside := e.inside(previous)
-		for _, current := range points {
-			isInside := e.inside(current)
-			if isInside != wasInside {
-				out = append(out, e.at(previous, current))
-			}
-			if isInside {
-				out = append(out, current)
-			}
-			previous, wasInside = current, isInside
-		}
-		points = out
-	}
-	return points
 }

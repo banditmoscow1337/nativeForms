@@ -78,17 +78,7 @@ func (p *ScrollPanel) ScrollBy(dx, dy float32) Vec2 {
 func (p *ScrollPanel) Scroll(pixels float32) { p.ScrollBy(0, pixels) }
 
 func (p *ScrollPanel) ScrollIntoView(target Component) bool {
-	if target == nil {
-		return false
-	}
-	found := false
-	for parent := target.UIState().parent; parent != nil; parent = parent.UIState().parent {
-		if sameComponent(parent, p) {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if target == nil || sameComponent(p, target) || !containsComponent(p, target) {
 		return false
 	}
 	r := target.UIState().rect

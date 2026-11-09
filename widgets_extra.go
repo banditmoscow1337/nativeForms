@@ -1,5 +1,14 @@
 package nativeforms
 
+func hasRadioOptionIcons(options []RadioOption) bool {
+	for _, option := range options {
+		if option.Icon != nil {
+			return true
+		}
+	}
+	return false
+}
+
 type Checkbox struct {
 	State
 	Text     string
@@ -98,12 +107,8 @@ func (r *RadioGroup) SetSelected(id string) {
 
 func (r *RadioGroup) Measure(c Constraints) Vec2 {
 	w := float32(90)
-	icons := false
-	for _, option := range r.Options {
-		icons = icons || option.Icon != nil
-	}
 	iconSpace := float32(0)
-	if icons {
+	if hasRadioOptionIcons(r.Options) {
 		iconSpace = iconSize + iconGap
 	}
 	for _, option := range r.Options {
@@ -114,10 +119,7 @@ func (r *RadioGroup) Measure(c Constraints) Vec2 {
 
 func (r *RadioGroup) Paint(c *Canvas) {
 	h := r.Theme().ControlHeight
-	icons := false
-	for _, option := range r.Options {
-		icons = icons || option.Icon != nil
-	}
+	icons := hasRadioOptionIcons(r.Options)
 	for i, option := range r.Options {
 		y := r.rect.Y + float32(i)*h
 		if y >= r.rect.Y+r.rect.H {
@@ -252,7 +254,10 @@ func (m *Menu) Paint(c *Canvas) {
 	c.Border(m.rect, 1, c.theme.Border)
 	icons := false
 	for _, item := range m.Items {
-		icons = icons || item.Icon != nil
+		if item.Icon != nil {
+			icons = true
+			break
+		}
 	}
 	h := c.theme.ControlHeight
 	for row := 0; row < m.visibleRows(); row++ {
@@ -266,11 +271,9 @@ func (m *Menu) Paint(c *Canvas) {
 			c.Rect(r, c.theme.Selection)
 		}
 		color := c.theme.Text
-		if item.Disabled {
-			color = c.theme.Disabled
-		}
 		opacity := float32(1)
 		if item.Disabled {
+			color = c.theme.Disabled
 			opacity = 0.5
 		}
 		paintIconLabel(c, item.Icon, item.Label, r.Inset(Symmetric(10, 0)), icons, color, opacity)
@@ -314,11 +317,7 @@ func (m *Menu) Handle(e Event) bool {
 		}
 		rows := m.visibleRows()
 		if delta != 0 && rows > 0 {
-			magnitude := delta
-			if magnitude < 0 {
-				magnitude = -magnitude
-			}
-			step := max(1, int(magnitude))
+			step := max(1, int(absFloat32(delta)))
 			if delta > 0 {
 				step = -step
 			}
@@ -442,11 +441,8 @@ func selectRadioOption(options []RadioOption, selected *string, id string) bool 
 func (c *ComboBox) Measure(limits Constraints) Vec2 {
 	w := float32(140)
 	iconSpace := float32(0)
-	for _, option := range c.Options {
-		if option.Icon != nil {
-			iconSpace = iconSize + iconGap
-			break
-		}
+	if hasRadioOptionIcons(c.Options) {
+		iconSpace = iconSize + iconGap
 	}
 	for _, option := range c.Options {
 		w = maxFloat32(w, c.measureText(option.Label, FontSpec{Size: c.Theme().FontSize}).X+40+iconSpace)
@@ -753,12 +749,7 @@ func (t *Tabs) ScrollTo(id string) {
 	for _, tab := range t.Tabs {
 		w := t.tabWidth(tab)
 		if tab.ID == id {
-			if x < t.Offset {
-				t.Offset = x
-			} else if x+w > t.Offset+t.rect.W {
-				t.Offset = x + w - t.rect.W
-			}
-			t.Offset = clampFloat32(t.Offset, 0, t.maxOffset())
+			t.Offset = clampFloat32(scrollRowIntoView(t.Offset, x, w, t.rect.W), 0, t.maxOffset())
 			t.invalidatePaint()
 			return
 		}
@@ -871,15 +862,13 @@ func (t *Tabs) Handle(e Event) bool {
 		}
 	case PointerUp:
 		if t.downID != "" && e.Button == MouseLeft {
-			id, closing, dragged := t.downID, t.downClose, t.dragged
+			id, closing := t.downID, t.downClose
 			t.downID = ""
 			if inHeader {
 				if i, r := t.tabAt(e.X); i >= 0 && t.Tabs[i].ID == id {
 					if closing && e.X >= r.X+r.W-26 {
 						t.Close(id)
-					} else if !closing && !dragged {
-						t.Select(id)
-					} else if dragged {
+					} else if !closing {
 						t.Select(id)
 					}
 				}

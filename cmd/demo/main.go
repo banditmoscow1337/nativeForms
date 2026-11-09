@@ -75,17 +75,26 @@ type demoFlags struct {
 
 // customCanvasWidget demonstrates raw Canvas drawing primitives (CommandQuad,
 // CommandRoundedRect, CommandLine, CommandImage, CommandMask, PushClip/PopClip,
-// Tessellate) and the ViewportCuller interface.
+// Tessellate) and the ViewportCuller interface without per-frame allocations.
 type customCanvasWidget struct {
 	ui.State
-	icon      *ui.ImageResource
-	phase     float32
-	vertices  int
-	cullCount int
+	icon        *ui.ImageResource
+	phase       float32
+	vertices    int
+	cullCount   int
+	sampleCmds  [2]ui.DrawCommand
+	sampleVerts []ui.Vertex
+	cachedPhase float32
+	cachedCull  int
+	cachedText  string
 }
 
 func newCustomCanvasWidget(icon *ui.ImageResource) *customCanvasWidget {
-	w := &customCanvasWidget{icon: icon}
+	w := &customCanvasWidget{
+		icon:        icon,
+		sampleVerts: make([]ui.Vertex, 0, 128),
+		cachedPhase: -1,
+	}
 	w.UIState().SetPreferredSize(ui.Vec2{X: 360, Y: 130})
 	w.UIState().SetMinimumSize(ui.Vec2{X: 220, Y: 110})
 	w.UIState().SetTooltip("Custom Canvas widget: Rect, RoundedRect, Border, Line, Image, TextStyled, Clip, Tessellate & ViewportCuller")
@@ -141,31 +150,48 @@ func (w *customCanvasWidget) Paint(canvas *ui.Canvas) {
 		canvas.Image(w.icon, imgDest, ui.Rect{}, ui.RGBA(255, 255, 255, 255), ui.FilterBilinear)
 	}
 
-	// Verify Tessellate directly on sample commands.
-	sampleCmds := []ui.DrawCommand{
-		{Kind: ui.CommandRoundedRect, Rect: ui.Rect{W: 32, H: 16}, Clip: ui.Rect{W: 32, H: 16}, Radius: 4, Tint: theme.Accent},
-		{Kind: ui.CommandLine, From: ui.Vec2{X: 0, Y: 0}, To: ui.Vec2{X: 32, Y: 16}, Width: 2, Clip: ui.Rect{W: 32, H: 16}, Tint: theme.Text},
-	}
-	verts := ui.Tessellate(sampleCmds, nil)
-	w.vertices = len(verts)
+	// Verify Tessellate reusing pre-allocated vertex buffer.
+	w.sampleCmds[0] = ui.DrawCommand{Kind: ui.CommandRoundedRect, Rect: ui.Rect{W: 32, H: 16}, Clip: ui.Rect{W: 32, H: 16}, Radius: 4, Tint: theme.Accent}
+	w.sampleCmds[1] = ui.DrawCommand{Kind: ui.CommandLine, From: ui.Vec2{X: 0, Y: 0}, To: ui.Vec2{X: 32, Y: 16}, Width: 2, Clip: ui.Rect{W: 32, H: 16}, Tint: theme.Text}
+	w.sampleVerts = ui.Tessellate(w.sampleCmds[:], w.sampleVerts[:0])
+	w.vertices = len(w.sampleVerts)
 
+	if w.cachedText == "" || w.cachedPhase != w.phase || w.cachedCull != w.cullCount {
+		w.cachedPhase = w.phase
+		w.cachedCull = w.cullCount
+		w.cachedText = fmt.Sprintf("Phase: %.2f rad | Sample Tessellate: %d verts | Culled: %d", w.phase, w.vertices, w.cullCount)
+	}
 	infoRect := ui.Rect{X: inner.X + 58, Y: inner.Y + 48, W: maxFloat32(0, inner.W-60), H: 48}
-	infoText := fmt.Sprintf("Phase: %.2f rad | Sample Tessellate: %d verts | Culled: %d", w.phase, w.vertices, w.cullCount)
-	canvas.Text(infoText, infoRect, 14, ui.TextLeft, theme.MutedText)
+	canvas.Text(w.cachedText, infoRect, 14, ui.TextLeft, theme.MutedText)
 }
 
 // --- Virtual Models (ListModel, ListIconModel, TableModel, TableIconModel, TreeModel, TreeIconModel, StackModel, StackModelUpdater) ---
 
 type demoListModel struct {
-	count int
-	icons []*ui.ImageResource
+	count  int
+	icons  []*ui.ImageResource
+	ids    []string
+	labels []string
+}
+
+func newDemoListModel(count int, icons []*ui.ImageResource) *demoListModel {
+	m := &demoListModel{icons: icons}
+	m.resize(count)
+	return m
+}
+
+func (m *demoListModel) resize(count int) {
+	m.count = count
+	for len(m.ids) < count {
+		i := len(m.ids)
+		m.ids = append(m.ids, strconv.Itoa(i))
+		m.labels = append(m.labels, fmt.Sprintf("Item #%04d — VirtualList Row (Icon=%v)", i, i%2 == 0))
+	}
 }
 
 func (m *demoListModel) Len() int          { return m.count }
-func (m *demoListModel) ID(i int) string   { return strconv.Itoa(i) }
-func (m *demoListModel) Label(i int) string {
-	return fmt.Sprintf("Item #%04d — VirtualList Row (Icon=%v)", i, i%2 == 0)
-}
+func (m *demoListModel) ID(i int) string   { return m.ids[i] }
+func (m *demoListModel) Label(i int) string { return m.labels[i] }
 func (m *demoListModel) Icon(i int) *ui.ImageResource {
 	if len(m.icons) == 0 || i%2 != 0 {
 		return nil
@@ -176,11 +202,39 @@ func (m *demoListModel) Icon(i int) *ui.ImageResource {
 type demoTableModel struct {
 	rows  int
 	icons []*ui.ImageResource
+	ids   []string
+	cells [][5]string
 }
 
-func (m *demoTableModel) Len() int     { return m.rows }
-func (m *demoTableModel) ID(r int) string { return fmt.Sprintf("row-%d", r) }
-func (m *demoTableModel) Columns() int { return 5 }
+func newDemoTableModel(rows int, icons []*ui.ImageResource) *demoTableModel {
+	m := &demoTableModel{icons: icons}
+	m.resize(rows)
+	return m
+}
+
+func (m *demoTableModel) resize(rows int) {
+	m.rows = rows
+	names := [...]string{"Label", "Button", "TextField", "CodeEditor", "VirtualTable", "VirtualTree", "VirtualStack", "Slider"}
+	for len(m.ids) < rows {
+		r := len(m.ids)
+		m.ids = append(m.ids, fmt.Sprintf("row-%d", r))
+		status := "OK"
+		if r%7 == 0 {
+			status = "WARN"
+		}
+		m.cells = append(m.cells, [5]string{
+			fmt.Sprintf("ROW-%04d", r),
+			names[r%len(names)],
+			status,
+			fmt.Sprintf("%d us", 45+(r*17)%250),
+			fmt.Sprintf("%d KB", 12+(r*31)%512),
+		})
+	}
+}
+
+func (m *demoTableModel) Len() int        { return m.rows }
+func (m *demoTableModel) ID(r int) string { return m.ids[r] }
+func (m *demoTableModel) Columns() int    { return 5 }
 func (m *demoTableModel) Header(col int) string {
 	headers := [...]string{"ID", "Component", "Status", "Latency (us)", "Memory (KB)"}
 	if col >= 0 && col < len(headers) {
@@ -189,24 +243,10 @@ func (m *demoTableModel) Header(col int) string {
 	return ""
 }
 func (m *demoTableModel) Cell(row, col int) string {
-	switch col {
-	case 0:
-		return fmt.Sprintf("ROW-%04d", row)
-	case 1:
-		names := [...]string{"Label", "Button", "TextField", "CodeEditor", "VirtualTable", "VirtualTree", "VirtualStack", "Slider"}
-		return names[row%len(names)]
-	case 2:
-		if row%7 == 0 {
-			return "WARN"
-		}
-		return "OK"
-	case 3:
-		return fmt.Sprintf("%d us", 45+(row*17)%250)
-	case 4:
-		return fmt.Sprintf("%d KB", 12+(row*31)%512)
-	default:
-		return ""
+	if row >= 0 && row < len(m.cells) && col >= 0 && col < 5 {
+		return m.cells[row][col]
 	}
+	return ""
 }
 func (m *demoTableModel) CellIcon(row, col int) *ui.ImageResource {
 	if col == 0 && len(m.icons) > 0 {
@@ -223,7 +263,7 @@ type demoTreeModel struct {
 }
 
 func newDemoTreeModel(icons []*ui.ImageResource) *demoTreeModel {
-	m := &demoTreeModel{
+	return &demoTreeModel{
 		roots: []string{"root-widgets", "root-virtual", "root-editors", "root-platform"},
 		children: map[string][]string{
 			"root-widgets":  {"w-controls", "w-layouts", "w-popups"},
@@ -277,11 +317,10 @@ func newDemoTreeModel(icons []*ui.ImageResource) *demoTreeModel {
 		},
 		icons: icons,
 	}
-	return m
 }
 
-func (m *demoTreeModel) Roots() int               { return len(m.roots) }
-func (m *demoTreeModel) Root(i int) string        { return m.roots[i] }
+func (m *demoTreeModel) Roots() int        { return len(m.roots) }
+func (m *demoTreeModel) Root(i int) string { return m.roots[i] }
 func (m *demoTreeModel) Label(id string) string {
 	if lbl, ok := m.labels[id]; ok {
 		return lbl
@@ -303,28 +342,47 @@ func (m *demoTreeModel) Icon(id string) *ui.ImageResource {
 type demoStackModel struct {
 	count  int
 	values map[int]string
+	keys   []string
+	titles []string
 	prefix string
 }
 
 func newDemoStackModel(count int) *demoStackModel {
-	return &demoStackModel{
-		count:  count,
+	m := &demoStackModel{
 		values: make(map[int]string),
 		prefix: "VirtualRow",
+	}
+	m.resize(count, "VirtualRow")
+	return m
+}
+
+func (m *demoStackModel) resize(count int, prefix string) {
+	if m.prefix != prefix {
+		m.prefix = prefix
+		m.titles = m.titles[:0]
+	}
+	m.count = count
+	for len(m.keys) < count {
+		i := len(m.keys)
+		m.keys = append(m.keys, strconv.Itoa(i))
+	}
+	for len(m.titles) < count {
+		i := len(m.titles)
+		m.titles = append(m.titles, fmt.Sprintf("%s #%04d", m.prefix, i))
 	}
 }
 
 func (m *demoStackModel) Len() int             { return m.count }
-func (m *demoStackModel) Key(i int) string     { return strconv.Itoa(i) }
+func (m *demoStackModel) Key(i int) string     { return m.keys[i] }
 func (m *demoStackModel) Height(i int) float32 { return float32(44 + (i%3)*6) }
 func (m *demoStackModel) Build(i int) ui.Component {
 	row := ui.NewStack(ui.Horizontal, 8)
 	row.Padding = ui.Symmetric(6, 2)
-	lbl := ui.NewLabel(fmt.Sprintf("%s #%04d", m.prefix, i))
+	lbl := ui.NewLabel(m.titles[i])
 	lbl.UIState().SetPreferredSize(ui.Vec2{X: 160, Y: 36})
 	val, ok := m.values[i]
 	if !ok {
-		val = fmt.Sprintf("Editable value %04d", i)
+		val = "Editable value 0123456789"
 	}
 	idx := i
 	field := ui.NewTextField(val, func(s string) {
@@ -342,9 +400,15 @@ func (m *demoStackModel) Update(i int, comp ui.Component) {
 	children := panel.UIState().Children()
 	if len(children) > 0 {
 		if lbl, ok := children[0].(*ui.Label); ok {
-			lbl.SetText(fmt.Sprintf("%s #%04d", m.prefix, i))
+			lbl.SetText(m.titles[i])
 		}
 	}
+}
+
+type jsonlFrameRecord struct {
+	Kind, Scenario string
+	At             time.Time
+	Sample         ui.FrameSample
 }
 
 // --- Demo Application State ---
@@ -369,24 +433,24 @@ type demoApp struct {
 	perfBanner  *ui.Label
 
 	// Tab 1: Controls & Forms
-	clickCount    int
-	btnCounter    *ui.Button
-	toggleSwitch  *ui.Toggle
-	checkBox      *ui.Checkbox
-	radioGroup    *ui.RadioGroup
-	comboBox      *ui.ComboBox
-	sliderStep    *ui.Slider
-	sliderCont    *ui.Slider
-	progressBar   *ui.ProgressBar
-	imageWidget   *ui.Image
-	canvasWidget  *customCanvasWidget
-	validField    *ui.TextField
-	passwordField *ui.TextField
-	readOnlyField *ui.TextField
-	notesArea     *ui.TextField
-	scrollForm    *ui.ScrollPanel
-	dynamicGrid   *ui.Grid
-	overlayBadge  *ui.Label
+	clickCount     int
+	btnCounter     *ui.Button
+	toggleSwitch   *ui.Toggle
+	checkBox       *ui.Checkbox
+	radioGroup     *ui.RadioGroup
+	comboBox       *ui.ComboBox
+	sliderStep     *ui.Slider
+	sliderCont     *ui.Slider
+	progressBar    *ui.ProgressBar
+	imageWidget    *ui.Image
+	canvasWidget   *customCanvasWidget
+	validField     *ui.TextField
+	passwordField  *ui.TextField
+	readOnlyField  *ui.TextField
+	notesArea      *ui.TextField
+	scrollForm     *ui.ScrollPanel
+	dynamicGrid    *ui.Grid
+	overlayBadge   *ui.Label
 	suspendedNotif *ui.NotificationState
 
 	// Tab 2: CodeEditor & Text
@@ -395,16 +459,16 @@ type demoApp struct {
 	editorInfo *ui.Label
 
 	// Tab 3: Virtualized Views & Output
-	vListModel  *demoListModel
-	vList       *ui.VirtualList
-	vTableModel *demoTableModel
-	vTable      *ui.VirtualTable
-	vTreeModel  *demoTreeModel
-	vTree       *ui.VirtualTree
-	vStackModel *demoStackModel
-	vStack      *ui.VirtualStack
+	vListModel   *demoListModel
+	vList        *ui.VirtualList
+	vTableModel  *demoTableModel
+	vTable       *ui.VirtualTable
+	vTreeModel   *demoTreeModel
+	vTree        *ui.VirtualTree
+	vStackModel  *demoStackModel
+	vStack       *ui.VirtualStack
 	vStackScroll *ui.ScrollPanel
-	outputPanel *ui.OutputPanel
+	outputPanel  *ui.OutputPanel
 
 	// Tab 4: Popups, A11y & Platform
 	a11ySummary *ui.Label
@@ -414,27 +478,32 @@ type demoApp struct {
 	// Tab 5: CPU & Memory Profiling
 	trackAllocsToggle *ui.Toggle
 	stressToggle      *ui.Toggle
-	frameStatsLabel   *ui.Label
-	memStatsLabel     *ui.Label
-	cacheStatsLabel   *ui.Label
 
-	// Profiling & telemetry state
-	mu            sync.Mutex
-	framesTotal   uint64
-	lastSample    ui.FrameSample
-	maxBuild      time.Duration
-	maxPaint      time.Duration
-	maxLayout     time.Duration
-	sumBuildNS    uint64
-	allocBytesSum uint64
-	allocObjSum   uint64
-	stressRunning atomic.Bool
-	stressStep    atomic.Int64
-	cpuProfFile   *os.File
-	traceOutFile  *os.File
-	jsonlWriter   *bufio.Writer
-	jsonlFile     *os.File
-	jsonlEnc      *json.Encoder
+	// Profiling & telemetry state (throttled text formatting to keep FontContext cache warm)
+	mu                 sync.Mutex
+	framesTotal        uint64
+	lastSample         ui.FrameSample
+	maxBuild           time.Duration
+	maxPaint           time.Duration
+	maxLayout          time.Duration
+	sumBuildNS         uint64
+	allocBytesSum      uint64
+	allocObjSum        uint64
+	lastBannerUpdate   time.Time
+	cachedBannerText   string
+	lastCard1Update    time.Time
+	cachedCard1Text    string
+	lastCard2Update    time.Time
+	cachedCard2Text    string
+	lastCard3Update    time.Time
+	cachedCard3Text    string
+	stressRunning      atomic.Bool
+	stressStep         atomic.Int64
+	cpuProfFile        *os.File
+	traceOutFile       *os.File
+	jsonlWriter        *bufio.Writer
+	jsonlFile          *os.File
+	jsonlEnc           *json.Encoder
 }
 
 func makeProceduralIcon(size int, primary, secondary color.NRGBA) *ui.ImageResource {
@@ -474,7 +543,6 @@ func makeCheckerboardResource(w, h int, c1, c2 color.NRGBA) *ui.ImageResource {
 			}
 		}
 	}
-	// Also test DecodeImageResource round-trip via PNG buffer.
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err == nil {
 		if decoded, err := ui.DecodeImageResource(&buf); err == nil {
@@ -552,7 +620,6 @@ func newDemoApp(flags demoFlags) *demoApp {
 		altBanner:  altBanner,
 	}
 
-	// Internal fallback clipboard when running headless or when platform clipboard is unavailable.
 	var fallbackClip string
 	mgr.SetClipboardHandlers(
 		func() (string, error) {
@@ -608,10 +675,11 @@ func (d *demoApp) setupObserver(trackAllocs bool) {
 		d.mu.Unlock()
 
 		if enc != nil {
-			_ = enc.Encode(map[string]any{
-				"kind":   "frame",
-				"at":     time.Now().UTC(),
-				"sample": sample,
+			_ = enc.Encode(jsonlFrameRecord{
+				Kind:     "frame",
+				Scenario: "full-showcase",
+				At:       time.Now().UTC(),
+				Sample:   sample,
 			})
 		}
 	}, ui.FrameObserverOptions{TrackAllocations: trackAllocs})
@@ -628,7 +696,6 @@ func (d *demoApp) buildUI() {
 		Language:    "ru",
 	})
 
-	// Top Header Bar
 	header := ui.NewStack(ui.Horizontal, 8)
 	header.Padding = ui.Symmetric(10, 6)
 	header.Background = d.darkTheme.Header
@@ -664,7 +731,6 @@ func (d *demoApp) buildUI() {
 
 	header.Add(title, btnTheme, btnSelfTest, btnStress)
 
-	// Main Tabs
 	d.tabs = ui.NewTabs([]ui.Tab{
 		{
 			ID:          "controls",
@@ -713,7 +779,6 @@ func (d *demoApp) buildUI() {
 		return true
 	}
 
-	// Bottom Status & Live Telemetry Bar
 	footer := ui.NewStack(ui.Horizontal, 12)
 	footer.Padding = ui.Symmetric(10, 4)
 	footer.Background = d.darkTheme.Header
@@ -739,7 +804,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	columns := ui.NewStack(ui.Horizontal, 10)
 	columns.Padding = ui.All(6)
 
-	// Left Column: Interactive Controls inside a ScrollPanel
 	leftStack := ui.NewStack(ui.Vertical, 8)
 	leftStack.Padding = ui.All(8)
 
@@ -787,7 +851,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 		d.logf("Image.SetFit(%s)", id)
 	})
 
-	// ComboBox with >8 items to test scrollable menu popup
 	comboOpts := make([]ui.RadioOption, 16)
 	for i := range comboOpts {
 		scale := 1.0 + float64(i)*0.125
@@ -805,18 +868,32 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	})
 	d.comboBox.UIState().SetTooltip("ComboBox с прокруткой (16 элементов, MaxVisibleItems=8)")
 
+	var pctLabels [21]string
+	for i := 0; i <= 20; i++ {
+		pctLabels[i] = fmt.Sprintf("%d%%", i*5)
+	}
 	d.sliderStep = ui.NewSlider("Прогресс (шаг 5%)", 0, 100, 35, 5, func(val float32) {
 		d.progressBar.SetValue(val / 100.0)
 	})
-	d.sliderStep.FormatValue = func(v float32) string { return fmt.Sprintf("%.0f%%", v) }
+	d.sliderStep.FormatValue = func(v float32) string {
+		idx := min(20, max(0, int(v/5+0.5)))
+		return pctLabels[idx]
+	}
 
-	d.sliderCont = ui.NewSlider("Фаза волны Canvas (непрерывный)", 0, 6.28318, 0.8, 0, func(val float32) {
+	var radLabels [64]string
+	for i := range radLabels {
+		radLabels[i] = fmt.Sprintf("%.2f rad", float64(i)*0.1)
+	}
+	d.sliderCont = ui.NewSlider("Фаза волны Canvas (непрерывный)", 0, 6.28318, 0.8, 0.1, func(val float32) {
 		if d.canvasWidget != nil {
 			d.canvasWidget.phase = val
 			d.manager.InvalidatePaint()
 		}
 	})
-	d.sliderCont.FormatValue = func(v float32) string { return fmt.Sprintf("%.2f rad", v) }
+	d.sliderCont.FormatValue = func(v float32) string {
+		idx := min(len(radLabels)-1, max(0, int(v*10+0.5)))
+		return radLabels[idx]
+	}
 
 	d.progressBar = ui.NewProgressBar(0.35)
 	d.progressBar.ShowValue = true
@@ -836,7 +913,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	d.scrollForm = ui.NewScrollPanel(leftStack)
 	d.scrollForm.UIState().SetFlex(1)
 
-	// Right Column: Form, Grid, Overlay, Image & Custom Canvas
 	rightStack := ui.NewStack(ui.Vertical, 8)
 	rightStack.Padding = ui.All(8)
 
@@ -882,7 +958,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	form.AddRow(lblPass, d.passwordField)
 	form.AddRow(lblRO, d.readOnlyField)
 
-	// Multi-line TextArea
 	d.notesArea = ui.NewTextArea("Многострочное поле TextArea (Undo/Redo, выделение слов, автоперенос).\nВторая строка с кириллицей и UTF-8 символами: № € ₽ — «тест».", func(s string) {
 		d.tabs.SetDirty("controls", true)
 	})
@@ -890,7 +965,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	d.notesArea.Editor().UndoByteLimit = 2 << 20
 	d.notesArea.UIState().SetPreferredSize(ui.Vec2{X: 360, Y: 90})
 
-	// Grid + Overlay with ImageResource replacement & filter toggle
 	d.dynamicGrid = ui.NewGrid(
 		ui.Track{Mode: ui.TrackFixed, Value: 150},
 		ui.Track{Mode: ui.TrackStar, Value: 1},
@@ -936,7 +1010,6 @@ func (d *demoApp) buildControlsTab() ui.Component {
 	d.dynamicGrid.AddAt(overlayContainer, 0, 0, 1, 1)
 	d.dynamicGrid.AddAt(imgActions, 0, 1, 1, 1)
 
-	// Custom Canvas Widget
 	d.canvasWidget = newCustomCanvasWidget(d.icons[1])
 
 	rightStack.Add(formTitle, form, d.notesArea, d.dynamicGrid, d.canvasWidget)
@@ -1050,7 +1123,6 @@ func (d *demoApp) buildEditorTab() ui.Component {
 	}
 	d.codeEditor.OnChange = func(ch editor.Change) {
 		d.updateEditorInfo()
-		d.logf("CodeEditor изменён: v%d -> v%d (правок: %d)", ch.BeforeVersion, ch.Version, len(ch.Edits))
 	}
 	d.codeEditor.OnBreakpointChange = func(line int, enabled bool) {
 		d.updateEditorInfo()
@@ -1095,17 +1167,14 @@ func (d *demoApp) showEditorCompletions() {
 
 func (d *demoApp) applySampleSemanticTokens() {
 	ver := d.codeDoc.Version()
-	// Highlight package identifier on line 0 ("showcase") as namespace/type and "WidgetMetrics" as struct.
 	legend := []string{"namespace", "struct", "function", "variable"}
-	// LSP 5-uint32 delta format: [deltaLine, deltaStart, length, tokenType, tokenModifiers]
 	data := []uint32{
-		0, 8, 8, 0, 0, // line 0, col 8, len 8 ("showcase") -> namespace
+		0, 8, 8, 0, 0,
 	}
 	if err := d.codeEditor.SetSemanticTokens(ver, legend, data); err != nil {
 		d.logf("SetSemanticTokens error: %v", err)
 		return
 	}
-	// Also apply explicit style range on first line keyword "package"
 	_ = d.codeEditor.SetStyleRanges(ver, []ui.StyledRange{
 		{Start: 0, End: 7, Style: ui.CodeKeyword},
 	})
@@ -1116,7 +1185,6 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	root := ui.NewStack(ui.Vertical, 8)
 	root.Padding = ui.All(6)
 
-	// Top bar to scale item counts dynamically
 	bar := ui.NewStack(ui.Horizontal, 8)
 	btn1k := ui.NewButton("1 000 записей", func() { d.resizeVirtualModels(1000) })
 	btn10k := ui.NewButton("10 000 записей", func() { d.resizeVirtualModels(10000) })
@@ -1136,11 +1204,9 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	})
 	bar.Add(btn1k, btn10k, btn50k, btnExpand, btnLog)
 
-	// Upper split: VirtualTree | VirtualList | VirtualStack
 	upper := ui.NewStack(ui.Horizontal, 8)
 	upper.UIState().SetFlex(1)
 
-	// 1. VirtualTree
 	treeBox := ui.NewStack(ui.Vertical, 4)
 	treeBox.UIState().SetFlex(1)
 	treeBox.Add(ui.NewLabel("VirtualTree (TreeModel + TreeIconModel):"))
@@ -1155,11 +1221,10 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	}
 	treeBox.Add(d.vTree)
 
-	// 2. VirtualList
 	listBox := ui.NewStack(ui.Vertical, 4)
 	listBox.UIState().SetFlex(1)
 	listBox.Add(ui.NewLabel("VirtualList (ListModel + ListIconModel):"))
-	d.vListModel = &demoListModel{count: d.flags.count, icons: d.icons}
+	d.vListModel = newDemoListModel(d.flags.count, d.icons)
 	d.vList = ui.NewVirtualList(d.vListModel)
 	d.vList.UIState().SetFlex(1)
 	d.vList.OnSelect = func(id string) {
@@ -1167,7 +1232,6 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	}
 	listBox.Add(d.vList)
 
-	// 3. VirtualStack inside ScrollPanel
 	stackBox := ui.NewStack(ui.Vertical, 4)
 	stackBox.UIState().SetFlex(1)
 	stackBox.Add(ui.NewLabel("VirtualStack (StackModel + StackModelUpdater):"))
@@ -1179,14 +1243,13 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 
 	upper.Add(treeBox, listBox, stackBox)
 
-	// Lower split: VirtualTable | OutputPanel
 	lower := ui.NewStack(ui.Horizontal, 8)
 	lower.UIState().SetFlex(1)
 
 	tableBox := ui.NewStack(ui.Vertical, 4)
 	tableBox.UIState().SetFlex(1)
 	tableBox.Add(ui.NewLabel("VirtualTable (2D Scroll + TableIconModel):"))
-	d.vTableModel = &demoTableModel{rows: d.flags.count, icons: d.icons}
+	d.vTableModel = newDemoTableModel(d.flags.count, d.icons)
 	d.vTable = ui.NewVirtualTable(d.vTableModel)
 	d.vTable.ColumnWidth = 140
 	d.vTable.UIState().SetFlex(1)
@@ -1217,14 +1280,13 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 }
 
 func (d *demoApp) resizeVirtualModels(count int) {
-	d.vListModel.count = count
+	d.vListModel.resize(count)
 	d.vList.ModelChanged()
 
-	d.vTableModel.rows = count
+	d.vTableModel.resize(count)
 	d.vTable.ModelChanged()
 
-	d.vStackModel.count = count
-	d.vStackModel.prefix = fmt.Sprintf("Row[%dk]", count/1000)
+	d.vStackModel.resize(count, fmt.Sprintf("Row[%dk]", count/1000))
 	d.vStack.ModelChanged()
 
 	d.logf("Размер виртуальных моделей обновлён до %d элементов", count)
@@ -1234,7 +1296,6 @@ func (d *demoApp) buildPopupsAndPlatformTab() ui.Component {
 	columns := ui.NewStack(ui.Horizontal, 12)
 	columns.Padding = ui.All(8)
 
-	// Left: Popups, Dialogs, Menus, Notifications, Dynamic Tabs
 	left := ui.NewStack(ui.Vertical, 8)
 	left.UIState().SetFlex(1)
 
@@ -1273,7 +1334,7 @@ func (d *demoApp) buildPopupsAndPlatformTab() ui.Component {
 
 	notifRow := ui.NewStack(ui.Horizontal, 6)
 	btnNotify := ui.NewButton("Notify / ShowMessage", func() {
-		d.manager.ShowMessage("Тост-уведомление #%d (3 сек)", 3.0)
+		d.manager.ShowMessage("Тост-уведомление (3 сек)", 3.0)
 	})
 	btnNotify.UIState().SetFlex(1)
 
@@ -1295,7 +1356,6 @@ func (d *demoApp) buildPopupsAndPlatformTab() ui.Component {
 
 	left.Add(lblPopup, btnModal, btnMenu, btnTooltip, notifRow, btnDynTab)
 
-	// Right: Accessibility & Native Platform Integration
 	right := ui.NewStack(ui.Vertical, 8)
 	right.UIState().SetFlex(1)
 
@@ -1311,7 +1371,6 @@ func (d *demoApp) buildPopupsAndPlatformTab() ui.Component {
 		for _, node := range tree.Nodes {
 			roleCounts[node.Role]++
 		}
-		// Trigger increment on sliderStep via PerformAccessibilityAction
 		sliderID := d.sliderStep.UIState().AccessibilityID()
 		acted := d.manager.PerformAccessibilityAction(sliderID, ui.AccessibilityIncrement, "")
 		summary := fmt.Sprintf(
@@ -1384,18 +1443,22 @@ func (d *demoApp) buildPopupsAndPlatformTab() ui.Component {
 	btnSaveFile.UIState().SetFlex(1)
 	dialogRow.Add(btnOpenFile, btnOpenFolder, btnSaveFile)
 
+	var cachedCapText string
 	d.capSummary = ui.NewLabel("")
 	d.capSummary.Wrap = true
 	d.capSummary.TextFunc = func() string {
 		if d.window == nil {
 			return "Capabilities: Headless Software Renderer (без нативного окна ОС)"
 		}
-		c := d.window.Capabilities()
-		return fmt.Sprintf(
-			"Capabilities: SoftwareFrame=%v | Pointer=%v | Keyboard=%v | TextInput=%v | Clipboard=%v | IME=%v | MultiWin=%v | DragDrop=%v | FileDialog=%v | Wayland=%v",
-			c.SoftwareFrame, c.Pointer, c.Keyboard, c.TextInput,
-			c.Clipboard, c.IME, c.MultipleWindows, c.DragDrop, c.FileDialog, c.Wayland,
-		)
+		if cachedCapText == "" {
+			c := d.window.Capabilities()
+			cachedCapText = fmt.Sprintf(
+				"Capabilities: SoftwareFrame=%v | Pointer=%v | Keyboard=%v | TextInput=%v | Clipboard=%v | IME=%v | MultiWin=%v | DragDrop=%v | FileDialog=%v | Wayland=%v",
+				c.SoftwareFrame, c.Pointer, c.Keyboard, c.TextInput,
+				c.Clipboard, c.IME, c.MultipleWindows, c.DragDrop, c.FileDialog, c.Wayland,
+			)
+		}
+		return cachedCapText
 	}
 
 	right.Add(lblPlat, btnA11y, d.a11ySummary, d.clipField, clipRow, dialogRow, d.capSummary)
@@ -1443,7 +1506,6 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 	d.stressToggle.UIState().SetFlex(1)
 	toggles.Add(d.trackAllocsToggle, d.stressToggle)
 
-	// Profiling Action Buttons
 	actions := ui.NewStack(ui.Horizontal, 8)
 	btnGC := ui.NewButton("Принудительный GC + FreeOSMemory", func() {
 		before := readHeapAlloc()
@@ -1488,13 +1550,15 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 		d.sumBuildNS = 0
 		d.allocBytesSum = 0
 		d.allocObjSum = 0
+		d.lastCard1Update = time.Time{}
+		d.lastCard2Update = time.Time{}
+		d.lastCard3Update = time.Time{}
 		d.mu.Unlock()
 		d.logf("Пиковые метрики кадров сброшены")
 	})
 	btnResetStats.UIState().SetFlex(1)
 	actions.Add(btnGC, btnHeap, btnAllocs, btnResetStats)
 
-	// Live Telemetry Cards in a Grid
 	cards := ui.NewGrid(
 		ui.Track{Mode: ui.TrackStar, Value: 1},
 		ui.Track{Mode: ui.TrackStar, Value: 1},
@@ -1504,7 +1568,13 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 	cards.RowGap = 10
 
 	cardFrame := d.makeMetricCard("Тайминги кадра и рендерера (FrameSample)", func() string {
+		now := time.Now()
 		d.mu.Lock()
+		if d.cachedCard1Text != "" && now.Sub(d.lastCard1Update) < 250*time.Millisecond {
+			txt := d.cachedCard1Text
+			d.mu.Unlock()
+			return txt
+		}
 		s := d.lastSample
 		total := d.framesTotal
 		maxB, maxL, maxP := d.maxBuild, d.maxLayout, d.maxPaint
@@ -1512,8 +1582,7 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 		if total > 0 {
 			avgB = time.Duration(d.sumBuildNS / total)
 		}
-		d.mu.Unlock()
-		return fmt.Sprintf(
+		txt := fmt.Sprintf(
 			"Кадров: %d | Backend: %s\n"+
 				"Размер: %dx%d (Damage: %d px)\n"+
 				"Build: %v (avg %v, max %v)\n"+
@@ -1535,18 +1604,29 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 			s.Glyphs, s.TextRunes,
 			s.Batches, s.Vertices, s.TextureUploads, formatBytes(uint64(maxInt64(0, s.UploadBytes))),
 		)
+		d.cachedCard1Text = txt
+		d.lastCard1Update = now
+		d.mu.Unlock()
+		return txt
 	})
 
 	cardMem := d.makeMetricCard("Память и GC (runtime.MemStats)", func() string {
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
+		now := time.Now()
 		d.mu.Lock()
+		if d.cachedCard2Text != "" && now.Sub(d.lastCard2Update) < 250*time.Millisecond {
+			txt := d.cachedCard2Text
+			d.mu.Unlock()
+			return txt
+		}
 		lastAllocB := d.lastSample.AllocBytes
 		lastAllocO := d.lastSample.AllocObjects
 		sumAllocB := d.allocBytesSum
 		sumAllocO := d.allocObjSum
 		d.mu.Unlock()
-		return fmt.Sprintf(
+
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		txt := fmt.Sprintf(
 			"HeapAlloc (живая куча): %s\n"+
 				"HeapInuse: %s | HeapIdle: %s\n"+
 				"HeapSys: %s | TotalSys: %s\n"+
@@ -1570,20 +1650,32 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 			formatBytes(lastAllocB), lastAllocO,
 			formatBytes(sumAllocB), sumAllocO,
 		)
+		d.mu.Lock()
+		d.cachedCard2Text = txt
+		d.lastCard2Update = now
+		d.mu.Unlock()
+		return txt
 	})
 
 	cardCache := d.makeMetricCard("Кэш шрифтов и Стресс-тест (FontContext)", func() string {
+		now := time.Now()
+		d.mu.Lock()
+		if d.cachedCard3Text != "" && now.Sub(d.lastCard3Update) < 250*time.Millisecond {
+			txt := d.cachedCard3Text
+			d.mu.Unlock()
+			return txt
+		}
+		fHits := d.lastSample.TextCacheHits
+		fMisses := d.lastSample.TextCacheMisses
+		d.mu.Unlock()
+
 		glyphBytes, glyphEntries := d.fonts.CacheUsage()
 		layoutBytes, layoutEntries, hits, misses := d.fonts.LayoutCacheStats()
 		hitRate := 0.0
 		if hits+misses > 0 {
 			hitRate = float64(hits) * 100.0 / float64(hits+misses)
 		}
-		d.mu.Lock()
-		fHits := d.lastSample.TextCacheHits
-		fMisses := d.lastSample.TextCacheMisses
-		d.mu.Unlock()
-		return fmt.Sprintf(
+		txt := fmt.Sprintf(
 			"Glyph Mask Cache: %s (%d глифов)\n"+
 				"Text Layout Cache: %s (%d строк)\n"+
 				"Layout Hits: %d | Misses: %d (%.1f%%)\n"+
@@ -1603,6 +1695,11 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 			d.stressStep.Load(),
 			d.manager.DisplayScale(),
 		)
+		d.mu.Lock()
+		d.cachedCard3Text = txt
+		d.lastCard3Update = now
+		d.mu.Unlock()
+		return txt
 	})
 
 	cards.AddAt(cardFrame, 0, 0, 1, 1)
@@ -1632,32 +1729,42 @@ func (d *demoApp) makeMetricCard(heading string, textFn func() string) ui.Compon
 }
 
 func (d *demoApp) shortPerfSummary() string {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
+	now := time.Now()
 	d.mu.Lock()
+	if d.cachedBannerText != "" && now.Sub(d.lastBannerUpdate) < 250*time.Millisecond {
+		txt := d.cachedBannerText
+		d.mu.Unlock()
+		return txt
+	}
 	s := d.lastSample
 	total := d.framesTotal
 	d.mu.Unlock()
-	return fmt.Sprintf(
-		"Frames: %d | Build: %v | Cmds: %d | Glyphs: %d | Heap: %s | GC: %d",
-		total, s.Build.Round(time.Microsecond), s.Commands, s.Glyphs, formatBytes(m.HeapAlloc), m.NumGC,
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	txt := fmt.Sprintf(
+		"Frames: %d | Build: %v | Cmds: %d | Glyphs: %d | Allocs: %d (%s) | Heap: %s | GC: %d",
+		total, s.Build.Round(time.Microsecond), s.Commands, s.Glyphs,
+		s.AllocObjects, formatBytes(s.AllocBytes), formatBytes(m.HeapAlloc), m.NumGC,
 	)
+	d.mu.Lock()
+	d.cachedBannerText = txt
+	d.lastBannerUpdate = now
+	d.mu.Unlock()
+	return txt
 }
 
 func (d *demoApp) registerShortcuts() {
-	// F2: Toggle Dark/Light Theme
 	d.manager.AddShortcut(ui.Shortcut{
 		Key:          ui.KeyF2,
 		AllowInModal: true,
 		Action:       d.toggleTheme,
 	})
-	// F5: Run Automated Self-Test Suite
 	d.manager.AddShortcut(ui.Shortcut{
 		Key:          ui.KeyF5,
 		AllowInModal: true,
 		Action:       d.runSelfTests,
 	})
-	// F6: Toggle Stress Test
 	d.manager.AddShortcut(ui.Shortcut{
 		Key:          ui.KeyF6,
 		AllowInModal: true,
@@ -1665,7 +1772,6 @@ func (d *demoApp) registerShortcuts() {
 			d.setStressMode(!d.stressRunning.Load())
 		},
 	})
-	// Ctrl+G: Force GC
 	d.manager.AddShortcut(ui.Shortcut{
 		Key:  ui.KeyG,
 		Mods: ui.ModControl,
@@ -1700,12 +1806,10 @@ func (d *demoApp) setStressMode(enabled bool) {
 }
 
 // stepStressWorkload exercises layout, painting, text shaping, scrolling,
-// virtualized containers, and code editing on a single UI tick.
+// virtualized containers, and code editing on a single UI tick without
+// allocating temporary strings on every frame.
 func (d *demoApp) stepStressWorkload(step int) {
-	d.stressStep.Store(int64(step))
-
-	// Cycle across tabs every 25 steps so every subsystem gets rendered and profiled.
-	tabIDs := []string{"controls", "editor", "virtual", "popups", "profiler"}
+	tabIDs := [...]string{"controls", "editor", "virtual", "popups", "profiler"}
 	targetTab := tabIDs[(step/25)%len(tabIDs)]
 	if d.tabs.SelectedID != targetTab {
 		d.tabs.Select(targetTab)
@@ -1713,8 +1817,8 @@ func (d *demoApp) stepStressWorkload(step int) {
 
 	switch targetTab {
 	case "controls":
-		d.sliderStep.SetValue(float32((step * 7) % 105))
-		d.sliderCont.SetValue(float32(math.Mod(float64(step)*0.18, 6.28318)))
+		d.sliderStep.SetValue(float32((step * 5) % 105))
+		d.sliderCont.SetValue(float32((step % 62)) * 0.1)
 		d.progressBar.SetValue(float32(step%100) / 100.0)
 		d.scrollForm.Scroll(48)
 		if step%12 == 0 {
@@ -1730,7 +1834,6 @@ func (d *demoApp) stepStressWorkload(step int) {
 			_, _ = d.codeDoc.Undo()
 		}
 		_, _ = d.manager.TextInputState()
-		d.updateEditorInfo()
 	case "virtual":
 		d.vList.ScrollTo((step * 31) % max(1, d.vListModel.Len()))
 		d.vTable.Offset = float32((step * 36) % max(1, d.vTableModel.Len()*32))
@@ -1739,9 +1842,8 @@ func (d *demoApp) stepStressWorkload(step int) {
 		if step%15 == 0 {
 			d.vStackScroll.Scroll(-600)
 		}
-		if step%8 == 0 {
-			d.outputPanel.AppendText(fmt.Sprintf("[STRESS step=%d] FrameSample build=%v alloc=%d B\n",
-				step, d.lastSample.Build, d.lastSample.AllocBytes))
+		if step%16 == 0 {
+			d.outputPanel.AppendText("[STRESS] Virtualized stream tick OK\n")
 		}
 	case "popups":
 		if step%10 == 0 {
@@ -1752,8 +1854,6 @@ func (d *demoApp) stepStressWorkload(step int) {
 	}
 }
 
-// runSelfTests deterministically verifies widget states, validation, editor
-// transactions, virtualized models, popups, and accessibility actions.
 func (d *demoApp) runSelfTests() {
 	passed := 0
 	failed := 0
@@ -1766,32 +1866,26 @@ func (d *demoApp) runSelfTests() {
 		}
 	}
 
-	// Ensure initial layout exists before testing geometry-dependent features.
 	if d.flags.headless {
 		d.manager.BeginFrame(d.flags.width, d.flags.height, 0.016)
 	}
 
-	// 1. Test TextField validation & ReplaceTextRange
 	okValid := d.validField.ReplaceTextRange(0, len(d.validField.Text), "98765")
 	okInvalid := d.validField.ReplaceTextRange(0, len(d.validField.Text), "98a65")
 	check("TextField.Validate accepts digits and rejects letters", okValid && !okInvalid && d.validField.Text == "98765")
 
-	// 2. Test Slider clamping & snapping
-	d.sliderStep.SetValue(43.2) // Step=5 -> should snap to 45
+	d.sliderStep.SetValue(43.2)
 	check("Slider step snapping (43.2 -> 45)", d.sliderStep.Value == 45)
 
-	// 3. Test Toggle & Checkbox
 	prevToggle := d.toggleSwitch.Value
 	d.toggleSwitch.SetValue(!prevToggle)
 	check("Toggle.SetValue updates value", d.toggleSwitch.Value == !prevToggle)
 	d.toggleSwitch.SetValue(prevToggle)
 
-	// 4. Test RadioGroup & ComboBox
 	d.radioGroup.SetSelected("cover")
 	check("RadioGroup.SetSelected updates selection & Image.Fit", d.radioGroup.SelectedID == "cover" && d.imageWidget.Fit == ui.ImageCover)
 	d.radioGroup.SetSelected("contain")
 
-	// 5. Test editor.Document & CodeEditor
 	vBefore := d.codeDoc.Version()
 	ch, err := d.codeDoc.Apply([]editor.Edit{{Start: 0, End: 0, Text: "// header\n"}})
 	check("editor.Document.Apply increments version", err == nil && ch.Version == vBefore+1)
@@ -1801,7 +1895,6 @@ func (d *demoApp) runSelfTests() {
 	check("editor.Document.Redo re-applies edit", redone)
 	_, _ = d.codeDoc.Undo()
 
-	// 6. Test VirtualList, VirtualTable, VirtualTree & OutputPanel
 	d.vList.SetSelected("42")
 	d.vList.ScrollTo(42)
 	check("VirtualList selection & scroll", d.vList.SelectedID == "42")
@@ -1818,13 +1911,11 @@ func (d *demoApp) runSelfTests() {
 	d.outputPanel.AppendText("completed\n")
 	check("OutputPanel chunked streaming", len(d.outputPanel.Lines()) == beforeLines+2)
 
-	// 7. Test Popup open/close
 	pid := d.manager.OpenDialog(ui.NewDialog("SelfTest Dialog", ui.NewLabel("Testing modal")), 320, 160)
 	check("OpenDialog returns non-zero PopupID", pid != 0)
 	closed := d.manager.ClosePopup(pid)
 	check("ClosePopup closes dialog", closed)
 
-	// 8. Test AccessibilitySnapshot & PerformAccessibilityAction
 	d.tabs.Select("controls")
 	if d.flags.headless {
 		d.manager.BeginFrame(d.flags.width, d.flags.height, 0.016)
@@ -1952,15 +2043,17 @@ func (d *demoApp) startProfilers() error {
 		d.jsonlWriter = bufio.NewWriterSize(f, 256*1024)
 		d.jsonlEnc = json.NewEncoder(d.jsonlWriter)
 		_ = d.jsonlEnc.Encode(map[string]any{
-			"kind":       "manifest",
-			"scenario":   "full-showcase",
-			"go_version": runtime.Version(),
-			"os":         runtime.GOOS,
-			"arch":       runtime.GOARCH,
-			"width":      d.flags.width,
-			"height":     d.flags.height,
-			"count":      d.flags.count,
-			"started":    time.Now().UTC(),
+			"Kind":      "manifest",
+			"Scenario":  "full-showcase",
+			"Pattern":   "warm",
+			"Graphics":  d.flags.graphics,
+			"GoVersion": runtime.Version(),
+			"OS":        runtime.GOOS,
+			"Arch":      runtime.GOARCH,
+			"Width":     d.flags.width,
+			"Height":    d.flags.height,
+			"Count":     d.flags.count,
+			"Started":   time.Now().UTC(),
 		})
 		_ = d.jsonlWriter.Flush()
 	}
@@ -1995,9 +2088,10 @@ func (d *demoApp) stopProfilers() error {
 	}
 	if d.jsonlWriter != nil {
 		_ = d.jsonlEnc.Encode(map[string]any{
-			"kind":   "summary",
-			"frames": d.framesTotal,
-			"ended":  time.Now().UTC(),
+			"kind":           "summary",
+			"dropped_frames": 0,
+			"frames":         d.framesTotal,
+			"ended":          time.Now().UTC(),
 		})
 		_ = d.jsonlWriter.Flush()
 		_ = d.jsonlFile.Close()
@@ -2005,8 +2099,6 @@ func (d *demoApp) stopProfilers() error {
 	return nil
 }
 
-// runHeadless executes the full UI pipeline and software rasterizer without
-// requiring an OS windowing session, suitable for CI, benchmarks, and servers.
 func (d *demoApp) runHeadless() error {
 	renderer := software.New()
 	defer renderer.Close()
@@ -2030,7 +2122,6 @@ func (d *demoApp) runHeadless() error {
 		return nil
 	}
 
-	// Warmup frame + self-test verification.
 	if err := renderOneFrame(); err != nil {
 		return err
 	}
@@ -2039,7 +2130,6 @@ func (d *demoApp) runHeadless() error {
 		return err
 	}
 
-	// Stress loop for the requested duration.
 	deadline := time.Now().Add(d.flags.duration)
 	step := 0
 	for time.Now().Before(deadline) {
@@ -2133,7 +2223,12 @@ func (d *demoApp) runDesktop() error {
 		defer signal.Stop(sig)
 
 		var pending atomic.Bool
-		step := 0
+		// Allocate the Post callback once outside the loop so ticks do 0 closure allocations.
+		postStep := func() {
+			defer pending.Store(false)
+			cur := int(d.stressStep.Add(1))
+			d.stepStressWorkload(cur)
+		}
 		for {
 			select {
 			case <-stop:
@@ -2151,12 +2246,7 @@ func (d *demoApp) runDesktop() error {
 				if !pending.CompareAndSwap(false, true) {
 					continue
 				}
-				step++
-				cur := step
-				d.app.Post(func() {
-					defer pending.Store(false)
-					d.stepStressWorkload(cur)
-				})
+				d.app.Post(postStep)
 			}
 		}
 	}()

@@ -53,24 +53,29 @@ type Manager struct {
 	notificationMu sync.Mutex
 	notifications  []notification
 
-	frame        Frame
-	clips        []Rect
-	frameTheme   Theme
-	canvas       Canvas
-	traceStorage FrameTrace
-	layoutWidth  int
-	layoutHeight int
+	frame          Frame
+	clips          []Rect
+	clipStorage    [16]Rect
+	commandStorage [1024]DrawCommand
+	frameTheme     Theme
+	canvas         Canvas
+	traceStorage   FrameTrace
+	layoutWidth    int
+	layoutHeight   int
 }
 
 func New() *Manager {
-	return &Manager{
-		visible: true, theme: DefaultTheme(),
+	m := &Manager{
+		visible:      true,
+		theme:        DefaultTheme(),
 		displayScale: 1,
-		dirtyLayout:  true, dirtyPaint: true,
-		clock: time.Now,
-		frame: Frame{Commands: make([]DrawCommand, 0, 1024)},
-		clips: make([]Rect, 0, 16),
+		dirtyLayout:  true,
+		dirtyPaint:   true,
+		clock:        time.Now,
 	}
+	m.frame.Commands = m.commandStorage[:0]
+	m.clips = m.clipStorage[:0]
+	return m
 }
 
 func (manager *Manager) now() time.Time {
@@ -78,6 +83,23 @@ func (manager *Manager) now() time.Time {
 		return manager.clock()
 	}
 	return time.Now()
+}
+
+func estimateTreeCommands(component Component) int {
+	if component == nil {
+		return 0
+	}
+	if _, ok := component.(*ScrollPanel); ok {
+		return 512
+	}
+	count := 2
+	if label, ok := component.(*Label); ok {
+		count += len(label.Text)
+	}
+	for _, child := range component.UIState().children {
+		count += estimateTreeCommands(child)
+	}
+	return count
 }
 
 func (manager *Manager) SetRoot(root Component) {
@@ -90,6 +112,9 @@ func (manager *Manager) SetRoot(root Component) {
 	manager.root = root
 	bindTree(root, nil, manager)
 	applyTheme(root, manager.theme)
+	if est := estimateTreeCommands(root); est > cap(manager.frame.Commands) {
+		manager.frame.Commands = make([]DrawCommand, 0, est+64)
+	}
 	manager.mu.Unlock()
 	if blurred != nil {
 		blurred.Handle(Event{Type: FocusLost})
@@ -103,6 +128,14 @@ func (manager *Manager) Root() Component {
 	return manager.root
 }
 
+func (manager *Manager) finishClearInteraction(blurred Component) {
+	if blurred != nil {
+		blurred.Handle(Event{Type: FocusLost})
+		manager.closeUnfocusedPopupsOutside(nil)
+	}
+	manager.InvalidatePaint()
+}
+
 func (manager *Manager) SetVisible(visible bool) {
 	manager.mu.Lock()
 	manager.visible = visible
@@ -111,11 +144,7 @@ func (manager *Manager) SetVisible(visible bool) {
 		blurred = manager.clearInteractionLocked()
 	}
 	manager.mu.Unlock()
-	if blurred != nil {
-		blurred.Handle(Event{Type: FocusLost})
-		manager.closeUnfocusedPopupsOutside(nil)
-	}
-	manager.InvalidatePaint()
+	manager.finishClearInteraction(blurred)
 }
 
 func (manager *Manager) Visible() bool {
@@ -132,11 +161,7 @@ func (manager *Manager) SetInteractive(interactive bool) {
 		blurred = manager.clearInteractionLocked()
 	}
 	manager.mu.Unlock()
-	if blurred != nil {
-		blurred.Handle(Event{Type: FocusLost})
-		manager.closeUnfocusedPopupsOutside(nil)
-	}
-	manager.InvalidatePaint()
+	manager.finishClearInteraction(blurred)
 }
 
 func (manager *Manager) Interactive() bool {
@@ -608,10 +633,8 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 			return true
 		}
 		if event.Type == KeyDown && event.Key == KeyEscape {
-			for i := len(manager.popups) - 1; i >= 0; i-- {
-				if !manager.popups[i].passive {
-					return manager.ClosePopup(manager.popups[i].id)
-				}
+			if top := manager.topInteractivePopup(); top != nil {
+				return manager.ClosePopup(top.id)
 			}
 		}
 		for target := manager.focused; target != nil; target = target.UIState().parent {
@@ -631,13 +654,8 @@ func (manager *Manager) handleTreeEvent(root Component, event Event, gameNavigat
 			}
 			if modal := manager.topModal(); modal != nil {
 				root = modal.content
-			} else {
-				for i := len(manager.popups) - 1; i >= 0; i-- {
-					if !manager.popups[i].passive {
-						root = manager.popups[i].content
-						break
-					}
-				}
+			} else if top := manager.topInteractivePopup(); top != nil {
+				root = top.content
 			}
 			switch event.Key {
 			case KeyTab:
@@ -834,36 +852,33 @@ func (manager *Manager) ClearInteraction() {
 	manager.mu.Lock()
 	blurred := manager.clearInteractionLocked()
 	manager.mu.Unlock()
-	if blurred != nil {
-		blurred.Handle(Event{Type: FocusLost})
-		manager.closeUnfocusedPopupsOutside(nil)
+	manager.finishClearInteraction(blurred)
+}
+
+func stateInSubtree(root *State, component Component) bool {
+	if root == nil || component == nil {
+		return false
 	}
-	manager.InvalidatePaint()
+	for state := component.UIState(); state != nil; {
+		if state == root {
+			return true
+		}
+		if state.parent == nil {
+			break
+		}
+		state = state.parent.UIState()
+	}
+	return false
 }
 
 func (manager *Manager) clearSubtreeInteraction(root *State) {
-	inSubtree := func(component Component) bool {
-		if component == nil {
-			return false
-		}
-		for state := component.UIState(); state != nil; {
-			if state == root {
-				return true
-			}
-			if state.parent == nil {
-				break
-			}
-			state = state.parent.UIState()
-		}
-		return false
-	}
-	if inSubtree(manager.focused) {
+	if stateInSubtree(root, manager.focused) {
 		manager.setFocus(nil)
 	}
-	if inSubtree(manager.hovered) {
+	if stateInSubtree(root, manager.hovered) {
 		manager.setHovered(nil)
 	}
-	if inSubtree(manager.captured) {
+	if stateInSubtree(root, manager.captured) {
 		manager.captured.UIState().pressed = false
 		manager.captured = nil
 	}

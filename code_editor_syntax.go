@@ -56,10 +56,93 @@ func scanGoLine(line string, state goLexState, styles bool) ([]StyledRange, goLe
 	return scanGoLineInto(line, state, styles, spans)
 }
 
+// advanceGoLexState computes the next line's carry state without allocating
+// spans, decoding UTF-8 runes, or looking up Go keywords.
+func advanceGoLexState(line string, state goLexState) goLexState {
+	if state == goNormal {
+		hasSpecial := false
+		for i := 0; i < len(line); i++ {
+			b := line[i]
+			if b == '`' || (b == '/' && i+1 < len(line) && line[i+1] == '*') {
+				hasSpecial = true
+				break
+			}
+		}
+		if !hasSpecial {
+			return goNormal
+		}
+	}
+	for at := 0; at < len(line); {
+		switch state {
+		case goBlockComment:
+			for at < len(line) && (at+1 >= len(line) || line[at] != '*' || line[at+1] != '/') {
+				at++
+			}
+			if at+1 < len(line) {
+				at += 2
+				state = goNormal
+			}
+			continue
+		case goRawString:
+			for at < len(line) && line[at] != '`' {
+				at++
+			}
+			if at < len(line) {
+				at++
+				state = goNormal
+			}
+			continue
+		}
+		b := line[at]
+		if b == '/' && at+1 < len(line) {
+			if line[at+1] == '/' {
+				break
+			}
+			if line[at+1] == '*' {
+				at += 2
+				state = goBlockComment
+				continue
+			}
+		}
+		if b == '`' {
+			at++
+			for at < len(line) && line[at] != '`' {
+				at++
+			}
+			if at < len(line) {
+				at++
+			} else {
+				state = goRawString
+			}
+			continue
+		}
+		if b == '"' || b == '\'' {
+			quote := b
+			at++
+			for at < len(line) {
+				if line[at] == '\\' {
+					at = min(len(line), at+2)
+					continue
+				}
+				at++
+				if line[at-1] == quote {
+					break
+				}
+			}
+			continue
+		}
+		at++
+	}
+	return state
+}
+
 func scanGoLineInto(line string, state goLexState, styles bool, spans []StyledRange) ([]StyledRange, goLexState) {
 	spans = spans[:0]
+	if !styles {
+		return spans, advanceGoLexState(line, state)
+	}
 	appendStyle := func(start, end int, style CodeStyle) {
-		if styles && start < end {
+		if start < end {
 			spans = append(spans, StyledRange{Start: start, End: end, Style: style})
 		}
 	}

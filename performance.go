@@ -99,11 +99,8 @@ func (manager *Manager) SetFrameObserver(observer func(FrameSample), options ...
 // It is nil when no observer is installed.
 func (manager *Manager) FrameTrace() *FrameTrace { return manager.frameTrace }
 
-func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
-	if observer == nil {
-		return nil
-	}
-	trace := &FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
+func (trace *FrameTrace) reset(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
+	*trace = FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
 	trace.sample.Width, trace.sample.Height = width, height
 	if trace.trackAllocations {
 		var mem runtime.MemStats
@@ -114,20 +111,18 @@ func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, wid
 	return trace
 }
 
+func newFrameTrace(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
+	if observer == nil {
+		return nil
+	}
+	return new(FrameTrace).reset(observer, options, width, height)
+}
+
 func (manager *Manager) initFrameTrace(observer func(FrameSample), options FrameObserverOptions, width, height int) *FrameTrace {
 	if observer == nil {
 		return nil
 	}
-	trace := &manager.traceStorage
-	*trace = FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
-	trace.sample.Width, trace.sample.Height = width, height
-	if trace.trackAllocations {
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		trace.startAlloc = mem.TotalAlloc
-		trace.startObjects = mem.Mallocs
-	}
-	return trace
+	return manager.traceStorage.reset(observer, options, width, height)
 }
 
 // RecordDamage reports the conservative pixel region uploaded to the OS.

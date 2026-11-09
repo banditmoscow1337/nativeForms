@@ -89,22 +89,41 @@ func textBreakOpportunity(r []rune, at int) bool {
 	return false
 }
 
+func trimWrappingSpacesEnd(r []rune, start, end int) int {
+	for end > start && wrappingSpace(r[end-1]) {
+		end--
+	}
+	return end
+}
+
 func fittedTextWidth(r []rune, start, end int, size float32) float32 {
 	return fittedTextWidthWith(r, start, end, size, measureTextLine)
 }
 
 func fittedTextWidthWith(r []rune, start, end int, size float32, measure func(string, float32) float32) float32 {
-	for end > start && wrappingSpace(r[end-1]) {
-		end--
-	}
+	end = trimWrappingSpacesEnd(r, start, end)
 	return measure(string(r[start:end]), size)
 }
 
 func fittedAtlasWidthRunes(r []rune, start, end int, size float32) float32 {
-	for end > start && wrappingSpace(r[end-1]) {
-		end--
-	}
+	end = trimWrappingSpacesEnd(r, start, end)
 	return walkAtlasRunes(r[start:end], size, nil, nil)
+}
+
+func binarySearchLineEnd(r []rune, start, end int, width, size float32, fittedWidth func(int) float32) int {
+	if width <= 0 || size <= 0 || fittedWidth(end) <= width {
+		return end
+	}
+	lo, hi := start, end
+	for lo < hi {
+		mid := lo + (hi-lo+1)/2
+		if fittedWidth(mid) <= width {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return finishWrappedLineEnd(r, start, end, lo)
 }
 
 func wrappedLineEnd(r []rune, start, end int, width, size float32) int {
@@ -112,35 +131,15 @@ func wrappedLineEnd(r []rune, start, end int, width, size float32) int {
 }
 
 func wrappedLineEndAtlas(r []rune, start, end int, width, size float32) int {
-	if width <= 0 || size <= 0 || fittedAtlasWidthRunes(r, start, end, size) <= width {
-		return end
-	}
-	lo, hi := start, end
-	for lo < hi {
-		mid := lo + (hi-lo+1)/2
-		if fittedAtlasWidthRunes(r, start, mid, size) <= width {
-			lo = mid
-		} else {
-			hi = mid - 1
-		}
-	}
-	return finishWrappedLineEnd(r, start, end, lo)
+	return binarySearchLineEnd(r, start, end, width, size, func(mid int) float32 {
+		return fittedAtlasWidthRunes(r, start, mid, size)
+	})
 }
 
 func wrappedLineEndWith(r []rune, start, end int, width, size float32, measure func(string, float32) float32) int {
-	if width <= 0 || size <= 0 || fittedTextWidthWith(r, start, end, size, measure) <= width {
-		return end
-	}
-	lo, hi := start, end
-	for lo < hi {
-		mid := lo + (hi-lo+1)/2
-		if fittedTextWidthWith(r, start, mid, size, measure) <= width {
-			lo = mid
-		} else {
-			hi = mid - 1
-		}
-	}
-	return finishWrappedLineEnd(r, start, end, lo)
+	return binarySearchLineEnd(r, start, end, width, size, func(mid int) float32 {
+		return fittedTextWidthWith(r, start, mid, size, measure)
+	})
 }
 
 func finishWrappedLineEnd(r []rune, start, end, lo int) int {
@@ -192,18 +191,34 @@ func ellipsizeTextWith(text string, width float32, measure func(string) float32,
 		return ""
 	}
 	r := []rune(text)
-	best := ellipsis
+	var stackEnds [64]int
+	ends := stackEnds[:0]
 	for end := nextGrapheme(r, 0); end <= len(r); end = nextGrapheme(r, end) {
-		candidate := strings.TrimRightFunc(string(r[:end]), unicode.IsSpace) + ellipsis
-		if measure(candidate) > width {
-			break
-		}
-		best = candidate
+		ends = append(ends, end)
 		if end == len(r) {
 			break
 		}
 	}
-	return best
+	candidateAt := func(idx int) string {
+		end := ends[idx]
+		for end > 0 && unicode.IsSpace(r[end-1]) {
+			end--
+		}
+		return string(r[:end]) + ellipsis
+	}
+	lo, hi := -1, len(ends)-1
+	for lo < hi {
+		mid := lo + (hi-lo+1)/2
+		if measure(candidateAt(mid)) <= width {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if lo < 0 {
+		return ellipsis
+	}
+	return candidateAt(lo)
 }
 
 func wrapTextWith(text string, width, size float32, measure func(string, float32) float32) string {
@@ -221,9 +236,7 @@ func wrapTextWith(text string, width, size float32, measure func(string, float32
 			end := wrappedLineEndWith(r, at, len(r), width, size, measure)
 			inkEnd := end
 			if end < len(r) {
-				for inkEnd > at && wrappingSpace(r[inkEnd-1]) {
-					inkEnd--
-				}
+				inkEnd = trimWrappingSpacesEnd(r, at, end)
 			}
 			output.WriteString(string(r[at:inkEnd]))
 			at = end

@@ -124,28 +124,15 @@ func tessellateMask(c DrawCommand, dst []Vertex) []Vertex {
 	return dst
 }
 
-func textCaretPositions(text string, size float32) []float32 {
-	count := utf8.RuneCountInString(text)
-	if shaped, ok := shapeText(text, size); ok {
-		if len(shaped.Carets) == count+1 {
-			return shaped.Carets
-		}
-		positions := make([]float32, count+1)
-		idx := 0
-		for offset := range text {
-			if idx > 0 {
-				positions[idx] = measureTextLine(text[:offset], size)
-			}
-			idx++
-		}
-		if count > 0 {
-			positions[count] = measureTextLine(text, size)
-		}
-		return positions
+func ensureCaretSlice(dst []float32, n int) []float32 {
+	if cap(dst) < n {
+		return make([]float32, n)
 	}
-	positions := make([]float32, count+1)
-	walkAtlasText(text, size, positions, nil)
-	return positions
+	return dst[:n]
+}
+
+func textCaretPositions(text string, size float32) []float32 {
+	return textCaretPositionsInto(text, size, nil)
 }
 
 func textCaretPositionsInto(text string, size float32, dst []float32) []float32 {
@@ -154,11 +141,7 @@ func textCaretPositionsInto(text string, size float32, dst []float32) []float32 
 		if len(shaped.Carets) == count+1 {
 			return shaped.Carets
 		}
-		if cap(dst) < count+1 {
-			dst = make([]float32, count+1)
-		} else {
-			dst = dst[:count+1]
-		}
+		dst = ensureCaretSlice(dst, count+1)
 		dst[0] = 0
 		idx := 0
 		for offset := range text {
@@ -172,22 +155,13 @@ func textCaretPositionsInto(text string, size float32, dst []float32) []float32 
 		}
 		return dst
 	}
-	if cap(dst) < count+1 {
-		dst = make([]float32, count+1)
-	} else {
-		dst = dst[:count+1]
-	}
+	dst = ensureCaretSlice(dst, count+1)
 	walkAtlasText(text, size, dst, nil)
 	return dst
 }
 
 func textCaretPositionsRunesInto(runes []rune, size float32, dst []float32) []float32 {
-	count := len(runes)
-	if cap(dst) < count+1 {
-		dst = make([]float32, count+1)
-	} else {
-		dst = dst[:count+1]
-	}
+	dst = ensureCaretSlice(dst, len(runes)+1)
 	walkAtlasRunes(runes, size, dst, nil)
 	return dst
 }

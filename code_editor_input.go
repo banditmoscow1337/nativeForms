@@ -12,10 +12,10 @@ import (
 // be valid document text positions, including UTF-8 and CRLF boundaries.
 func (e *CodeEditor) SetSelection(anchor, caret int) bool {
 	e.syncDocument()
-	if _, err := e.Document.UTF16Position(anchor); err != nil {
+	if _, err := e.Document.LineAtOffset(anchor); err != nil {
 		return false
 	}
-	if _, err := e.Document.UTF16Position(caret); err != nil {
+	if _, err := e.Document.LineAtOffset(caret); err != nil {
 		return false
 	}
 	e.Anchor, e.Caret = anchor, caret
@@ -45,25 +45,35 @@ func (e *CodeEditor) ReplaceTextRange(start, end int, value string) bool {
 	if e.ReadOnly || !utf8.ValidString(value) || start < 0 || end < start {
 		return false
 	}
-	removed, err := e.Document.Slice(start, end)
+	var removed string
+	if start < end {
+		var err error
+		removed, err = e.Document.Slice(start, end)
+		if err != nil {
+			return false
+		}
+	}
+	line, err := e.Document.LineAtOffset(start)
 	if err != nil {
 		return false
 	}
-	pos, err := e.Document.UTF16Position(start)
-	if err != nil {
-		return false
-	}
-	change, err := e.Document.Apply([]editor.Edit{{Start: start, End: end, Text: value}})
+	change, err := e.Document.ApplySingle(editor.Edit{Start: start, End: end, Text: value})
 	if err != nil || change.Version == change.BeforeVersion {
 		return false
 	}
-	removedLines := strings.Count(removed, "\n")
-	insertedLines := strings.Count(value, "\n")
-	e.shiftBreakpoints(pos.Line, removedLines, insertedLines)
+	removedLines := 0
+	if len(removed) > 0 {
+		removedLines = strings.Count(removed, "\n")
+	}
+	insertedLines := 0
+	if len(value) > 0 {
+		insertedLines = strings.Count(value, "\n")
+	}
+	e.shiftBreakpoints(line, removedLines, insertedLines)
 	e.Caret = e.validCaret(start + len(value))
 	e.Anchor = e.Caret
 	e.composing, e.preedit = false, ""
-	e.changedWithDelta(change, pos.Line, removedLines, insertedLines)
+	e.changedWithDelta(change, line, removedLines, insertedLines)
 	return true
 }
 
@@ -225,24 +235,24 @@ func (e *CodeEditor) indent(outdent bool) {
 		return
 	}
 	a, b := e.selection()
-	first, err := e.Document.UTF16Position(a)
+	firstLine, err := e.Document.LineAtOffset(a)
 	if err != nil {
 		return
 	}
-	last, err := e.Document.UTF16Position(b)
+	lastLine, err := e.Document.LineAtOffset(b)
 	if err != nil {
 		return
 	}
-	lastStart, _, _ := e.Document.LineRange(last.Line)
+	lastStart, _, _ := e.Document.LineRange(lastLine)
 	if b > a && b == lastStart {
-		last.Line--
+		lastLine--
 	}
-	if !outdent && first.Line == last.Line && a == b {
+	if !outdent && firstLine == lastLine && a == b {
 		e.ReplaceTextRange(a, b, "\t")
 		return
 	}
 	var edits []editor.Edit
-	for line := first.Line; line <= last.Line; line++ {
+	for line := firstLine; line <= lastLine; line++ {
 		start, end, _ := e.Document.LineRange(line)
 		if !outdent {
 			edits = append(edits, editor.Edit{Start: start, End: start, Text: "\t"})
@@ -270,7 +280,7 @@ func (e *CodeEditor) indent(outdent bool) {
 	}
 	e.Anchor = remapEditorOffset(e.Anchor, edits)
 	e.Caret = remapEditorOffset(e.Caret, edits)
-	e.changed(change, first.Line)
+	e.changed(change, firstLine)
 }
 
 func remapEditorOffset(at int, edits []editor.Edit) int {
@@ -308,16 +318,12 @@ func (e *CodeEditor) history(redo bool) {
 	e.Anchor = e.Caret
 	if len(change.Edits) == 1 {
 		edit := change.Edits[0]
-		if pos, err := e.Document.UTF16Position(edit.Start); err == nil {
-			if edit.Start == edit.End && !strings.Contains(edit.Text, "\n") && len(e.lexStates) == e.Document.LineCount()+1 {
-				e.changedWithDelta(change, pos.Line, 0, 0)
+		if line, err := e.Document.LineAtOffset(edit.Start); err == nil {
+			if len(e.lexStates) == e.Document.LineCount()+1 && !strings.Contains(edit.Text, "\n") {
+				e.changedWithDelta(change, line, 0, 0)
 				return
 			}
-			if edit.Text == "" && len(e.lexStates) == e.Document.LineCount()+1 {
-				e.changedWithDelta(change, pos.Line, 0, 0)
-				return
-			}
-			e.changed(change, pos.Line)
+			e.changed(change, line)
 			return
 		}
 	}
@@ -343,20 +349,11 @@ func (e *CodeEditor) Handle(event Event) bool {
 			e.SetBreakpoint(line, !e.breakpoints[line])
 			return true
 		}
-		point := Vec2{X: event.X, Y: event.Y}
-		if event.Clicks > 0 {
-			e.clicks = event.Clicks
-		} else if time.Since(e.lastClick) < 500*time.Millisecond &&
-			absFloat32(point.X-e.lastPoint.X) < 5 && absFloat32(point.Y-e.lastPoint.Y) < 5 {
-			e.clicks = e.clicks%3 + 1
-		} else {
-			e.clicks = 1
-		}
-		e.lastClick, e.lastPoint = time.Now(), point
 		at := e.offsetAt(event.X, event.Y)
-		if e.clicks == 2 || e.clicks == 3 {
-			pos, _ := e.Document.UTF16Position(at)
-			start, end, _ := e.Document.LineRange(pos.Line)
+		switch updateClickCount(event, &e.lastClick, &e.lastPoint, &e.clicks) {
+		case 2, 3:
+			line, _ := e.Document.LineAtOffset(at)
+			start, end, _ := e.Document.LineRange(line)
 			if e.clicks == 3 {
 				e.Anchor, e.Caret = start, end
 			} else {
@@ -365,7 +362,7 @@ func (e *CodeEditor) Handle(event Event) bool {
 				e.Anchor, e.Caret = start+textByteOffset(text, wordStart), start+textByteOffset(text, wordEnd)
 			}
 			e.moved(false)
-		} else {
+		default:
 			e.move(at, event.Mods&ModShift != 0, false)
 		}
 		return true

@@ -6,6 +6,16 @@ func visibleRowEnd(count int, bottom, height float32) int {
 	return min(count, int(math.Ceil(float64(bottom/height))))
 }
 
+func scrollRowIntoView(offset, pos, size, viewport float32) float32 {
+	if pos < offset {
+		return pos
+	}
+	if pos+size > offset+viewport {
+		return pos + size - viewport
+	}
+	return offset
+}
+
 type ListModel interface {
 	Len() int
 	ID(index int) string
@@ -108,12 +118,8 @@ func (v *VirtualList) ScrollTo(index int) {
 	if index < 0 || index >= v.count() {
 		return
 	}
-	y := float32(index) * v.rowHeight()
-	if y < v.Offset {
-		v.Offset = y
-	} else if y+v.rowHeight() > v.Offset+v.rect.H {
-		v.Offset = y + v.rowHeight() - v.rect.H
-	}
+	h := v.rowHeight()
+	v.Offset = scrollRowIntoView(v.Offset, float32(index)*h, h, v.rect.H)
 	v.Arrange(v.rect)
 	v.invalidatePaint()
 }
@@ -297,6 +303,9 @@ func (v *VirtualTable) Handle(e Event) bool {
 		}
 	case KeyDown:
 		if e.Key == KeyUpArrow || e.Key == KeyDownArrow {
+			if rows == 0 {
+				return false
+			}
 			i := -1
 			for row := 0; row < rows; row++ {
 				if v.Model.ID(row) == v.SelectedID {
@@ -309,18 +318,10 @@ func (v *VirtualTable) Handle(e Event) bool {
 			} else {
 				i--
 			}
-			if rows == 0 {
-				return false
-			}
 			i = max(0, min(rows-1, i))
 			v.SetSelected(v.Model.ID(i))
 			v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(rows)*h-maxFloat32(0, v.rect.H-header)))
-			y := float32(i) * h
-			if y < v.Offset {
-				v.Offset = y
-			} else if y+h > v.Offset+v.rect.H-header {
-				v.Offset = y + h - v.rect.H + header
-			}
+			v.Offset = scrollRowIntoView(v.Offset, float32(i)*h, h, v.rect.H-header)
 			v.Arrange(v.rect)
 			v.invalidatePaint()
 			return true
@@ -364,6 +365,13 @@ func NewVirtualTree(model TreeModel) *VirtualTree {
 	return v
 }
 
+func (v *VirtualTree) rowHeight() float32 {
+	if v.RowHeight > 0 {
+		return v.RowHeight
+	}
+	return 32
+}
+
 func (v *VirtualTree) rebuild() {
 	v.rows = v.rows[:0]
 	if v.Model == nil {
@@ -391,21 +399,13 @@ func (v *VirtualTree) rebuild() {
 
 func (v *VirtualTree) Measure(c Constraints) Vec2 {
 	v.rebuild()
-	h := v.RowHeight
-	if h <= 0 {
-		h = 32
-	}
-	return measureWithState(&v.State, Vec2{X: 180, Y: minFloat32(480, float32(len(v.rows))*h)}, c)
+	return measureWithState(&v.State, Vec2{X: 180, Y: minFloat32(480, float32(len(v.rows))*v.rowHeight())}, c)
 }
 
 func (v *VirtualTree) Arrange(r Rect) {
 	v.rect = r
 	v.rebuild()
-	h := v.RowHeight
-	if h <= 0 {
-		h = 32
-	}
-	v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(len(v.rows))*h-r.H))
+	v.Offset = clampFloat32(v.Offset, 0, maxFloat32(0, float32(len(v.rows))*v.rowHeight()-r.H))
 }
 
 // ModelChanged rebuilds visible nodes after the model changes, including child
@@ -418,10 +418,7 @@ func (v *VirtualTree) ModelChanged() {
 func (v *VirtualTree) Paint(c *Canvas) {
 	c.Rect(v.rect, c.theme.Panel)
 	icons, hasIcons := v.Model.(TreeIconModel)
-	h := v.RowHeight
-	if h <= 0 {
-		h = 32
-	}
+	h := v.rowHeight()
 	start := max(0, int(v.Offset/h))
 	end := visibleRowEnd(len(v.rows), v.Offset+v.rect.H, h)
 	for i := start; i < end; i++ {
@@ -465,10 +462,7 @@ func (v *VirtualTree) SetSelected(id string) {
 }
 
 func (v *VirtualTree) Handle(e Event) bool {
-	h := v.RowHeight
-	if h <= 0 {
-		h = 32
-	}
+	h := v.rowHeight()
 	switch e.Type {
 	case PointerDown:
 		return e.Button == MouseLeft
@@ -521,12 +515,7 @@ func (v *VirtualTree) Handle(e Event) bool {
 		}
 		index = max(0, min(len(v.rows)-1, index))
 		v.SetSelected(v.rows[index].id)
-		y := float32(index) * h
-		if y < v.Offset {
-			v.Offset = y
-		} else if y+h > v.Offset+v.rect.H {
-			v.Offset = y + h - v.rect.H
-		}
+		v.Offset = scrollRowIntoView(v.Offset, float32(index)*h, h, v.rect.H)
 		v.invalidatePaint()
 		return true
 	}
