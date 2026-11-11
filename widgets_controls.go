@@ -22,6 +22,15 @@ func NewButton(text string, onClick func()) *Button {
 	return button
 }
 
+// NewCompactButton constructs a Button whose minimum width adapts to its text
+// and icon without requiring manual SetMinimumSize/SetPreferredSize calls.
+func NewCompactButton(text string, onClick func()) *Button {
+	button := &Button{Text: text, OnClick: onClick}
+	button.owner = button
+	button.focusable = true
+	return button
+}
+
 func (button *Button) SetText(text string) {
 	if button.Text == text {
 		return
@@ -36,6 +45,26 @@ func (button *Button) SetIcon(icon *ImageResource) {
 	}
 	button.Icon = icon
 	button.invalidateLayout()
+}
+
+func (button *Button) SetFont(font FontSpec) {
+	if button.Font == font {
+		return
+	}
+	button.Font = font
+	button.invalidateLayout()
+}
+
+func (button *Button) SetFontSize(size float32) {
+	if button.FontSize == size {
+		return
+	}
+	button.FontSize = size
+	button.invalidateLayout()
+}
+
+func (button *Button) SetOnClick(onClick func()) {
+	button.OnClick = onClick
 }
 
 func (button *Button) measureTextSize() Vec2 {

@@ -51,7 +51,7 @@ type codeEditorScratch struct {
 	lineCache [128]codeLineCacheEntry
 }
 
-const codeEditorPoolSize = 32
+const codeEditorPoolSize = 64
 
 var (
 	sharedNormalLexStates = make([]goLexState, 131072)
@@ -117,6 +117,7 @@ type CodeEditor struct {
 	ReadOnly           bool
 	Caret, Anchor      int
 	Palette            map[CodeStyle]Color
+	Lexer              SyntaxLexer
 	OnChange           func(editor.Change)
 	OnBreakpointChange func(line int, enabled bool)
 	// OnGoToDefinition is invoked from the context menu or F12 shortcut with the
@@ -263,6 +264,18 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 		e.rebuildLexStates(0)
 	}
 	return e
+}
+
+// SetLexer configures a custom SyntaxLexer (or nil for the default Go lexer)
+// and refreshes syntax states and line caches.
+func (e *CodeEditor) SetLexer(lexer SyntaxLexer) {
+	if e.Lexer == lexer {
+		return
+	}
+	e.Lexer = lexer
+	e.invalidateLineCache()
+	e.rebuildLexStates(0)
+	e.InvalidatePaint()
 }
 
 func (e *CodeEditor) invalidateLineCache() {

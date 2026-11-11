@@ -299,14 +299,14 @@ func (p *OutputPanel) trim() {
 	}
 }
 
-// AppendText updates the last unfinished line, then adds any completed lines.
-// A trailing newline does not create an empty extra row.
+// AppendText updates the last unfinished line when streaming newline-delimited chunks,
+// and appends standalone lines cleanly. A trailing newline does not create an empty extra row.
 func (p *OutputPanel) AppendText(chunk string) {
 	if chunk == "" {
 		return
 	}
 	follow := p.atBottom()
-	if p.partial && len(p.lines) > 0 {
+	if p.partial && len(p.lines) > 0 && (strings.ContainsAny(chunk, "\r\n") || strings.HasSuffix(p.lines[len(p.lines)-1], " ")) {
 		chunk = p.lines[len(p.lines)-1] + chunk
 		p.lines = p.lines[:len(p.lines)-1]
 	}

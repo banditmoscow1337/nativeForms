@@ -1,5 +1,55 @@
 package nativeforms
 
+// ThemeColorRole identifies a semantic color slot in a Theme so panels and
+// labels can migrate deterministically across arbitrary custom themes without
+// relying on RGB heuristics.
+type ThemeColorRole uint8
+
+const (
+	ThemeRoleNone ThemeColorRole = iota
+	ThemeRolePanel
+	ThemeRolePanelAlt
+	ThemeRoleHeader
+	ThemeRoleControl
+	ThemeRoleTooltip
+	ThemeRoleBorder
+	ThemeRoleAccent
+	ThemeRoleText
+	ThemeRoleMutedText
+	ThemeRoleDanger
+	ThemeRoleSelection
+)
+
+// ColorForRole returns the Theme's color for the given semantic role.
+func (t Theme) ColorForRole(role ThemeColorRole) (Color, bool) {
+	switch role {
+	case ThemeRolePanel:
+		return t.Panel, true
+	case ThemeRolePanelAlt:
+		return t.PanelAlt, true
+	case ThemeRoleHeader:
+		return t.Header, true
+	case ThemeRoleControl:
+		return t.Control, true
+	case ThemeRoleTooltip:
+		return t.Tooltip, true
+	case ThemeRoleBorder:
+		return t.Border, true
+	case ThemeRoleAccent:
+		return t.Accent, true
+	case ThemeRoleText:
+		return t.Text, true
+	case ThemeRoleMutedText:
+		return t.MutedText, true
+	case ThemeRoleDanger:
+		return t.Danger, true
+	case ThemeRoleSelection:
+		return t.Selection, true
+	default:
+		return Color{}, false
+	}
+}
+
 func (state *State) Parent() Component     { return state.parent }
 func (state *State) Bounds() Rect          { return state.rect }
 func (state *State) Visible() bool         { return !state.hidden }
@@ -191,6 +241,34 @@ func matchesThemeSlot(c, prev, dark, light Color) bool {
 	return sameRGB(c, prev) || sameRGB(c, dark) || sameRGB(c, light)
 }
 
+func inferPanelBackgroundRole(bg Color, prev, dark, light Theme) ThemeColorRole {
+	switch {
+	case matchesThemeSlot(bg, prev.Panel, dark.Panel, light.Panel):
+		return ThemeRolePanel
+	case matchesThemeSlot(bg, prev.PanelAlt, dark.PanelAlt, light.PanelAlt):
+		return ThemeRolePanelAlt
+	case matchesThemeSlot(bg, prev.Header, dark.Header, light.Header):
+		return ThemeRoleHeader
+	case matchesThemeSlot(bg, prev.Control, dark.Control, light.Control):
+		return ThemeRoleControl
+	case matchesThemeSlot(bg, prev.Tooltip, dark.Tooltip, light.Tooltip):
+		return ThemeRoleTooltip
+	default:
+		return ThemeRoleNone
+	}
+}
+
+func inferBorderRole(bd Color, prev, dark, light Theme) ThemeColorRole {
+	switch {
+	case matchesThemeSlot(bd, prev.Border, dark.Border, light.Border):
+		return ThemeRoleBorder
+	case matchesThemeSlot(bd, prev.Accent, dark.Accent, light.Accent):
+		return ThemeRoleAccent
+	default:
+		return ThemeRoleNone
+	}
+}
+
 func applyTheme(component Component, theme Theme) {
 	if component == nil {
 		return
@@ -202,26 +280,29 @@ func applyTheme(component Component, theme Theme) {
 	}
 	defDark := DefaultTheme()
 	defLight := LightTheme()
-	if panel, ok := component.(*Panel); ok {
-		bg := panel.Background
-		switch {
-		case matchesThemeSlot(bg, prev.Panel, defDark.Panel, defLight.Panel):
-			panel.Background = theme.Panel
-		case matchesThemeSlot(bg, prev.PanelAlt, defDark.PanelAlt, defLight.PanelAlt):
-			panel.Background = theme.PanelAlt
-		case matchesThemeSlot(bg, prev.Header, defDark.Header, defLight.Header):
-			panel.Background = theme.Header
-		case matchesThemeSlot(bg, prev.Control, defDark.Control, defLight.Control):
-			panel.Background = theme.Control
-		case matchesThemeSlot(bg, prev.Tooltip, defDark.Tooltip, defLight.Tooltip):
-			panel.Background = theme.Tooltip
+	switch w := component.(type) {
+	case *Panel:
+		if w.BackgroundRole == ThemeRoleNone && w.Background.A > 0 {
+			w.BackgroundRole = inferPanelBackgroundRole(w.Background, prev, defDark, defLight)
 		}
-		bd := panel.Border
-		switch {
-		case matchesThemeSlot(bd, prev.Border, defDark.Border, defLight.Border):
-			panel.Border = theme.Border
-		case matchesThemeSlot(bd, prev.Accent, defDark.Accent, defLight.Accent):
-			panel.Border = theme.Accent
+		if c, ok := theme.ColorForRole(w.BackgroundRole); ok {
+			w.Background = c
+		}
+		if w.BorderRole == ThemeRoleNone && w.Border.A > 0 {
+			w.BorderRole = inferBorderRole(w.Border, prev, defDark, defLight)
+		}
+		if c, ok := theme.ColorForRole(w.BorderRole); ok {
+			w.Border = c
+		}
+	case *Label:
+		if c, ok := theme.ColorForRole(w.ColorRole); ok {
+			w.Color = c
+		}
+		if c, ok := theme.ColorForRole(w.BackgroundRole); ok {
+			w.Background = c
+		}
+		if c, ok := theme.ColorForRole(w.BorderRole); ok {
+			w.Border = c
 		}
 	}
 	state.theme = theme

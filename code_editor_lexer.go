@@ -3,6 +3,8 @@ package nativeforms
 import (
 	"errors"
 	"go/token"
+	"path/filepath"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -38,6 +40,291 @@ const (
 	goBlockComment
 	goRawString
 )
+
+// SyntaxLexer tokenizes source lines for CodeEditor syntax highlighting.
+// State is a per-line carry state (goNormal == 0 on line 0).
+type SyntaxLexer interface {
+	AdvanceState(line string, state goLexState) goLexState
+	LexLine(line string, state goLexState, dst []StyledRange) (spans []StyledRange, nextState goLexState)
+}
+
+type goSyntaxLexer struct{}
+
+func (goSyntaxLexer) AdvanceState(line string, state goLexState) goLexState {
+	return advanceGoLexState(line, state)
+}
+
+func (goSyntaxLexer) LexLine(line string, state goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	return scanGoLineInto(line, state, true, dst)
+}
+
+type plainTextSyntaxLexer struct{}
+
+func (plainTextSyntaxLexer) AdvanceState(_ string, _ goLexState) goLexState { return goNormal }
+func (plainTextSyntaxLexer) LexLine(_ string, _ goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	return dst[:0], goNormal
+}
+
+type goModSyntaxLexer struct{}
+
+func (goModSyntaxLexer) AdvanceState(_ string, _ goLexState) goLexState { return goNormal }
+func (goModSyntaxLexer) LexLine(line string, _ goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	spans := dst[:0]
+	appendStyle := func(start, end int, style CodeStyle) {
+		if start < end && style != CodePlain {
+			spans = append(spans, StyledRange{Start: start, End: end, Style: style})
+		}
+	}
+	for at := 0; at < len(line); {
+		if line[at] == ' ' || line[at] == '\t' || line[at] == '\r' || line[at] == '(' || line[at] == ')' {
+			at++
+			continue
+		}
+		if at+1 < len(line) && line[at] == '/' && line[at+1] == '/' {
+			appendStyle(at, len(line), CodeComment)
+			break
+		}
+		if line[at] == '"' || line[at] == '`' {
+			q := line[at]
+			start := at
+			at++
+			for at < len(line) && line[at] != q {
+				if line[at] == '\\' && q == '"' {
+					at = min(len(line), at+2)
+					continue
+				}
+				at++
+			}
+			if at < len(line) {
+				at++
+			}
+			appendStyle(start, at, CodeString)
+			continue
+		}
+		start := at
+		for at < len(line) && line[at] != ' ' && line[at] != '\t' && line[at] != '\r' && line[at] != '(' && line[at] != ')' {
+			if at+1 < len(line) && line[at] == '/' && line[at+1] == '/' {
+				break
+			}
+			at++
+		}
+		word := line[start:at]
+		switch word {
+		case "module", "go", "toolchain", "require", "replace", "exclude", "retract", "use", "=>":
+			appendStyle(start, at, CodeKeyword)
+		default:
+			if len(word) > 0 && (word[0] == 'v' || (word[0] >= '0' && word[0] <= '9')) && strings.ContainsAny(word, "0123456789.") {
+				appendStyle(start, at, CodeNumber)
+			} else if strings.Contains(word, "/") || strings.Contains(word, ".") {
+				appendStyle(start, at, CodeType)
+			}
+		}
+	}
+	return spans, goNormal
+}
+
+type configSyntaxLexer struct{}
+
+func (configSyntaxLexer) AdvanceState(_ string, _ goLexState) goLexState { return goNormal }
+func (configSyntaxLexer) LexLine(line string, _ goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	spans := dst[:0]
+	appendStyle := func(start, end int, style CodeStyle) {
+		if start < end && style != CodePlain {
+			spans = append(spans, StyledRange{Start: start, End: end, Style: style})
+		}
+	}
+	trimmedStart := skipSpaces(line, 0)
+	if trimmedStart < len(line) && line[trimmedStart] == '[' {
+		closeIdx := strings.IndexByte(line[trimmedStart:], ']')
+		if closeIdx > 0 {
+			appendStyle(trimmedStart, trimmedStart+closeIdx+1, CodeType)
+			return spans, goNormal
+		}
+	}
+	for at := 0; at < len(line); {
+		b := line[at]
+		if b == ' ' || b == '\t' || b == '\r' {
+			at++
+			continue
+		}
+		if b == '#' || (at+1 < len(line) && ((b == '/' && line[at+1] == '/') || (b == '-' && line[at+1] == '-'))) {
+			appendStyle(at, len(line), CodeComment)
+			break
+		}
+		if b == '"' || b == '\'' {
+			start := at
+			quote := b
+			at++
+			for at < len(line) {
+				if line[at] == '\\' {
+					at = min(len(line), at+2)
+					continue
+				}
+				at++
+				if line[at-1] == quote {
+					break
+				}
+			}
+			after := skipSpaces(line, at)
+			if after < len(line) && line[after] == ':' {
+				appendStyle(start, at, CodeVariable)
+			} else {
+				appendStyle(start, at, CodeString)
+			}
+			continue
+		}
+		r, sz := utf8.DecodeRuneInString(line[at:])
+		if unicode.IsLetter(r) || r == '_' || r == '$' || r == '-' {
+			start := at
+			at += sz
+			for at < len(line) {
+				nr, nsz := utf8.DecodeRuneInString(line[at:])
+				if !unicode.IsLetter(nr) && !unicode.IsDigit(nr) && nr != '_' && nr != '-' && nr != '.' {
+					break
+				}
+				at += nsz
+			}
+			word := line[start:at]
+			after := skipSpaces(line, at)
+			if after < len(line) && (line[after] == ':' || line[after] == '=') {
+				appendStyle(start, at, CodeVariable)
+			} else if word == "true" || word == "false" || word == "null" || word == "nil" || word == "yes" || word == "no" {
+				appendStyle(start, at, CodeNumber)
+			} else if isAllCapsConstant(word) {
+				appendStyle(start, at, CodeKeyword)
+			}
+			continue
+		}
+		if unicode.IsDigit(r) {
+			start := at
+			at += sz
+			for at < len(line) {
+				nr, nsz := utf8.DecodeRuneInString(line[at:])
+				if !unicode.IsDigit(nr) && !unicode.IsLetter(nr) && nr != '.' && nr != '_' && nr != '-' {
+					break
+				}
+				at += nsz
+			}
+			appendStyle(start, at, CodeNumber)
+			continue
+		}
+		at += sz
+	}
+	return spans, goNormal
+}
+
+type markdownSyntaxLexer struct{}
+
+func (markdownSyntaxLexer) AdvanceState(line string, state goLexState) goLexState {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") {
+		if state == goRawString {
+			return goNormal
+		}
+		return goRawString
+	}
+	return state
+}
+
+func (markdownSyntaxLexer) LexLine(line string, state goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	spans := dst[:0]
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") {
+		if len(line) > 0 {
+			spans = append(spans, StyledRange{Start: 0, End: len(line), Style: CodeComment})
+		}
+		if state == goRawString {
+			return spans, goNormal
+		}
+		return spans, goRawString
+	}
+	if state == goRawString {
+		if len(line) > 0 {
+			spans = append(spans, StyledRange{Start: 0, End: len(line), Style: CodeString})
+		}
+		return spans, goRawString
+	}
+	first := skipSpaces(line, 0)
+	if first < len(line) && line[first] == '#' {
+		spans = append(spans, StyledRange{Start: first, End: len(line), Style: CodeKeyword})
+		return spans, goNormal
+	}
+	if first < len(line) && line[first] == '>' {
+		spans = append(spans, StyledRange{Start: first, End: len(line), Style: CodeComment})
+		return spans, goNormal
+	}
+	for at := 0; at < len(line); {
+		if line[at] == '`' {
+			start := at
+			at++
+			for at < len(line) && line[at] != '`' {
+				at++
+			}
+			if at < len(line) {
+				at++
+			}
+			spans = append(spans, StyledRange{Start: start, End: at, Style: CodeString})
+			continue
+		}
+		if line[at] == '[' {
+			closeBracket := strings.IndexByte(line[at:], ']')
+			if closeBracket > 0 {
+				spans = append(spans, StyledRange{Start: at, End: at + closeBracket + 1, Style: CodeType})
+				at += closeBracket + 1
+				continue
+			}
+		}
+		at++
+	}
+	return spans, goNormal
+}
+
+var (
+	defaultGoSyntaxLexer    SyntaxLexer = goSyntaxLexer{}
+	defaultGoModSyntaxLexer SyntaxLexer = goModSyntaxLexer{}
+	defaultConfigLexer      SyntaxLexer = configSyntaxLexer{}
+	defaultMarkdownLexer    SyntaxLexer = markdownSyntaxLexer{}
+	defaultPlainTextLexer   SyntaxLexer = plainTextSyntaxLexer{}
+)
+
+// GoSyntaxLexer returns the built-in Go syntax lexer.
+func GoSyntaxLexer() SyntaxLexer { return defaultGoSyntaxLexer }
+
+// GoModSyntaxLexer returns a syntax lexer for go.mod, go.sum, and go.work files.
+func GoModSyntaxLexer() SyntaxLexer { return defaultGoModSyntaxLexer }
+
+// ConfigSyntaxLexer returns a syntax lexer for JSON, YAML, TOML, shell, SQL, and config files.
+func ConfigSyntaxLexer() SyntaxLexer { return defaultConfigLexer }
+
+// MarkdownSyntaxLexer returns a syntax lexer for Markdown (.md) documents.
+func MarkdownSyntaxLexer() SyntaxLexer { return defaultMarkdownLexer }
+
+// PlainTextSyntaxLexer returns a no-op lexer that renders plain text without keyword coloring.
+func PlainTextSyntaxLexer() SyntaxLexer { return defaultPlainTextLexer }
+
+// LexerForFilename selects an appropriate built-in SyntaxLexer for filename.
+func LexerForFilename(filename string) SyntaxLexer {
+	base := filepath.Base(filename)
+	if strings.HasSuffix(base, ".go") {
+		return defaultGoSyntaxLexer
+	}
+	switch base {
+	case "go.mod", "go.sum", "go.work":
+		return defaultGoModSyntaxLexer
+	case "Makefile", "Dockerfile", ".gitignore":
+		return defaultConfigLexer
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".md", ".markdown":
+		return defaultMarkdownLexer
+	case ".json", ".yaml", ".yml", ".toml", ".sh", ".sql", ".proto", ".ini", ".env":
+		return defaultConfigLexer
+	case ".txt", ".log":
+		return defaultPlainTextLexer
+	default:
+		return defaultGoSyntaxLexer
+	}
+}
 
 // lexGoLine returns local byte ranges and the state carried to the next line.
 // Keeping the state per line lets the widget tokenize only newly visible lines.

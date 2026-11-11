@@ -44,8 +44,8 @@ type Position struct {
 }
 
 const (
-	largeDocPoolSize   = 32
-	largePoolsPoolSize = 16
+	largeDocPoolSize   = 64
+	largePoolsPoolSize = 32
 )
 
 var (

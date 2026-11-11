@@ -16,7 +16,15 @@ func TestLightThemeAndPanelMigration(t *testing.T) {
 
 	card := NewStack(Vertical, 4)
 	card.Background = DefaultTheme().PanelAlt
-	root.Add(header, card)
+
+	rolePanel := NewStack(Vertical, 4)
+	rolePanel.SetBackgroundRole(ThemeRoleAccent)
+	rolePanel.SetBorderRole(ThemeRoleBorder, 1)
+
+	roleLabel := NewLabel("Themed label")
+	roleLabel.SetColorRole(ThemeRoleMutedText)
+
+	root.Add(header, card, rolePanel, roleLabel)
 	mgr.SetRoot(root)
 
 	light := LightTheme()
@@ -37,10 +45,58 @@ func TestLightThemeAndPanelMigration(t *testing.T) {
 	if card.Background != light.PanelAlt {
 		t.Fatalf("card.Background = %+v, want %+v", card.Background, light.PanelAlt)
 	}
+	if rolePanel.Background != light.Accent {
+		t.Fatalf("rolePanel.Background = %+v, want %+v", rolePanel.Background, light.Accent)
+	}
+	if roleLabel.Color != light.MutedText {
+		t.Fatalf("roleLabel.Color = %+v, want %+v", roleLabel.Color, light.MutedText)
+	}
 
 	mgr.SetTheme(DefaultTheme())
 	if root.Background != DefaultTheme().Panel {
 		t.Fatalf("root.Background after restore = %+v, want %+v", root.Background, DefaultTheme().Panel)
+	}
+	if rolePanel.Background != DefaultTheme().Accent {
+		t.Fatalf("rolePanel.Background after restore = %+v, want %+v", rolePanel.Background, DefaultTheme().Accent)
+	}
+}
+
+func TestCompactButtonAndReactiveSetters(t *testing.T) {
+	mgr := New()
+	compact := NewCompactButton("x", nil)
+	if compact.MinimumSize().X != 0 {
+		t.Fatalf("expected NewCompactButton to have 0 minimum width, got %v", compact.MinimumSize().X)
+	}
+	sp := NewSplitPane(Horizontal, NewPanel(), NewPanel())
+	sp.SetRatio(0.35)
+	sp.SetMinSizes(120, 140)
+	sp.SetDivider(8)
+	if sp.Ratio != 0.35 || sp.MinFirst != 120 || sp.MinSecond != 140 || sp.Divider != 8 {
+		t.Fatalf("SplitPane setters did not apply: %+v", sp)
+	}
+	mgr.Close()
+}
+
+func TestCombiningDiacriticsComposition(t *testing.T) {
+	cases := []struct {
+		in   string
+		want rune
+		size int
+	}{
+		{"и\u0306", 'й', 4},
+		{"И\u0306", 'Й', 4},
+		{"е\u0308", 'ё', 4},
+		{"Е\u0308", 'Ё', 4},
+		{"e\u0301", 'é', 3},
+		{"a\u0308", 'ä', 3},
+		{"n\u0303", 'ñ', 3},
+		{"c\u0327", 'ç', 3},
+	}
+	for _, tc := range cases {
+		gotRune, gotSize, gotCount := decodeComposedTextRune(tc.in, 0)
+		if gotRune != tc.want || gotSize != tc.size || gotCount != 2 {
+			t.Fatalf("decodeComposedTextRune(%q, 0) = (%U, %d, %d), want (%U, %d, 2)", tc.in, gotRune, gotSize, gotCount, tc.want, tc.size)
+		}
 	}
 }
 

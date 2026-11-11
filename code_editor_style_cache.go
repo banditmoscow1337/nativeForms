@@ -2,6 +2,33 @@ package nativeforms
 
 import "sort"
 
+func (e *CodeEditor) usesFastNormalState() bool {
+	if e.Document == nil {
+		return true
+	}
+	if e.Lexer == nil || e.Lexer == defaultGoSyntaxLexer {
+		return !e.Document.MayContainMultilineTokens()
+	}
+	if e.Lexer == defaultGoModSyntaxLexer || e.Lexer == defaultConfigLexer || e.Lexer == defaultPlainTextLexer {
+		return true
+	}
+	return !e.Document.MayContainMultilineTokens()
+}
+
+func (e *CodeEditor) advanceLineState(line string, state goLexState) goLexState {
+	if e.Lexer != nil {
+		return e.Lexer.AdvanceState(line, state)
+	}
+	return advanceGoLexState(line, state)
+}
+
+func (e *CodeEditor) lexLineInto(line string, state goLexState, dst []StyledRange) ([]StyledRange, goLexState) {
+	if e.Lexer != nil {
+		return e.Lexer.LexLine(line, state, dst)
+	}
+	return scanGoLineInto(line, state, true, dst)
+}
+
 func (e *CodeEditor) goStateAt(line int) goLexState {
 	if len(e.lexStates) == 0 {
 		e.lexStates = sharedNormalLexStates[:1:1]
@@ -33,7 +60,8 @@ func (e *CodeEditor) rebuildLexStates(fromLine int) {
 		return
 	}
 	count := e.Document.LineCount()
-	if !e.Document.MayContainMultilineTokens() && count+1 <= len(sharedNormalLexStates) {
+	fastNormal := e.usesFastNormalState()
+	if fastNormal && count+1 <= len(sharedNormalLexStates) {
 		if e.lexStatesShared || fromLine <= 0 || e.lexStates[min(fromLine, len(e.lexStates)-1)] == goNormal {
 			e.lexStates = sharedNormalLexStates[:count+1 : count+1]
 			e.lexStatesShared = true
@@ -51,12 +79,12 @@ func (e *CodeEditor) rebuildLexStates(fromLine int) {
 		return
 	}
 	state := e.lexStates[fromLine]
-	if state == goNormal && !e.Document.MayContainMultilineTokens() {
+	if state == goNormal && fastNormal {
 		clear(e.lexStates[fromLine+1 : count+1])
 		return
 	}
 	e.scratchLineBytes = e.Document.ScanLinesFrom(fromLine, e.scratchLineBytes[:0], func(line int, segment string) bool {
-		state = advanceGoLexState(segment, state)
+		state = e.advanceLineState(segment, state)
 		e.lexStates[line+1] = state
 		return true
 	})
@@ -67,7 +95,8 @@ func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines i
 		return
 	}
 	count := e.Document.LineCount()
-	if !e.Document.MayContainMultilineTokens() && count+1 <= len(sharedNormalLexStates) &&
+	fastNormal := e.usesFastNormalState()
+	if fastNormal && count+1 <= len(sharedNormalLexStates) &&
 		(e.lexStatesShared || (fromLine >= 0 && fromLine < len(e.lexStates) && e.lexStates[fromLine] == goNormal)) {
 		e.lexStates = sharedNormalLexStates[:count+1 : count+1]
 		e.lexStatesShared = true
@@ -105,7 +134,7 @@ func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines i
 	}
 	state := e.lexStates[fromLine]
 	minScanEnd := min(count, fromLine+max(1, insertedLines+1))
-	if state == goNormal && !e.Document.MayContainMultilineTokens() {
+	if state == goNormal && fastNormal {
 		for line := fromLine; line < count; line++ {
 			if line+1 >= minScanEnd && e.lexStates[line+1] == goNormal {
 				return
@@ -115,7 +144,7 @@ func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines i
 		return
 	}
 	e.scratchLineBytes = e.Document.ScanLinesFrom(fromLine, e.scratchLineBytes[:0], func(line int, segment string) bool {
-		state = advanceGoLexState(segment, state)
+		state = e.advanceLineState(segment, state)
 		if line+1 >= minScanEnd && e.lexStates[line+1] == state {
 			return false
 		}
@@ -150,7 +179,7 @@ func (e *CodeEditor) rowStyles(text string, layout codeLineLayout, line, start i
 		clear(styles)
 	}
 	e.scratchStyles = styles
-	local, _ := scanGoLineInto(text, e.goStateAt(line), true, e.scratchSpans[:0])
+	local, _ := e.lexLineInto(text, e.goStateAt(line), e.scratchSpans[:0])
 	e.scratchSpans = local
 	e.applyStyleRanges(styles, layout, 0, local)
 	e.applyStyleRanges(styles, layout, start, e.styles)

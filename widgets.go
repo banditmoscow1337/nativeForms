@@ -85,17 +85,20 @@ func handleControlActivation(state *State, event Event, onActivate func()) bool 
 
 type Label struct {
 	State
-	Text       string
-	TextFunc   func() string
-	Color      Color
-	Background Color
-	Border     Color
-	Padding    Insets
-	FontSize   float32
-	Font       FontSpec
-	Align      TextAlign
-	Wrap       bool
-	Ellipsis   bool
+	Text           string
+	TextFunc       func() string
+	Color          Color
+	ColorRole      ThemeColorRole
+	Background     Color
+	BackgroundRole ThemeColorRole
+	Border         Color
+	BorderRole     ThemeColorRole
+	Padding        Insets
+	FontSize       float32
+	Font           FontSpec
+	Align          TextAlign
+	Wrap           bool
+	Ellipsis       bool
 
 	cachedIn     string
 	cachedOut    string
@@ -129,6 +132,109 @@ func (label *Label) SetText(text string) {
 			return
 		}
 	}
+	label.invalidateLayout()
+}
+
+func (label *Label) SetWrap(wrap bool) {
+	if label.Wrap == wrap {
+		return
+	}
+	label.Wrap = wrap
+	label.cachedMode = 0
+	label.invalidateLayout()
+}
+
+func (label *Label) SetEllipsis(ellipsis bool) {
+	if label.Ellipsis == ellipsis {
+		return
+	}
+	label.Ellipsis = ellipsis
+	label.cachedMode = 0
+	label.invalidateLayout()
+}
+
+func (label *Label) SetAlign(align TextAlign) {
+	if label.Align == align {
+		return
+	}
+	label.Align = align
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetFont(font FontSpec) {
+	if label.Font == font {
+		return
+	}
+	label.Font = font
+	label.cachedMode = 0
+	label.invalidateLayout()
+}
+
+func (label *Label) SetFontSize(size float32) {
+	if label.FontSize == size {
+		return
+	}
+	label.FontSize = size
+	label.cachedMode = 0
+	label.invalidateLayout()
+}
+
+func (label *Label) SetColor(color Color) {
+	if label.Color == color && label.ColorRole == ThemeRoleNone {
+		return
+	}
+	label.Color = color
+	label.ColorRole = ThemeRoleNone
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetColorRole(role ThemeColorRole) {
+	label.ColorRole = role
+	if c, ok := label.Theme().ColorForRole(role); ok {
+		label.Color = c
+	}
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetBackground(color Color) {
+	if label.Background == color && label.BackgroundRole == ThemeRoleNone {
+		return
+	}
+	label.Background = color
+	label.BackgroundRole = ThemeRoleNone
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetBackgroundRole(role ThemeColorRole) {
+	label.BackgroundRole = role
+	if c, ok := label.Theme().ColorForRole(role); ok {
+		label.Background = c
+	}
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetBorder(color Color) {
+	if label.Border == color && label.BorderRole == ThemeRoleNone {
+		return
+	}
+	label.Border = color
+	label.BorderRole = ThemeRoleNone
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetBorderRole(role ThemeColorRole) {
+	label.BorderRole = role
+	if c, ok := label.Theme().ColorForRole(role); ok {
+		label.Border = c
+	}
+	label.InvalidatePaint()
+}
+
+func (label *Label) SetPadding(padding Insets) {
+	if label.Padding == padding {
+		return
+	}
+	label.Padding = padding
 	label.invalidateLayout()
 }
 
@@ -220,11 +326,23 @@ func (label *Label) Paint(canvas *Canvas) {
 	}
 	if !label.Frameless() {
 		radius := label.effectiveCornerRadius(canvas.theme)
-		if label.Background.A > 0 {
-			canvas.RoundedRect(label.rect, radius, label.Background)
+		bg := label.Background
+		if bg.A <= 0 && label.BackgroundRole != ThemeRoleNone && canvas.theme != nil {
+			if c, ok := canvas.theme.ColorForRole(label.BackgroundRole); ok {
+				bg = c
+			}
 		}
-		if label.Border.A > 0 {
-			canvas.RoundedBorder(label.rect, radius, 1, label.Border)
+		if bg.A > 0 {
+			canvas.RoundedRect(label.rect, radius, bg)
+		}
+		bd := label.Border
+		if bd.A <= 0 && label.BorderRole != ThemeRoleNone && canvas.theme != nil {
+			if c, ok := canvas.theme.ColorForRole(label.BorderRole); ok {
+				bd = c
+			}
+		}
+		if bd.A > 0 {
+			canvas.RoundedBorder(label.rect, radius, 1, bd)
 		}
 	}
 	inner := label.rect.Inset(label.Padding)
@@ -233,6 +351,11 @@ func (label *Label) Paint(canvas *Canvas) {
 	}
 	spec := label.fontSpec()
 	color := label.Color
+	if color.A <= 0 && label.ColorRole != ThemeRoleNone && canvas.theme != nil {
+		if c, ok := canvas.theme.ColorForRole(label.ColorRole); ok {
+			color = c
+		}
+	}
 	if color.A <= 0 {
 		color = canvas.theme.Text
 	}

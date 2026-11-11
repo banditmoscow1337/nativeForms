@@ -291,6 +291,42 @@ func NewSplitPane(direction Direction, first, second Component) *SplitPane {
 	return p
 }
 
+// SetRatio clamps ratio to [0, 1], updates the split position, and invalidates layout.
+func (p *SplitPane) SetRatio(ratio float32) {
+	ratio = clampFloat32(ratio, 0, 1)
+	if p.Ratio == ratio {
+		return
+	}
+	p.Ratio = ratio
+	if !p.rect.Empty() {
+		p.Arrange(p.rect)
+		p.InvalidatePaint()
+	} else {
+		p.invalidateLayout()
+	}
+}
+
+// SetMinSizes sets the minimum pixel sizes for the first and second panes.
+func (p *SplitPane) SetMinSizes(minFirst, minSecond float32) {
+	minFirst = maxFloat32(0, minFirst)
+	minSecond = maxFloat32(0, minSecond)
+	if p.MinFirst == minFirst && p.MinSecond == minSecond {
+		return
+	}
+	p.MinFirst, p.MinSecond = minFirst, minSecond
+	p.invalidateLayout()
+}
+
+// SetDivider sets the divider bar thickness in logical pixels.
+func (p *SplitPane) SetDivider(divider float32) {
+	divider = maxFloat32(0, divider)
+	if p.Divider == divider {
+		return
+	}
+	p.Divider = divider
+	p.invalidateLayout()
+}
+
 func (p *SplitPane) visibleChildren() (firstVis, secondVis bool) {
 	firstVis = p.First != nil && p.First.UIState().Visible()
 	secondVis = p.Second != nil && p.Second.UIState().Visible()

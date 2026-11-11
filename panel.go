@@ -2,14 +2,16 @@ package nativeforms
 
 type Panel struct {
 	State
-	Direction    Direction
-	Align        Align
-	Gap          float32
-	Padding      Insets
-	Background   Color
-	Border       Color
-	BorderWidth  float32
-	CornerRadius float32
+	Direction      Direction
+	Align          Align
+	Gap            float32
+	Padding        Insets
+	Background     Color
+	BackgroundRole ThemeColorRole
+	Border         Color
+	BorderRole     ThemeColorRole
+	BorderWidth    float32
+	CornerRadius   float32
 
 	layoutChildren []Component
 	layoutSizes    []Vec2
@@ -37,6 +39,74 @@ func NewStack(direction Direction, gap float32) *Panel {
 	panel := NewPanel(direction)
 	panel.Gap = gap
 	return panel
+}
+
+func (panel *Panel) SetDirection(direction Direction) {
+	if panel.Direction == direction {
+		return
+	}
+	panel.Direction = direction
+	panel.invalidateLayout()
+}
+
+func (panel *Panel) SetAlign(align Align) {
+	if panel.Align == align {
+		return
+	}
+	panel.Align = align
+	panel.invalidateLayout()
+}
+
+func (panel *Panel) SetGap(gap float32) {
+	if panel.Gap == gap {
+		return
+	}
+	panel.Gap = gap
+	panel.invalidateLayout()
+}
+
+func (panel *Panel) SetPadding(padding Insets) {
+	if panel.Padding == padding {
+		return
+	}
+	panel.Padding = padding
+	panel.invalidateLayout()
+}
+
+func (panel *Panel) SetBackground(color Color) {
+	if panel.Background == color && panel.BackgroundRole == ThemeRoleNone {
+		return
+	}
+	panel.Background = color
+	panel.BackgroundRole = ThemeRoleNone
+	panel.InvalidatePaint()
+}
+
+func (panel *Panel) SetBackgroundRole(role ThemeColorRole) {
+	panel.BackgroundRole = role
+	if c, ok := panel.Theme().ColorForRole(role); ok {
+		panel.Background = c
+	}
+	panel.InvalidatePaint()
+}
+
+func (panel *Panel) SetBorder(color Color, width float32) {
+	if panel.Border == color && panel.BorderWidth == width && panel.BorderRole == ThemeRoleNone {
+		return
+	}
+	panel.Border = color
+	panel.BorderWidth = width
+	panel.BorderRole = ThemeRoleNone
+	panel.InvalidatePaint()
+}
+
+func (panel *Panel) SetBorderRole(role ThemeColorRole, width float32) {
+	panel.BorderRole = role
+	panel.BorderWidth = width
+	if c, ok := panel.Theme().ColorForRole(role); ok {
+		panel.Border = c
+	}
+	panel.InvalidatePaint()
 }
 
 func (panel *Panel) ensureLayoutCapacity(n int) {
@@ -368,11 +438,23 @@ func (panel *Panel) Paint(canvas *Canvas) {
 		return
 	}
 	radius := panel.effectiveRadius(canvas.theme)
-	if panel.Background.A > 0 {
-		canvas.RoundedRect(panel.rect, radius, panel.Background)
+	bg := panel.Background
+	if bg.A <= 0 && panel.BackgroundRole != ThemeRoleNone && canvas.theme != nil {
+		if c, ok := canvas.theme.ColorForRole(panel.BackgroundRole); ok {
+			bg = c
+		}
 	}
-	if panel.BorderWidth > 0 && panel.Border.A > 0 {
-		canvas.RoundedBorder(panel.rect, radius, panel.BorderWidth, panel.Border)
+	if bg.A > 0 {
+		canvas.RoundedRect(panel.rect, radius, bg)
+	}
+	bd := panel.Border
+	if bd.A <= 0 && panel.BorderRole != ThemeRoleNone && canvas.theme != nil {
+		if c, ok := canvas.theme.ColorForRole(panel.BorderRole); ok {
+			bd = c
+		}
+	}
+	if panel.BorderWidth > 0 && bd.A > 0 {
+		canvas.RoundedBorder(panel.rect, radius, panel.BorderWidth, bd)
 	}
 }
 

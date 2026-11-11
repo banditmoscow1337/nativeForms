@@ -42,11 +42,10 @@ func (q *AppQueue) Post(fn func()) {
 		q.mu.Unlock()
 		return
 	}
-	wasEmpty := len(q.pending) == 0
 	q.pending = append(q.pending, fn)
 	wake := q.wake
 	q.mu.Unlock()
-	if wasEmpty && wake != nil {
+	if wake != nil {
 		wake()
 	}
 }

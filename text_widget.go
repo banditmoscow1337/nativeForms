@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	smallTextFieldPoolSize = 64
-	largeTextFieldPoolSize = 32
+	smallTextFieldPoolSize = 128
+	largeTextFieldPoolSize = 64
 )
 
 var (
@@ -205,6 +205,60 @@ func (f *TextField) SetText(text string) {
 	if f.OnChange != nil {
 		f.OnChange(text)
 	}
+}
+
+func (f *TextField) SetPlaceholder(placeholder string) {
+	if f.Placeholder == placeholder {
+		return
+	}
+	f.Placeholder = placeholder
+	if f.autoSize {
+		f.invalidateLayout()
+	} else {
+		f.InvalidatePaint()
+	}
+}
+
+func (f *TextField) SetReadOnly(readOnly bool) {
+	if f.ReadOnly == readOnly {
+		return
+	}
+	f.ReadOnly = readOnly
+	f.InvalidatePaint()
+}
+
+func (f *TextField) SetPassword(password bool) {
+	if f.Password == password {
+		return
+	}
+	f.Password = password
+	f.layoutCache = nil
+	f.compositionCache = nil
+	f.InvalidatePaint()
+}
+
+func (f *TextField) SetMultiline(multiline bool) {
+	if f.Multiline == multiline {
+		return
+	}
+	f.Multiline = multiline
+	f.layoutCache = nil
+	f.compositionCache = nil
+	f.invalidateLayout()
+}
+
+func (f *TextField) SetValidate(validate func(string) bool) {
+	f.Validate = validate
+}
+
+func (f *TextField) SetFont(font FontSpec) {
+	if f.Font == font {
+		return
+	}
+	f.Font = font
+	f.layoutCache = nil
+	f.compositionCache = nil
+	f.invalidateLayout()
 }
 
 func (f *TextField) syncExternal() {

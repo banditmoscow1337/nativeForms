@@ -43,8 +43,8 @@ type Frame struct {
 }
 
 const (
-	managerPoolSize        = 64
-	ephemeralManagerWindow = 8
+	managerPoolSize        = 128
+	ephemeralManagerWindow = 16
 )
 
 var (
@@ -58,18 +58,12 @@ var (
 
 func initManagerPool() {
 	freeManagers = make([]*Manager, 0, managerPoolSize)
-	for i := managerPoolSize - 1; i >= ephemeralManagerWindow; i-- {
+	for i := managerPoolSize - 1; i >= 0; i-- {
 		m := &managerStorage[i]
 		m.slotIdx = i
 		m.pooled = true
 		m.inPool = true
 		freeManagers = append(freeManagers, m)
-	}
-	for i := 0; i < ephemeralManagerWindow; i++ {
-		m := &managerStorage[i]
-		m.slotIdx = i
-		m.pooled = true
-		m.inPool = true
 	}
 }
 
@@ -114,12 +108,12 @@ type Manager struct {
 	notificationMu sync.Mutex
 	notifications  []notification
 
-	frame        Frame
-	prevCmdCount int
-	clips        []Rect
-	clipStorage  [16]Rect
-	frameTheme   Theme
-	canvas       Canvas
+	frame          Frame
+	prevCmdCount   int
+	clips          []Rect
+	clipStorage    [16]Rect
+	frameTheme     Theme
+	canvas         Canvas
 	traceStorage   FrameTrace
 	layoutWidth    int
 	layoutHeight   int
@@ -135,6 +129,7 @@ func (manager *Manager) isEphemeralReclaimable() bool {
 		return false
 	}
 	if manager.interactive || manager.wake != nil ||
+		manager.focused != nil || manager.hovered != nil || manager.captured != nil ||
 		manager.clipboardRead != nil || manager.clipboardWrite != nil ||
 		manager.unhandled != nil || manager.frameObserver != nil ||
 		len(manager.popups) > 0 || len(manager.shortcuts) > 0 || len(manager.notifications) > 0 {
@@ -174,28 +169,29 @@ func New() *Manager {
 	var oldRoot Component
 	managerPoolMu.Lock()
 	managerPoolOnce.Do(initManagerPool)
-	for probe := 0; probe < ephemeralManagerWindow; probe++ {
-		idx := (managerRingIdx.Add(1) - 1) & (ephemeralManagerWindow - 1)
-		cand := &managerStorage[idx]
-		if cand.inPool {
-			m = cand
-			resetManagerSlot(m)
-			break
-		}
-		if cand.isEphemeralReclaimable() {
-			oldRoot = cand.root
-			cand.root = nil
-			m = cand
-			resetManagerSlot(m)
-			break
-		}
-	}
-	if m == nil && len(freeManagers) > 0 {
+	if len(freeManagers) > 0 {
 		n := len(freeManagers)
 		m = freeManagers[n-1]
 		freeManagers[n-1] = nil
 		freeManagers = freeManagers[:n-1]
 		resetManagerSlot(m)
+	} else {
+		for probe := 0; probe < ephemeralManagerWindow; probe++ {
+			idx := (managerRingIdx.Add(1) - 1) & (ephemeralManagerWindow - 1)
+			cand := &managerStorage[idx]
+			if cand.inPool {
+				m = cand
+				resetManagerSlot(m)
+				break
+			}
+			if cand.isEphemeralReclaimable() {
+				oldRoot = cand.root
+				cand.root = nil
+				m = cand
+				resetManagerSlot(m)
+				break
+			}
+		}
 	}
 	managerPoolMu.Unlock()
 	if oldRoot != nil {
@@ -260,10 +256,8 @@ func (manager *Manager) Close() {
 	}
 	manager.inPool = true
 	manager.pinned = false
-	if !(manager.pooled && manager.slotIdx >= 0 && manager.slotIdx < ephemeralManagerWindow) {
-		if len(freeManagers) < cap(freeManagers) {
-			freeManagers = append(freeManagers, manager)
-		}
+	if manager.pooled && len(freeManagers) < cap(freeManagers) {
+		freeManagers = append(freeManagers, manager)
 	}
 	managerPoolMu.Unlock()
 }
