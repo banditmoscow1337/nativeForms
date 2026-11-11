@@ -22,6 +22,11 @@ type Grid struct {
 	Columns, Rows     []Track
 	ColumnGap, RowGap float32
 	items             []gridItem
+
+	colSizes   []float32
+	rowSizes   []float32
+	colOffsets []float32
+	rowOffsets []float32
 }
 
 func NewGrid(columns ...Track) *Grid {
@@ -80,15 +85,21 @@ func NewForm(labelWidth float32) *Grid {
 	return NewGrid(first, Track{Mode: TrackStar, Value: 1})
 }
 
-func trackSizes(tracks []Track) []float32 {
-	sizes := make([]float32, len(tracks))
+func trackSizesInto(tracks []Track, dst []float32) []float32 {
+	if cap(dst) < len(tracks) {
+		dst = make([]float32, len(tracks))
+	} else {
+		dst = dst[:len(tracks)]
+		clear(dst)
+	}
 	for i, t := range tracks {
 		if t.Mode == TrackFixed {
-			sizes[i] = maxFloat32(0, t.Value)
+			dst[i] = maxFloat32(0, t.Value)
 		}
 	}
-	return sizes
+	return dst
 }
+
 func distributeTracks(tracks []Track, sizes []float32, space float32) {
 	base := float32(0)
 	weight := float32(0)
@@ -160,7 +171,9 @@ func expandTrackSpan(tracks []Track, sizes []float32, start, end int, required f
 }
 
 func (g *Grid) intrinsic() ([]float32, []float32) {
-	cols, rows := trackSizes(g.Columns), trackSizes(g.Rows)
+	cols := trackSizesInto(g.Columns, g.colSizes)
+	rows := trackSizesInto(g.Rows, g.rowSizes)
+	g.colSizes, g.rowSizes = cols, rows
 	for _, item := range g.items {
 		if !item.child.UIState().Visible() || !sameComponent(item.child.UIState().parent, g) {
 			continue
@@ -220,12 +233,23 @@ func (g *Grid) Arrange(bounds Rect) {
 	g.measureRowHeights(cols, rows, false)
 	distributeTracks(g.Rows, rows, maxFloat32(0, bounds.H-g.RowGap*float32(max(0, len(rows)-1))))
 
-	colOffsets := make([]float32, len(cols)+1)
+	if cap(g.colOffsets) < len(cols)+1 {
+		g.colOffsets = make([]float32, len(cols)+1)
+	} else {
+		g.colOffsets = g.colOffsets[:len(cols)+1]
+	}
+	colOffsets := g.colOffsets
 	colOffsets[0] = bounds.X
 	for i, w := range cols {
 		colOffsets[i+1] = colOffsets[i] + w + g.ColumnGap
 	}
-	rowOffsets := make([]float32, len(rows)+1)
+
+	if cap(g.rowOffsets) < len(rows)+1 {
+		g.rowOffsets = make([]float32, len(rows)+1)
+	} else {
+		g.rowOffsets = g.rowOffsets[:len(rows)+1]
+	}
+	rowOffsets := g.rowOffsets
 	rowOffsets[0] = bounds.Y
 	for i, h := range rows {
 		rowOffsets[i+1] = rowOffsets[i] + h + g.RowGap
@@ -240,7 +264,13 @@ func (g *Grid) Arrange(bounds Rect) {
 		x, y := colOffsets[colStart], rowOffsets[rowStart]
 		width := maxFloat32(0, colOffsets[colEnd]-x-g.ColumnGap)
 		height := maxFloat32(0, rowOffsets[rowEnd]-y-g.RowGap)
-		item.child.Arrange((Rect{X: x, Y: y, W: width, H: height}).Inset(item.child.UIState().margin))
+		childRect := (Rect{X: x, Y: y, W: width, H: height}).Inset(item.child.UIState().margin)
+		if item.child.UIState().autoSize && item.child.UIState().flex == 0 {
+			fit := item.child.Measure(Constraints{Max: Vec2{X: childRect.W, Y: childRect.H}, BoundedX: true, BoundedY: true})
+			childRect.W = minFloat32(childRect.W, fit.X)
+			childRect.H = minFloat32(childRect.H, fit.Y)
+		}
+		item.child.Arrange(childRect)
 	}
 }
 
@@ -260,21 +290,49 @@ func NewSplitPane(direction Direction, first, second Component) *SplitPane {
 	p.Add(first, second)
 	return p
 }
+
+func (p *SplitPane) visibleChildren() (firstVis, secondVis bool) {
+	firstVis = p.First != nil && p.First.UIState().Visible()
+	secondVis = p.Second != nil && p.Second.UIState().Visible()
+	return firstVis, secondVis
+}
+
 func (p *SplitPane) Measure(c Constraints) Vec2 {
+	firstVis, secondVis := p.visibleChildren()
 	a, b := Vec2{}, Vec2{}
-	if p.First != nil {
+	if firstVis {
 		a = p.First.Measure(c)
 	}
-	if p.Second != nil {
+	if secondVis {
 		b = p.Second.Measure(c)
 	}
-	if p.Direction == Vertical {
-		return measureWithState(&p.State, Vec2{X: maxFloat32(a.X, b.X), Y: a.Y + b.Y + p.Divider}, c)
+	div := p.Divider
+	if !firstVis || !secondVis {
+		div = 0
 	}
-	return measureWithState(&p.State, Vec2{X: a.X + b.X + p.Divider, Y: maxFloat32(a.Y, b.Y)}, c)
+	if p.Direction == Vertical {
+		return measureWithState(&p.State, Vec2{X: maxFloat32(a.X, b.X), Y: a.Y + b.Y + div}, c)
+	}
+	return measureWithState(&p.State, Vec2{X: a.X + b.X + div, Y: maxFloat32(a.Y, b.Y)}, c)
 }
+
 func (p *SplitPane) Arrange(r Rect) {
 	p.rect = r
+	firstVis, secondVis := p.visibleChildren()
+	if firstVis && !secondVis {
+		p.First.Arrange(r)
+		if p.Second != nil {
+			p.Second.Arrange(Rect{X: r.X + r.W, Y: r.Y, W: 0, H: 0})
+		}
+		return
+	}
+	if !firstVis && secondVis {
+		if p.First != nil {
+			p.First.Arrange(Rect{X: r.X, Y: r.Y, W: 0, H: 0})
+		}
+		p.Second.Arrange(r)
+		return
+	}
 	space := maxFloat32(0, r.W-p.Divider)
 	if p.Direction == Vertical {
 		space = maxFloat32(0, r.H-p.Divider)
@@ -301,19 +359,31 @@ func (p *SplitPane) Arrange(r Rect) {
 		}
 	}
 }
+
 func (p *SplitPane) Paint(c *Canvas) {
+	firstVis, secondVis := p.visibleChildren()
+	if !firstVis || !secondVis {
+		return
+	}
 	space := p.rect.W - p.Divider
 	if p.Direction == Vertical {
 		space = p.rect.H - p.Divider
 	}
 	start := maxFloat32(0, space) * p.Ratio
+	radius := p.effectiveCornerRadius(c.theme)
 	if p.Direction == Vertical {
-		c.Rect(Rect{X: p.rect.X, Y: p.rect.Y + start, W: p.rect.W, H: p.Divider}, c.theme.Border)
+		c.RoundedRect(Rect{X: p.rect.X, Y: p.rect.Y + start, W: p.rect.W, H: p.Divider}, radius, c.theme.Border)
 	} else {
-		c.Rect(Rect{X: p.rect.X + start, Y: p.rect.Y, W: p.Divider, H: p.rect.H}, c.theme.Border)
+		c.RoundedRect(Rect{X: p.rect.X + start, Y: p.rect.Y, W: p.Divider, H: p.rect.H}, radius, c.theme.Border)
 	}
 }
+
 func (p *SplitPane) Handle(e Event) bool {
+	firstVis, secondVis := p.visibleChildren()
+	if !firstVis || !secondVis {
+		p.dragging = false
+		return p.State.Handle(e)
+	}
 	coord := e.X - p.rect.X
 	space := p.rect.W - p.Divider
 	if p.Direction == Vertical {
@@ -331,7 +401,7 @@ func (p *SplitPane) Handle(e Event) bool {
 		if p.dragging && space > 0 {
 			p.Ratio = clampFloat32(coord-p.Divider/2, p.MinFirst, maxFloat32(p.MinFirst, space-p.MinSecond)) / space
 			p.Arrange(p.rect)
-			p.invalidatePaint()
+			p.InvalidatePaint()
 			return true
 		}
 	case PointerUp:

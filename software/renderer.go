@@ -141,6 +141,12 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 		}
 		return
 	}
+	readAtlasAlpha := func(tx, ty int) float32 {
+		if tx < atlasBounds.Min.X || tx >= atlasBounds.Max.X || ty < atlasBounds.Min.Y || ty >= atlasBounds.Max.Y {
+			return 0
+		}
+		return float32(renderer.atlas.Pix[renderer.atlas.PixOffset(tx, ty)+3])
+	}
 	for y := top; y < bottom; y++ {
 		covY := overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
 		if covY <= 0 {
@@ -152,10 +158,7 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 		if c.UV.H != 0 {
 			v += (cy - c.Rect.Y) * c.UV.H / c.Rect.H
 		}
-		ty := atlasBounds.Min.Y + int(math.Floor(float64(v*atlasH)))
-		if ty < atlasBounds.Min.Y || ty >= atlasBounds.Max.Y {
-			continue
-		}
+		sy := float32(atlasBounds.Min.Y) + v*atlasH - 0.5
 		for x := left; x < right; x++ {
 			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) * covY
 			if coverage <= 0 {
@@ -167,28 +170,38 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 			if c.UV.W != 0 {
 				u += (cx - c.Rect.X) * c.UV.W / c.Rect.W
 			}
-			tx := atlasBounds.Min.X + int(math.Floor(float64(u*atlasW)))
-			if tx < atlasBounds.Min.X || tx >= atlasBounds.Max.X {
-				continue
-			}
-			alpha := renderer.atlas.Pix[renderer.atlas.PixOffset(tx, ty)+3]
-			if alpha != 0 {
-				blend(dst, x, y, c.Tint, coverage*float32(alpha)/255)
+			sx := float32(atlasBounds.Min.X) + u*atlasW - 0.5
+			alpha := sampleBilinearScalar(sx, sy, readAtlasAlpha)
+			if alpha > 0.5 {
+				blend(dst, x, y, c.Tint, coverage*alpha/255)
 			}
 		}
 	}
 }
 
+func fillOpaqueSpan(pix []byte, startOffset, count int, r, g, b uint8) {
+	endOffset := startOffset + count*4
+	row := pix[startOffset:endOffset]
+	for i := 0; i < len(row); i += 4 {
+		row[i], row[i+1], row[i+2], row[i+3] = r, g, b, 255
+	}
+}
+
 func (renderer *Renderer) solid(dst *image.RGBA, visible ui.Rect, tint ui.Color, mask float32) {
 	left, top, right, bottom := pixels(dst, visible)
+	if left >= right || top >= bottom {
+		return
+	}
 	if tint.A >= 1 && mask >= 1 && float32(left) >= visible.X && float32(top) >= visible.Y &&
 		float32(right) <= visible.X+visible.W && float32(bottom) <= visible.Y+visible.H {
 		r, g, b := byte255(clamp(tint.R, 0, 1)*255), byte255(clamp(tint.G, 0, 1)*255), byte255(clamp(tint.B, 0, 1)*255)
-		for y := top; y < bottom; y++ {
-			for x := left; x < right; x++ {
-				i := dst.PixOffset(x, y)
-				dst.Pix[i], dst.Pix[i+1], dst.Pix[i+2], dst.Pix[i+3] = r, g, b, 255
-			}
+		span := right - left
+		firstStart := dst.PixOffset(left, top)
+		fillOpaqueSpan(dst.Pix, firstStart, span, r, g, b)
+		firstRow := dst.Pix[firstStart : firstStart+span*4]
+		for y := top + 1; y < bottom; y++ {
+			rowStart := dst.PixOffset(left, y)
+			copy(dst.Pix[rowStart:rowStart+span*4], firstRow)
 		}
 		return
 	}
@@ -209,12 +222,20 @@ func (renderer *Renderer) roundedRect(dst *image.RGBA, c ui.DrawCommand) {
 	if visible.W <= 0 || visible.H <= 0 || c.Tint.A <= 0 {
 		return
 	}
-	radius := min(max(c.Radius, float32(0)), min(c.Rect.W, c.Rect.H)*0.5)
+	halfMin := min(c.Rect.W, c.Rect.H) * 0.5
+	radius := min(max(c.Radius, float32(0)), halfMin)
+	if c.Width > 0 {
+		renderer.roundedBorder(dst, c, visible, radius, min(c.Width, halfMin))
+		return
+	}
 	if radius <= 0 {
 		renderer.solid(dst, visible, c.Tint, 1)
 		return
 	}
 	left, top, right, bottom := pixels(dst, visible)
+	if left >= right || top >= bottom {
+		return
+	}
 	r2 := radius * radius
 	innerLeft, innerRight := c.Rect.X+radius, c.Rect.X+c.Rect.W-radius
 	innerTop, innerBottom := c.Rect.Y+radius, c.Rect.Y+c.Rect.H-radius
@@ -265,216 +286,71 @@ func (renderer *Renderer) roundedRect(dst *image.RGBA, c ui.DrawCommand) {
 	}
 }
 
-type imageSample struct {
-	r, g, b, a float32
-}
-
-func (renderer *Renderer) image(dst *image.RGBA, c ui.DrawCommand) {
-	if c.Image == nil || c.Rect.Empty() || c.Tint.A <= 0 {
-		return
-	}
-	source := c.Source
-	if source == (ui.Rect{}) {
-		bounds := c.Image.Bounds()
-		source = ui.Rect{W: float32(bounds.Dx()), H: float32(bounds.Dy())}
-	}
-	if source.Empty() {
-		return
-	}
-	visible := intersection(c.Rect, c.Clip)
-	if visible.Empty() {
-		return
-	}
+func (renderer *Renderer) roundedBorder(dst *image.RGBA, c ui.DrawCommand, visible ui.Rect, radius, stroke float32) {
 	left, top, right, bottom := pixels(dst, visible)
-	bounds := c.Image.Bounds()
-	minX := max(0, int(math.Floor(float64(source.X))))
-	minY := max(0, int(math.Floor(float64(source.Y))))
-	maxX := min(bounds.Dx()-1, int(math.Ceil(float64(source.X+source.W)))-1)
-	maxY := min(bounds.Dy()-1, int(math.Ceil(float64(source.Y+source.H)))-1)
-	if maxX < minX || maxY < minY {
+	if left >= right || top >= bottom {
 		return
 	}
-	read := func(x, y int) imageSample {
-		pixel := c.Image.RGBAAt(clampInt(x, minX, maxX), clampInt(y, minY, maxY))
-		return imageSample{float32(pixel.R), float32(pixel.G), float32(pixel.B), float32(pixel.A)}
-	}
-	scaleX, scaleY := source.W/c.Rect.W, source.H/c.Rect.H
+	r2 := radius * radius
+	innerLeft, innerRight := c.Rect.X+radius, c.Rect.X+c.Rect.W-radius
+	innerTop, innerBottom := c.Rect.Y+radius, c.Rect.Y+c.Rect.H-radius
+
+	inRectX0, inRectX1 := c.Rect.X+stroke, c.Rect.X+c.Rect.W-stroke
+	inRectY0, inRectY1 := c.Rect.Y+stroke, c.Rect.Y+c.Rect.H-stroke
+	inRadius := max(float32(0), radius-stroke)
+	inR2 := inRadius * inRadius
+	inArcLeft, inArcRight := inRectX0+inRadius, inRectX1-inRadius
+	inArcTop, inArcBottom := inRectY0+inRadius, inRectY1-inRadius
+
+	visRight, visBottom := visible.X+visible.W, visible.Y+visible.H
 	for y := top; y < bottom; y++ {
-		covY := overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
-		if covY <= 0 {
-			continue
-		}
-		py := float32(y) + 0.5
-		sy := source.Y + (py-c.Rect.Y)*scaleY - 0.5
+		fy0, fy1 := float32(y), float32(y+1)
+		inHollowBandY := fy0 >= inArcTop && fy1 <= inArcBottom
 		for x := left; x < right; x++ {
-			px := float32(x) + 0.5
-			sx := source.X + (px-c.Rect.X)*scaleX - 0.5
-			var pixel imageSample
-			if c.Filter == ui.FilterBilinear {
-				x0, y0 := int(math.Floor(float64(sx))), int(math.Floor(float64(sy)))
-				fx, fy := sx-float32(x0), sy-float32(y0)
-				ux, uy := 1-fx, 1-fy
-				a, b, cc, d := read(x0, y0), read(x0+1, y0), read(x0, y0+1), read(x0+1, y0+1)
-				pixel = imageSample{
-					r: (a.r*ux+b.r*fx)*uy + (cc.r*ux+d.r*fx)*fy,
-					g: (a.g*ux+b.g*fx)*uy + (cc.g*ux+d.g*fx)*fy,
-					b: (a.b*ux+b.b*fx)*uy + (cc.b*ux+d.b*fx)*fy,
-					a: (a.a*ux+b.a*fx)*uy + (cc.a*ux+d.a*fx)*fy,
-				}
-			} else {
-				pixel = read(int(math.Floor(float64(sx+0.5))), int(math.Floor(float64(sy+0.5))))
+			fx0, fx1 := float32(x), float32(x+1)
+			// Fast skip for hollow interior of the rounded border.
+			if inHollowBandY && fx0 >= inRectX0 && fx1 <= inRectX1 {
+				continue
 			}
-			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) * covY
-			blendImage(dst, x, y, pixel, c.Tint, coverage)
-		}
-	}
-}
-
-func clampInt(value, low, high int) int { return min(max(value, low), high) }
-
-func blendImage(dst *image.RGBA, x, y int, source imageSample, tint ui.Color, coverage float32) {
-	factor := clamp(tint.A, 0, 1) * clamp(coverage, 0, 1)
-	alpha := source.a * factor / 255
-	if alpha <= 0 {
-		return
-	}
-	inverse := 1 - alpha
-	i := dst.PixOffset(x, y)
-	dst.Pix[i+0] = byte255(source.r*clamp(tint.R, 0, 1)*factor + float32(dst.Pix[i+0])*inverse)
-	dst.Pix[i+1] = byte255(source.g*clamp(tint.G, 0, 1)*factor + float32(dst.Pix[i+1])*inverse)
-	dst.Pix[i+2] = byte255(source.b*clamp(tint.B, 0, 1)*factor + float32(dst.Pix[i+2])*inverse)
-	dst.Pix[i+3] = byte255(source.a*factor + float32(dst.Pix[i+3])*inverse)
-}
-
-func (renderer *Renderer) line(dst *image.RGBA, c ui.DrawCommand) {
-	if c.Width <= 0 || c.Tint.A <= 0 {
-		return
-	}
-	half := c.Width * 0.5
-	minX := min(c.From.X, c.To.X) - half
-	minY := min(c.From.Y, c.To.Y) - half
-	maxX := max(c.From.X, c.To.X) + half
-	maxY := max(c.From.Y, c.To.Y) + half
-	visible := intersection(ui.Rect{X: minX, Y: minY, W: maxX - minX, H: maxY - minY}, c.Clip)
-	if visible.W <= 0 || visible.H <= 0 {
-		return
-	}
-	left, top, right, bottom := pixels(dst, visible)
-	dx, dy := c.To.X-c.From.X, c.To.Y-c.From.Y
-	length2 := dx*dx + dy*dy
-	invLen := float32(0)
-	if length2 >= 0.000001 {
-		invLen = 1 / float32(math.Sqrt(float64(length2)))
-	}
-	clipRight, clipBottom := c.Clip.X+c.Clip.W, c.Clip.Y+c.Clip.H
-	for y := top; y < bottom; y++ {
-		rowLeft, rowRight := left, right
-		if invLen > 0 && abs(dy) > 0.001 {
-			x0 := c.From.X + (float32(y)-c.From.Y)*dx/dy
-			x1 := c.From.X + (float32(y+1)-c.From.Y)*dx/dy
-			span := half/(abs(dy)*invLen) + 1
-			rowLeft = max(left, int(math.Floor(float64(min(x0, x1)-span))))
-			rowRight = min(right, int(math.Ceil(float64(max(x0, x1)+span))))
-		}
-		for x := rowLeft; x < rowRight; x++ {
+			if fy0 >= inRectY0 && fy1 <= inRectY1 && fx0 >= inArcLeft && fx1 <= inArcRight {
+				continue
+			}
 			coverage := float32(0)
-			for _, sy := range [...]float32{0.25, 0.75} {
-				py := float32(y) + sy
-				if py < c.Clip.Y || py >= clipBottom {
+			for subY := 0; subY < 4; subY++ {
+				py := fy0 + (float32(subY)+0.5)*0.25
+				if py < visible.Y || py >= visBottom {
 					continue
 				}
-				for _, sx := range [...]float32{0.25, 0.75} {
-					px := float32(x) + sx
-					if px < c.Clip.X || px >= clipRight {
+				cy := clamp(py, innerTop, innerBottom)
+				dy2 := (py - cy) * (py - cy)
+				for subX := 0; subX < 4; subX++ {
+					px := fx0 + (float32(subX)+0.5)*0.25
+					if px < visible.X || px >= visRight {
 						continue
 					}
-					if invLen == 0 {
-						if abs(px-c.From.X) <= half && abs(py-c.From.Y) <= half {
-							coverage += 0.25
+					cx := clamp(px, innerLeft, innerRight)
+					dx := px - cx
+					if dx*dx+dy2 > r2 {
+						continue
+					}
+					// Check if outside inner rounded rect.
+					if px >= inRectX0 && px < inRectX1 && py >= inRectY0 && py < inRectY1 {
+						if inRadius <= 0 {
+							continue
 						}
-						continue
+						icx := clamp(px, inArcLeft, inArcRight)
+						icy := clamp(py, inArcTop, inArcBottom)
+						idx, idy := px-icx, py-icy
+						if idx*idx+idy*idy <= inR2 {
+							continue
+						}
 					}
-					t := ((px-c.From.X)*dx + (py-c.From.Y)*dy) / length2
-					if t < 0 || t > 1 {
-						continue
-					}
-					distance := abs((px-c.From.X)*dy-(py-c.From.Y)*dx) * invLen
-					if distance <= half {
-						coverage += 0.25
-					}
+					coverage += 1.0 / 16
 				}
 			}
 			if coverage > 0 {
 				blend(dst, x, y, c.Tint, coverage)
 			}
-		}
-	}
-}
-
-func pixels(dst *image.RGBA, r ui.Rect) (left, top, right, bottom int) {
-	b := dst.Bounds()
-	left = max(b.Min.X, int(math.Floor(float64(r.X))))
-	top = max(b.Min.Y, int(math.Floor(float64(r.Y))))
-	right = min(b.Max.X, int(math.Ceil(float64(r.X+r.W))))
-	bottom = min(b.Max.Y, int(math.Ceil(float64(r.Y+r.H))))
-	return
-}
-
-func intersection(a, b ui.Rect) ui.Rect {
-	x0, y0 := max(a.X, b.X), max(a.Y, b.Y)
-	x1, y1 := min(a.X+a.W, b.X+b.W), min(a.Y+a.H, b.Y+b.H)
-	return ui.Rect{X: x0, Y: y0, W: max(float32(0), x1-x0), H: max(float32(0), y1-y0)}
-}
-
-func overlap(a, b, c, d float32) float32 { return max(float32(0), min(b, d)-max(a, c)) }
-func clamp(v, a, b float32) float32      { return min(max(v, a), b) }
-func abs(v float32) float32 {
-	if v < 0 {
-		return -v
-	}
-	return v
-}
-
-func blend(dst *image.RGBA, x, y int, tint ui.Color, mask float32) {
-	alpha := clamp(tint.A, 0, 1) * clamp(mask, 0, 1)
-	if alpha <= 0 {
-		return
-	}
-	i := dst.PixOffset(x, y)
-	inverse := 1 - alpha
-	dst.Pix[i+0] = byte255(clamp(tint.R, 0, 1)*alpha*255 + float32(dst.Pix[i+0])*inverse)
-	dst.Pix[i+1] = byte255(clamp(tint.G, 0, 1)*alpha*255 + float32(dst.Pix[i+1])*inverse)
-	dst.Pix[i+2] = byte255(clamp(tint.B, 0, 1)*alpha*255 + float32(dst.Pix[i+2])*inverse)
-	dst.Pix[i+3] = byte255(alpha*255 + float32(dst.Pix[i+3])*inverse)
-}
-func byte255(v float32) uint8 { return uint8(min(float32(255), v+0.5)) }
-
-func (renderer *Renderer) mask(dst *image.RGBA, c ui.DrawCommand) {
-	if c.Mask == nil || c.Mask.Bounds().Empty() || c.Rect.W <= 0 || c.Rect.H <= 0 {
-		return
-	}
-	visible := intersection(c.Rect, c.Clip)
-	if visible.W <= 0 || visible.H <= 0 {
-		return
-	}
-	left, top, right, bottom := pixels(dst, visible)
-	b := c.Mask.Bounds()
-	scaleX, scaleY := float32(b.Dx())/c.Rect.W, float32(b.Dy())/c.Rect.H
-	for y := top; y < bottom; y++ {
-		covY := overlap(float32(y), float32(y+1), visible.Y, visible.Y+visible.H)
-		if covY <= 0 {
-			continue
-		}
-		sy := min(b.Max.Y-1, max(b.Min.Y, b.Min.Y+int((float32(y)+0.5-c.Rect.Y)*scaleY)))
-		rowOffset := (sy - b.Min.Y) * c.Mask.Stride
-		for x := left; x < right; x++ {
-			sx := min(b.Max.X-1, max(b.Min.X, b.Min.X+int((float32(x)+0.5-c.Rect.X)*scaleX)))
-			alpha := c.Mask.Pix[rowOffset+(sx-b.Min.X)]
-			if alpha == 0 {
-				continue
-			}
-			coverage := overlap(float32(x), float32(x+1), visible.X, visible.X+visible.W) * covY
-			blend(dst, x, y, c.Tint, coverage*float32(alpha)/255)
 		}
 	}
 }

@@ -1,333 +1,21 @@
 package nativeforms
 
-import (
-	"strings"
-	"time"
-	"unicode/utf8"
+import "unicode/utf8"
 
-	"github.com/banditmoscow1337/nativeForms/editor"
-)
-
-// SetSelection keeps the direction of an anchor/caret pair. Both offsets must
-// be valid document text positions, including UTF-8 and CRLF boundaries.
-func (e *CodeEditor) SetSelection(anchor, caret int) bool {
-	e.syncDocument()
-	if _, err := e.Document.LineAtOffset(anchor); err != nil {
-		return false
+func (e *CodeEditor) setScrollFromThumbY(thumbTopY float32, track, thumb Rect) {
+	travel := maxFloat32(1, (track.H-4)-thumb.H)
+	ratio := clampFloat32((thumbTopY-(track.Y+2))/travel, 0, 1)
+	nextY := clampFloat32(ratio*e.maxScrollY(), 0, e.maxScrollY())
+	e.scrollTargetY = nextY
+	e.smoothScrolling = false
+	if e.scrollY != nextY {
+		e.scrollY = nextY
+		e.visibleMaxLineW = 0
+		e.scrollX = clampFloat32(e.scrollX, 0, e.maxScrollX())
+		e.scrollTargetX = e.scrollX
+		e.caretRectValid = false
+		e.InvalidatePaint()
 	}
-	if _, err := e.Document.LineAtOffset(caret); err != nil {
-		return false
-	}
-	e.Anchor, e.Caret = anchor, caret
-	e.moved(false)
-	return true
-}
-
-func (e *CodeEditor) SelectTextRange(start, end int) bool {
-	if start > end {
-		return false
-	}
-	return e.SetSelection(start, end)
-}
-
-func (e *CodeEditor) selection() (int, int) {
-	return min(e.Anchor, e.Caret), max(e.Anchor, e.Caret)
-}
-
-func (e *CodeEditor) selectedText() string {
-	a, b := e.selection()
-	text, _ := e.Document.Slice(a, b)
-	return text
-}
-
-func (e *CodeEditor) ReplaceTextRange(start, end int, value string) bool {
-	e.syncDocument()
-	if e.ReadOnly || !utf8.ValidString(value) || start < 0 || end < start {
-		return false
-	}
-	var removed string
-	if start < end {
-		var err error
-		removed, err = e.Document.Slice(start, end)
-		if err != nil {
-			return false
-		}
-	}
-	line, err := e.Document.LineAtOffset(start)
-	if err != nil {
-		return false
-	}
-	change, err := e.Document.ApplySingle(editor.Edit{Start: start, End: end, Text: value})
-	if err != nil || change.Version == change.BeforeVersion {
-		return false
-	}
-	removedLines := 0
-	if len(removed) > 0 {
-		removedLines = strings.Count(removed, "\n")
-	}
-	insertedLines := 0
-	if len(value) > 0 {
-		insertedLines = strings.Count(value, "\n")
-	}
-	e.shiftBreakpoints(line, removedLines, insertedLines)
-	e.Caret = e.validCaret(start + len(value))
-	e.Anchor = e.Caret
-	e.composing, e.preedit = false, ""
-	e.changedWithDelta(change, line, removedLines, insertedLines)
-	return true
-}
-
-func (e *CodeEditor) shiftBreakpoints(first, removed, inserted int) {
-	if removed == inserted || len(e.breakpoints) == 0 {
-		return
-	}
-	updated := make(map[int]bool, len(e.breakpoints))
-	for line := range e.breakpoints {
-		switch {
-		case line <= first:
-			updated[line] = true
-		case line > first+removed:
-			updated[line+inserted-removed] = true
-		default:
-			updated[first] = true
-		}
-	}
-	e.breakpoints = updated
-}
-
-func (e *CodeEditor) changed(change editor.Change, fromLine int) {
-	e.lastVersion = e.Document.Version()
-	clear(e.crossPieceLines)
-	e.styles, e.semantic = nil, nil
-	if fromLine < 0 || len(e.lexStates) == 0 {
-		e.lexStates = append(e.lexStates[:0], goNormal)
-	} else {
-		e.lexStates = e.lexStates[:min(len(e.lexStates), fromLine+1)]
-	}
-	e.rebuildLexStates(max(0, fromLine))
-	e.moved(false)
-	if e.OnChange != nil {
-		e.OnChange(change)
-	}
-}
-
-func (e *CodeEditor) changedWithDelta(change editor.Change, fromLine, removedLines, insertedLines int) {
-	e.lastVersion = e.Document.Version()
-	clear(e.crossPieceLines)
-	e.styles, e.semantic = nil, nil
-	e.updateLexStatesFrom(fromLine, removedLines, insertedLines)
-	e.moved(false)
-	if e.OnChange != nil {
-		e.OnChange(change)
-	}
-}
-
-func (e *CodeEditor) moved(keepX bool) {
-	e.retainX = keepX
-	e.caretVisible = true
-	if e.manager != nil && e.Focused() {
-		e.manager.caretDue = e.manager.now().Add(500 * time.Millisecond)
-	}
-	e.revealCaret()
-	e.invalidatePaint()
-}
-
-func (e *CodeEditor) revealCaret() {
-	view := e.contentRect()
-	if view.Empty() {
-		return
-	}
-	r := e.CaretRect()
-	if r.Y < view.Y {
-		e.scrollY = maxFloat32(0, e.scrollY-(view.Y-r.Y))
-	} else if r.Y+r.H > view.Y+view.H {
-		e.scrollY = minFloat32(e.maxScrollY(), e.scrollY+r.Y+r.H-view.Y-view.H)
-	}
-	if r.X < view.X+2 {
-		e.scrollX = maxFloat32(0, e.scrollX-(view.X+2-r.X))
-	} else if r.X > view.X+view.W-2 {
-		e.scrollX += r.X - view.X - view.W + 2
-	}
-}
-
-func (e *CodeEditor) offsetAt(x, y float32) int {
-	view := e.contentRect()
-	line := min(e.Document.LineCount()-1, max(0, int((y-view.Y+e.scrollY)/e.rowHeight())))
-	start, end, _ := e.Document.LineRange(line)
-	text, _ := e.Document.Slice(start, end)
-	layout := e.layoutLine(text)
-	return start + layout.byteAtX(text, x-view.X+e.scrollX)
-}
-
-func (e *CodeEditor) horizontalDestination(direction int, word bool) int {
-	line, start, end := e.lineAtCaret()
-	text, _ := e.Document.Slice(start, end)
-	at := utf8.RuneCountInString(text[:min(max(0, e.Caret-start), len(text))])
-	runes := []rune(text)
-	if direction < 0 && at == 0 && line > 0 {
-		_, previousEnd, _ := e.Document.LineRange(line - 1)
-		return previousEnd
-	}
-	if direction > 0 && at == len(runes) && line+1 < e.Document.LineCount() {
-		nextStart, _, _ := e.Document.LineRange(line + 1)
-		return nextStart
-	}
-	if word {
-		at = wordBoundary(runes, at, direction)
-	} else if direction < 0 {
-		at = previousGrapheme(runes, at)
-	} else {
-		at = nextGrapheme(runes, at)
-	}
-	return start + textByteOffset(text, at)
-}
-
-func (e *CodeEditor) move(to int, extend, keepX bool) {
-	e.Caret = e.validCaret(to)
-	if !extend {
-		e.Anchor = e.Caret
-	}
-	e.moved(keepX)
-}
-
-func (e *CodeEditor) moveHorizontal(direction int, word, extend bool) {
-	if e.Caret != e.Anchor && !extend && !word {
-		a, b := e.selection()
-		if direction < 0 {
-			e.move(a, false, false)
-		} else {
-			e.move(b, false, false)
-		}
-		return
-	}
-	e.move(e.horizontalDestination(direction, word), extend, false)
-}
-
-func (e *CodeEditor) moveVertical(rows int, extend bool) {
-	line, _, _ := e.lineAtCaret()
-	if !e.retainX {
-		e.desiredX = e.CaretRect().X - e.contentRect().X + e.scrollX
-	}
-	target := min(max(0, line+rows), e.Document.LineCount()-1)
-	start, end, _ := e.Document.LineRange(target)
-	text, _ := e.Document.Slice(start, end)
-	offset := e.layoutLine(text).byteAtX(text, e.desiredX)
-	e.move(start+offset, extend, true)
-}
-
-func (e *CodeEditor) delete(backward, word bool) {
-	if e.ReadOnly {
-		return
-	}
-	a, b := e.selection()
-	if a == b {
-		if backward {
-			a = e.horizontalDestination(-1, word)
-		} else {
-			b = e.horizontalDestination(1, word)
-		}
-	}
-	e.ReplaceTextRange(a, b, "")
-}
-
-func (e *CodeEditor) indent(outdent bool) {
-	if e.ReadOnly {
-		return
-	}
-	a, b := e.selection()
-	firstLine, err := e.Document.LineAtOffset(a)
-	if err != nil {
-		return
-	}
-	lastLine, err := e.Document.LineAtOffset(b)
-	if err != nil {
-		return
-	}
-	lastStart, _, _ := e.Document.LineRange(lastLine)
-	if b > a && b == lastStart {
-		lastLine--
-	}
-	if !outdent && firstLine == lastLine && a == b {
-		e.ReplaceTextRange(a, b, "\t")
-		return
-	}
-	var edits []editor.Edit
-	for line := firstLine; line <= lastLine; line++ {
-		start, end, _ := e.Document.LineRange(line)
-		if !outdent {
-			edits = append(edits, editor.Edit{Start: start, End: start, Text: "\t"})
-			continue
-		}
-		text, _ := e.Document.Slice(start, end)
-		remove := 0
-		if strings.HasPrefix(text, "\t") {
-			remove = 1
-		} else {
-			for remove < len(text) && remove < max(1, e.TabWidth) && text[remove] == ' ' {
-				remove++
-			}
-		}
-		if remove > 0 {
-			edits = append(edits, editor.Edit{Start: start, End: start + remove})
-		}
-	}
-	if len(edits) == 0 {
-		return
-	}
-	change, err := e.Document.Apply(edits)
-	if err != nil || change.Version == change.BeforeVersion {
-		return
-	}
-	e.Anchor = remapEditorOffset(e.Anchor, edits)
-	e.Caret = remapEditorOffset(e.Caret, edits)
-	e.changed(change, firstLine)
-}
-
-func remapEditorOffset(at int, edits []editor.Edit) int {
-	shift := 0
-	for _, edit := range edits {
-		if at < edit.Start {
-			break
-		}
-		if at <= edit.End {
-			return edit.Start + shift + len(edit.Text)
-		}
-		shift += len(edit.Text) - (edit.End - edit.Start)
-	}
-	return at + shift
-}
-
-func (e *CodeEditor) history(redo bool) {
-	if e.ReadOnly {
-		return
-	}
-	var change editor.Change
-	var ok bool
-	if redo {
-		change, ok = e.Document.Redo()
-	} else {
-		change, ok = e.Document.Undo()
-	}
-	if !ok {
-		return
-	}
-	if len(change.Edits) > 0 {
-		last := change.Edits[len(change.Edits)-1]
-		e.Caret = e.validCaret(last.Start + len(last.Text))
-	}
-	e.Anchor = e.Caret
-	if len(change.Edits) == 1 {
-		edit := change.Edits[0]
-		if line, err := e.Document.LineAtOffset(edit.Start); err == nil {
-			if len(e.lexStates) == e.Document.LineCount()+1 && !strings.Contains(edit.Text, "\n") {
-				e.changedWithDelta(change, line, 0, 0)
-				return
-			}
-			e.changed(change, line)
-			return
-		}
-	}
-	e.changed(change, -1)
 }
 
 func (e *CodeEditor) Handle(event Event) bool {
@@ -337,11 +25,42 @@ func (e *CodeEditor) Handle(event Event) bool {
 		e.HideCompletions()
 		e.composing, e.preedit = false, ""
 		e.caretVisible = true
-		e.invalidatePaint()
+		e.scrollDrag = false
+		e.InvalidatePaint()
 		return true
 	case PointerDown:
+		if event.Button == MouseRight {
+			if e.State.onEvent != nil && e.State.onEvent(event) {
+				return true
+			}
+			view := e.contentRect()
+			if event.X >= view.X && event.X < view.X+view.W {
+				at := e.offsetAt(event.X, event.Y)
+				a, b := e.selection()
+				if a == b || at < a || at > b {
+					e.move(at, false, false)
+				}
+			} else if event.X < view.X {
+				line := min(e.Document.LineCount()-1, max(0, int((event.Y-view.Y+e.scrollY)/e.rowHeight())))
+				start, _, _ := e.Document.LineRange(line)
+				e.move(start, false, false)
+			}
+			return e.OpenContextMenu(event.X, event.Y) != 0
+		}
 		if event.Button != MouseLeft {
 			break
+		}
+		track, thumb := e.scrollbarThumbRect()
+		if !track.Empty() && track.Contains(event.X, event.Y) {
+			e.scrollDrag = true
+			if thumb.Contains(event.X, event.Y) {
+				e.scrollDragOffset = event.Y - thumb.Y
+			} else {
+				e.scrollDragOffset = thumb.H * 0.5
+				e.setScrollFromThumbY(event.Y-e.scrollDragOffset, track, thumb)
+			}
+			e.InvalidatePaint()
+			return true
 		}
 		view := e.contentRect()
 		if event.X < view.X {
@@ -367,23 +86,60 @@ func (e *CodeEditor) Handle(event Event) bool {
 		}
 		return true
 	case PointerMove:
+		track, thumb := e.scrollbarThumbRect()
+		hover := !track.Empty() && track.Contains(event.X, event.Y)
+		if hover != e.scrollHover {
+			e.scrollHover = hover
+			e.InvalidatePaint()
+		}
+		if e.scrollDrag {
+			if !track.Empty() {
+				e.setScrollFromThumbY(event.Y-e.scrollDragOffset, track, thumb)
+			}
+			return true
+		}
 		if e.Pressed() {
 			e.move(e.offsetAt(event.X, event.Y), true, false)
 			return true
 		}
+	case PointerUp:
+		if e.scrollDrag && event.Button == MouseLeft {
+			e.scrollDrag = false
+			e.InvalidatePaint()
+			return true
+		}
 	case PointerScroll:
 		beforeX, beforeY := e.scrollX, e.scrollY
-		e.scrollX = maxFloat32(0, e.scrollX-event.Scroll.X*40)
-		e.scrollY = clampFloat32(e.scrollY-event.Scroll.Y*40, 0, e.maxScrollY())
-		if beforeX != e.scrollX || beforeY != e.scrollY {
-			e.invalidatePaint()
+		maxY := e.maxScrollY()
+		maxX := e.maxScrollX()
+		if !e.smoothScrolling {
+			e.scrollTargetX = e.scrollX
+			e.scrollTargetY = e.scrollY
+		}
+		e.scrollTargetX = clampFloat32(e.scrollTargetX-event.Scroll.X*48, 0, maxX)
+		e.scrollTargetY = clampFloat32(e.scrollTargetY-event.Scroll.Y*48, 0, maxY)
+		if e.manager == nil {
+			e.scrollX = e.scrollTargetX
+			e.scrollY = e.scrollTargetY
+			e.smoothScrolling = false
+		} else {
+			e.scrollX = clampFloat32(e.scrollX+(e.scrollTargetX-e.scrollX)*0.42, 0, maxX)
+			e.scrollY = clampFloat32(e.scrollY+(e.scrollTargetY-e.scrollY)*0.42, 0, maxY)
+			e.smoothScrolling = absFloat32(e.scrollTargetX-e.scrollX) > 0.35 || absFloat32(e.scrollTargetY-e.scrollY) > 0.35
+		}
+		if beforeY != e.scrollY {
+			e.visibleMaxLineW = 0
+		}
+		if beforeX != e.scrollX || beforeY != e.scrollY || e.smoothScrolling {
+			e.caretRectValid = false
+			e.InvalidatePaint()
 			return true
 		}
 	case CompositionStart:
 		e.HideCompletions()
 		e.composing = !e.ReadOnly
 		e.preedit = ""
-		e.invalidatePaint()
+		e.InvalidatePaint()
 		return true
 	case CompositionUpdate:
 		e.HideCompletions()
@@ -394,54 +150,35 @@ func (e *CodeEditor) Handle(event Event) bool {
 			if event.CompositionSelection {
 				e.preeditCaret = min(max(0, event.CompositionCursor), e.preeditCaret)
 			}
-			e.invalidatePaint()
+			e.InvalidatePaint()
 		}
 		return true
 	case CompositionEnd:
 		e.composing, e.preedit = false, ""
-		e.invalidatePaint()
+		e.InvalidatePaint()
 		if event.Text != "" {
-			a, b := e.selection()
-			e.ReplaceTextRange(a, b, event.Text)
+			e.replaceSelection(event.Text)
 		}
 		return true
 	case TextInput:
 		if event.Rune >= 32 && event.Rune != 127 {
-			a, b := e.selection()
-			e.ReplaceTextRange(a, b, string(event.Rune))
+			e.replaceSelection(string(event.Rune))
 			return true
 		}
 	case KeyDown:
 		if event.Key == KeyEscape && e.composing {
 			e.composing, e.preedit = false, ""
-			e.invalidatePaint()
+			e.InvalidatePaint()
 			return true
 		}
 		mod := event.Mods&(ModControl|ModSuper) != 0
 		extend := event.Mods&ModShift != 0
+		if mod && handleEditorClipboardShortcut(e.manager, event.Key, true, !e.ReadOnly, e.selectedText, func(s string) { e.replaceSelection(s) }) {
+			return true
+		}
 		switch {
 		case mod && event.Key == KeyA:
 			e.SetSelection(0, e.Document.Len())
-			return true
-		case mod && event.Key == KeyC:
-			if e.manager != nil && e.manager.clipboardWrite != nil {
-				_ = e.manager.clipboardWrite(e.selectedText())
-			}
-			return true
-		case mod && event.Key == KeyX:
-			if !e.ReadOnly && e.Caret != e.Anchor && e.manager != nil && e.manager.clipboardWrite != nil &&
-				e.manager.clipboardWrite(e.selectedText()) == nil {
-				a, b := e.selection()
-				e.ReplaceTextRange(a, b, "")
-			}
-			return true
-		case mod && event.Key == KeyV:
-			if !e.ReadOnly && e.manager != nil && e.manager.clipboardRead != nil {
-				if value, err := e.manager.clipboardRead(); err == nil {
-					a, b := e.selection()
-					e.ReplaceTextRange(a, b, value)
-				}
-			}
 			return true
 		case mod && event.Key == KeyZ:
 			e.history(extend)
@@ -449,6 +186,9 @@ func (e *CodeEditor) Handle(event Event) bool {
 		case mod && event.Key == KeyY:
 			e.history(true)
 			return true
+		case !mod && extend && event.Key == KeyF10:
+			caret := e.CaretRect()
+			return e.OpenContextMenu(caret.X, caret.Y+caret.H) != 0
 		}
 		switch event.Key {
 		case KeyLeftArrow:
@@ -483,8 +223,7 @@ func (e *CodeEditor) Handle(event Event) bool {
 			return true
 		case KeyEnter:
 			if !e.ReadOnly {
-				a, b := e.selection()
-				e.ReplaceTextRange(a, b, "\n")
+				e.replaceSelection("\n")
 			}
 			return true
 		case KeyTab:
@@ -494,6 +233,10 @@ func (e *CodeEditor) Handle(event Event) bool {
 			line, _, _ := e.lineAtCaret()
 			e.SetBreakpoint(line, !e.Breakpoint(line))
 			return true
+		case KeyF12:
+			if e.GoToDefinition() {
+				return true
+			}
 		}
 		if !mod {
 			switch event.Key {

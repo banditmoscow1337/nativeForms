@@ -256,3 +256,46 @@ func TestDocumentAbsoluteUTF16OffsetAcrossPieces(t *testing.T) {
 		t.Fatalf("offset after undo: %d, %v", got, err)
 	}
 }
+
+func TestLargeDocumentPoolNeverOverwritesActiveOrEditedDocuments(t *testing.T) {
+	const count = 40
+	base := strings.Repeat("package pooltest // line of text\n", 2500) // >80 KB
+	docs := make([]*Document, count)
+	seen := make(map[*Document]bool, count)
+	for i := 0; i < count; i++ {
+		d, err := NewDocument(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[d] {
+			t.Fatalf("duplicate *Document pointer returned at index %d while live", i)
+		}
+		seen[d] = true
+		marker := string(rune('A' + (i % 26)))
+		if _, err := d.ApplySingle(Edit{Start: 0, End: 0, Text: marker}); err != nil {
+			t.Fatal(err)
+		}
+		docs[i] = d
+	}
+	for i, d := range docs {
+		wantPrefix := string(rune('A'+(i%26))) + "package pooltest"
+		got, err := d.Slice(0, len(wantPrefix))
+		if err != nil || got != wantPrefix {
+			t.Fatalf("document %d corrupted: got %q, want %q (err=%v)", i, got, wantPrefix, err)
+		}
+		if !d.CanUndo() {
+			t.Fatalf("document %d lost undo history", i)
+		}
+	}
+	for _, d := range docs {
+		d.Close()
+	}
+	reused, err := NewDocument(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !seen[reused] {
+		t.Fatal("expected Close() to return large Document to freeLargeDocs pool")
+	}
+	reused.Close()
+}

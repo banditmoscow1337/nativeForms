@@ -25,21 +25,21 @@ func NewImage(source *ImageResource) *Image {
 func (widget *Image) SetFit(fit ImageFit) {
 	if widget.Fit != fit {
 		widget.Fit = fit
-		widget.invalidatePaint()
+		widget.InvalidatePaint()
 	}
 }
 
 func (widget *Image) SetFilter(filter ImageFilter) {
 	if widget.Filter != filter {
 		widget.Filter = filter
-		widget.invalidatePaint()
+		widget.InvalidatePaint()
 	}
 }
 
 func (widget *Image) SetTint(tint Color) {
 	if widget.Tint != tint {
 		widget.Tint = tint
-		widget.invalidatePaint()
+		widget.InvalidatePaint()
 	}
 }
 

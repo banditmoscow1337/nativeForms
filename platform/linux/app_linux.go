@@ -15,6 +15,14 @@ import (
 	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
+type TrayOptions struct {
+	Title   string
+	Tooltip string
+	Icon    *ui.ImageResource
+	Menu    []ui.MenuItem
+	OnClick func()
+}
+
 type appWindow interface {
 	appStart() error
 	appStep(bool) (time.Time, error)
@@ -38,11 +46,48 @@ type App struct {
 	wakeFD   int
 	autoQuit bool // legacy Window.Run
 	runErr   error
+	trayMu   sync.Mutex
+	tray     *TrayOptions
 }
 
 var appMu sync.Mutex
 
 func NewApp() *App { return &App{wakeFD: -1} }
+
+func (a *App) SetTray(options TrayOptions) error {
+	if a == nil {
+		return fmt.Errorf("linux: nil app")
+	}
+	copied := options
+	copied.Menu = append([]ui.MenuItem(nil), options.Menu...)
+	a.trayMu.Lock()
+	a.tray = &copied
+	a.trayMu.Unlock()
+	a.wake()
+	return nil
+}
+
+func (a *App) RemoveTray() {
+	if a == nil {
+		return
+	}
+	a.trayMu.Lock()
+	a.tray = nil
+	a.trayMu.Unlock()
+	a.wake()
+}
+
+func (a *App) Tray() (TrayOptions, bool) {
+	if a == nil {
+		return TrayOptions{}, false
+	}
+	a.trayMu.Lock()
+	defer a.trayMu.Unlock()
+	if a.tray == nil {
+		return TrayOptions{}, false
+	}
+	return *a.tray, true
+}
 
 // Add accepts an X11Window or WaylandWindow. Call it before Run or on the UI
 // thread inside App.Post; distinct windows must have distinct managers.
@@ -173,7 +218,8 @@ func (a *App) Run() error {
 		if a.runErr != nil {
 			return a.runErr
 		}
-		if a.autoQuit && len(a.windows) == 0 {
+		_, hasTray := a.Tray()
+		if a.autoQuit && len(a.windows) == 0 && !hasTray {
 			break
 		}
 		if a.queue.Drain() {

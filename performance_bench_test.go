@@ -89,7 +89,7 @@ func BenchmarkTextAreaScroll100k(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		field.scrollY = float32(90000+i%20) * h
-		field.invalidatePaint()
+		field.InvalidatePaint()
 		manager.BeginFrame(1024, 768, 0)
 	}
 }

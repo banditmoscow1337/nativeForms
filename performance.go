@@ -1,7 +1,7 @@
 package nativeforms
 
 import (
-	"runtime"
+	"runtime/metrics"
 	"time"
 )
 
@@ -61,8 +61,7 @@ func (trace *FrameTrace) RecordRenderStats(stats RenderStats) {
 }
 
 // FrameObserverOptions controls potentially intrusive profiling features.
-// Allocation sampling calls runtime.ReadMemStats twice per frame and should
-// only be enabled for diagnosis, not when measuring render latency.
+// Allocation sampling reads lock-free runtime/metrics counters per frame.
 type FrameObserverOptions struct {
 	TrackAllocations bool
 }
@@ -79,6 +78,20 @@ type FrameTrace struct {
 	startMisses      uint64
 	fonts            *FontContext
 	finished         bool
+}
+
+func readAllocMetrics() (bytes, objects uint64) {
+	var samples [2]metrics.Sample
+	samples[0].Name = "/gc/heap/allocs:bytes"
+	samples[1].Name = "/gc/heap/allocs:objects"
+	metrics.Read(samples[:])
+	if samples[0].Value.Kind() == metrics.KindUint64 {
+		bytes = samples[0].Value.Uint64()
+	}
+	if samples[1].Value.Kind() == metrics.KindUint64 {
+		objects = samples[1].Value.Uint64()
+	}
+	return bytes, objects
 }
 
 // SetFrameObserver enables or disables opt-in per-frame measurements. The
@@ -103,10 +116,7 @@ func (trace *FrameTrace) reset(observer func(FrameSample), options FrameObserver
 	*trace = FrameTrace{observer: observer, trackAllocations: options.TrackAllocations}
 	trace.sample.Width, trace.sample.Height = width, height
 	if trace.trackAllocations {
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		trace.startAlloc = mem.TotalAlloc
-		trace.startObjects = mem.Mallocs
+		trace.startAlloc, trace.startObjects = readAllocMetrics()
 	}
 	return trace
 }
@@ -195,10 +205,9 @@ func (trace *FrameTrace) Finish(backend, fallbackReason string) {
 		trace.sample.TextCacheMisses = misses - trace.startMisses
 	}
 	if trace.trackAllocations {
-		var mem runtime.MemStats
-		runtime.ReadMemStats(&mem)
-		trace.sample.AllocBytes = mem.TotalAlloc - trace.startAlloc
-		trace.sample.AllocObjects = mem.Mallocs - trace.startObjects
+		allocBytes, allocObjects := readAllocMetrics()
+		trace.sample.AllocBytes = allocBytes - trace.startAlloc
+		trace.sample.AllocObjects = allocObjects - trace.startObjects
 	}
 	trace.observer(trace.sample)
 }

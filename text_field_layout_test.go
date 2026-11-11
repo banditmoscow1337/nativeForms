@@ -74,7 +74,7 @@ func TestTextFieldScrollReusesLargeLineIndex(t *testing.T) {
 		t.Fatal("missing initial line index")
 	}
 	field.scrollY = 90000 * field.lineHeight(field.fontSpec())
-	field.invalidatePaint()
+	field.InvalidatePaint()
 	manager.BeginFrame(640, 480, 0)
 	if field.layoutCache != cache {
 		t.Fatal("scroll rebuilt the document")

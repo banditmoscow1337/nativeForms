@@ -31,7 +31,28 @@ func NewSlider(text string, minimum, maximum, value, step float32, onChange func
 	return slider
 }
 
+func (slider *Slider) SetText(text string) {
+	if slider.Text == text {
+		return
+	}
+	slider.Text = text
+	slider.invalidateLayout()
+}
+
+func (slider *Slider) measureTextSize() Vec2 {
+	theme := slider.State.Theme()
+	spec := FontSpec{Size: theme.FontSize}
+	titleW := slider.textWidth(slider.Text, spec)
+	valW := slider.textWidth(slider.formattedValue(), spec)
+	width := maxFloat32(120, titleW+valW+44)
+	height := maxFloat32(58, maxFloat32(theme.ControlHeight+14, theme.FontSize*1.2+30))
+	return Vec2{X: width, Y: height}
+}
+
 func (slider *Slider) Measure(constraints Constraints) Vec2 {
+	if slider.autoSize {
+		return measureWithState(&slider.State, slider.measureTextSize(), constraints)
+	}
 	theme := slider.State.Theme()
 	height := maxFloat32(58, maxFloat32(theme.ControlHeight+14, theme.FontSize*1.2+30))
 	return measureWithState(&slider.State, Vec2{X: 360, Y: height}, constraints)
@@ -78,7 +99,11 @@ func (slider *Slider) setValue(value float32, notify bool) {
 		return
 	}
 	slider.Value = value
-	slider.invalidatePaint()
+	if slider.autoSize {
+		slider.invalidateLayout()
+	} else {
+		slider.InvalidatePaint()
+	}
 	if notify && slider.OnChange != nil {
 		slider.OnChange(value)
 	}
@@ -92,6 +117,9 @@ func (slider *Slider) formattedValue() string {
 }
 
 func (slider *Slider) Paint(canvas *Canvas) {
+	if slider.rect.Empty() {
+		return
+	}
 	background := canvas.theme.Control
 	border := canvas.theme.Border
 	textColor := canvas.theme.Text
@@ -106,26 +134,47 @@ func (slider *Slider) Paint(canvas *Canvas) {
 		background = canvas.theme.ControlHover
 		border = canvas.theme.Accent
 	}
-	canvas.Rect(slider.rect, background)
-	canvas.Border(slider.rect, 1, border)
+	radius := slider.effectiveCornerRadius(canvas.theme)
+	if !slider.Frameless() {
+		canvas.RoundedRect(slider.rect, radius, background)
+		canvas.RoundedBorder(slider.rect, radius, 1, border)
+	}
+	canvas.PushClip(slider.rect)
+	defer canvas.PopClip()
+
 	labelBounds := Rect{
 		X: slider.rect.X + 12,
 		Y: slider.rect.Y + 3,
 		W: maxFloat32(0, slider.rect.W-24),
-		H: canvas.theme.FontSize*1.2 + 6,
+		H: minFloat32(maxFloat32(0, slider.rect.H-18), canvas.theme.FontSize*1.2+6),
 	}
-	canvas.Text(slider.Text, labelBounds, canvas.theme.FontSize, TextLeft, textColor)
-	canvas.Text(slider.formattedValue(), labelBounds, canvas.theme.FontSize, TextRight, valueColor)
+	valText := slider.formattedValue()
+	valW := slider.textWidth(valText, FontSpec{Size: canvas.theme.FontSize}) + 8
+	titleBounds := Rect{
+		X: labelBounds.X,
+		Y: labelBounds.Y,
+		W: maxFloat32(0, labelBounds.W-valW),
+		H: labelBounds.H,
+	}
+	valBounds := Rect{
+		X: labelBounds.X + titleBounds.W,
+		Y: labelBounds.Y,
+		W: maxFloat32(0, labelBounds.W-titleBounds.W),
+		H: labelBounds.H,
+	}
+	canvas.Text(slider.Text, titleBounds, canvas.theme.FontSize, TextLeft, textColor)
+	canvas.Text(valText, valBounds, canvas.theme.FontSize, TextRight, valueColor)
 	track := slider.trackRect()
-	canvas.Rect(track, canvas.theme.Panel)
+	trackR := minFloat32(radius, 2.5)
+	canvas.RoundedRect(track, trackR, canvas.theme.Panel)
 	minimum, maximum := slider.bounds()
 	fraction := float32(0)
 	if maximum > minimum {
 		fraction = clampFloat32((slider.Value-minimum)/(maximum-minimum), 0, 1)
 	}
-	canvas.Rect(Rect{X: track.X, Y: track.Y, W: track.W * fraction, H: track.H}, fillColor)
+	canvas.RoundedRect(Rect{X: track.X, Y: track.Y, W: track.W * fraction, H: track.H}, trackR, fillColor)
 	thumbX := track.X + track.W*fraction
-	canvas.Rect(Rect{X: thumbX - 3, Y: track.Y - 4, W: 6, H: track.H + 8}, valueColor)
+	canvas.RoundedRect(Rect{X: thumbX - 3, Y: track.Y - 4, W: 6, H: track.H + 8}, minFloat32(radius, 3), valueColor)
 }
 
 func (slider *Slider) updateFromPointer(x float32) {

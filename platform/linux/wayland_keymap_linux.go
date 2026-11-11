@@ -35,15 +35,12 @@ func initKeyNames() {
 	keyNamesOnce.Do(func() {
 		keyNames = make(map[string]uint32)
 		keyRunes = make(map[uint32]rune)
-		for _, line := range strings.Split(xKeysymData, "\n") {
-			p := strings.Fields(line)
-			if len(p) != 3 {
-				continue
-			}
-			n, _ := strconv.ParseUint(p[1], 16, 32)
-			keyNames[p[0]] = uint32(n)
-			if p[2] != "-" {
-				r, _ := strconv.ParseUint(p[2], 16, 32)
+		p := strings.Fields(xKeysymData)
+		for i := 0; i+2 < len(p); i += 3 {
+			n, _ := strconv.ParseUint(p[i+1], 16, 32)
+			keyNames[p[i]] = uint32(n)
+			if p[i+2] != "-" {
+				r, _ := strconv.ParseUint(p[i+2], 16, 32)
 				keyRunes[uint32(n)] = rune(r)
 			}
 		}

@@ -3,6 +3,8 @@ package nativeforms
 import (
 	"reflect"
 	"testing"
+
+	"github.com/banditmoscow1337/nativeForms/editor"
 )
 
 type mutablePanelTree struct {
@@ -119,5 +121,36 @@ func TestTabsSwitchTransfersEditorFocus(t *testing.T) {
 	tabs.Select("two")
 	if manager.focused != second || first.Visible() || !second.Visible() {
 		t.Fatal("selection left focus in a hidden editor")
+	}
+}
+
+func TestOutputPanelSelectionAndHorizontalClamp(t *testing.T) {
+	p := NewOutputPanel()
+	p.Arrange(Rect{X: 0, Y: 0, W: 600, H: 300})
+	p.AppendText("first line")
+	p.AppendText("second line")
+
+	p.SelectAll()
+	if !p.HasSelection() {
+		t.Fatalf("expected OutputPanel selection after SelectAll")
+	}
+	got := p.SelectedText()
+	if got != "first line\nsecond line" {
+		t.Fatalf("unexpected SelectedText: %q", got)
+	}
+
+	// Short lines fit inside viewport width 600 -> maxScrollX must be 0
+	if p.maxScrollX() != 0 {
+		t.Fatalf("expected maxScrollX() == 0 when lines fit on screen, got %v", p.maxScrollX())
+	}
+}
+
+func TestCodeEditorHorizontalScrollClampedWhenFitting(t *testing.T) {
+	doc, _ := editor.NewDocument("package main\n\nfunc main() {\n}\n")
+	ed := NewCodeEditor(doc)
+	ed.Arrange(Rect{X: 0, Y: 0, W: 800, H: 400})
+	ed.Handle(Event{Type: PointerScroll, Scroll: Vec2{X: -10, Y: 0}})
+	if ed.scrollTargetX != 0 || ed.scrollX != 0 {
+		t.Fatalf("expected horizontal scroll to clamp to 0 when text fits in viewport, got scrollX=%v targetX=%v", ed.scrollX, ed.scrollTargetX)
 	}
 }

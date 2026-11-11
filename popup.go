@@ -1,5 +1,10 @@
 package nativeforms
 
+import (
+	"fmt"
+	"time"
+)
+
 type PopupID uint64
 
 // PopupOptions configures an overlay that stays owned by the focused component.
@@ -31,8 +36,8 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	if content == nil {
 		return 0
 	}
+	manager.CancelPointerCapture()
 	if modal {
-		manager.CancelPointerCapture()
 		manager.setHovered(nil)
 	}
 	if manager.tooltipID != 0 {
@@ -48,7 +53,8 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	if menu, ok := content.(*Menu); ok {
 		menu.popup = id
 	}
-	var focusables []Component
+	var stackFocus [16]Component
+	focusables := stackFocus[:0]
 	collectFocusable(content, &focusables)
 	if len(focusables) > 0 {
 		manager.setFocus(focusables[0])
@@ -101,7 +107,8 @@ func (manager *Manager) ClosePopup(id PopupID) bool {
 		if !entry.keepFocus && previous != nil && previous.UIState().manager == manager && previous.UIState().Visible() && previous.UIState().Enabled() {
 			manager.setFocus(previous)
 		} else if !entry.keepFocus && manager.topModal() != nil {
-			var focusables []Component
+			var stackFocus [16]Component
+			focusables := stackFocus[:0]
 			collectFocusable(manager.topModal().content, &focusables)
 			if len(focusables) > 0 {
 				manager.setFocus(focusables[0])
@@ -126,6 +133,7 @@ func (manager *Manager) ShowTooltip(text string, bounds Rect) PopupID {
 	panel := NewPanel(Overlay)
 	panel.Background = manager.theme.Tooltip
 	panel.Border, panel.BorderWidth = manager.theme.Border, 1
+	panel.CornerRadius = manager.theme.CornerRadius
 	panel.Padding = Symmetric(8, 4)
 	panel.Add(label)
 	manager.nextPopup++
@@ -252,5 +260,91 @@ func (manager *Manager) layoutPopups(viewport Rect) {
 		bounds.X = clampFloat32(bounds.X, viewport.X, viewport.X+viewport.W-bounds.W)
 		bounds.Y = clampFloat32(bounds.Y, viewport.Y, viewport.Y+viewport.H-bounds.H)
 		entry.content.Arrange(bounds)
+	}
+}
+
+func (manager *Manager) Notify(text string, duration ...time.Duration) {
+	if text == "" {
+		return
+	}
+	lifetime := 2500 * time.Millisecond
+	if len(duration) > 0 {
+		lifetime = duration[0]
+	}
+	if lifetime <= 0 {
+		return
+	}
+	deadline := manager.now().Add(lifetime)
+	manager.notificationMu.Lock()
+	if count := len(manager.notifications); count > 0 && manager.notifications[count-1].text == text {
+		manager.notifications[count-1].deadline = deadline
+		manager.notificationMu.Unlock()
+		manager.InvalidatePaint()
+		return
+	}
+	manager.notifications = append(manager.notifications, notification{text: text, deadline: deadline})
+	if len(manager.notifications) > 4 {
+		manager.notifications = manager.notifications[len(manager.notifications)-4:]
+	}
+	manager.notificationMu.Unlock()
+	manager.InvalidatePaint()
+}
+
+func (manager *Manager) Notifyf(format string, args ...any) {
+	manager.Notify(fmt.Sprintf(format, args...))
+}
+
+func (manager *Manager) ShowMessage(format string, args ...any) {
+	if len(args) == 1 {
+		var seconds float64
+		switch value := args[0].(type) {
+		case float64:
+			seconds = value
+		case float32:
+			seconds = float64(value)
+		case int:
+			seconds = float64(value)
+		case int32:
+			seconds = float64(value)
+		default:
+			manager.Notifyf(format, args...)
+			return
+		}
+		manager.Notify(format, time.Duration(seconds*float64(time.Second)))
+		return
+	}
+	manager.Notifyf(format, args...)
+}
+
+func (manager *Manager) ClearNotifications() {
+	manager.notificationMu.Lock()
+	manager.notifications = manager.notifications[:0]
+	manager.notificationMu.Unlock()
+	manager.InvalidatePaint()
+}
+
+func (manager *Manager) paintNotifications(canvas *Canvas, viewport Rect, now time.Time) {
+	manager.notificationMu.Lock()
+	active := manager.notifications[:0]
+	for _, item := range manager.notifications {
+		if now.Before(item.deadline) {
+			active = append(active, item)
+		}
+	}
+	manager.notifications = active
+	var items [4]notification
+	count := copy(items[:], active)
+	manager.notificationMu.Unlock()
+
+	y := float32(32)
+	radius := canvas.theme.CornerRadius
+	for _, item := range items[:count] {
+		textSize := canvas.MeasureText(item.text, FontSpec{Size: canvas.theme.FontSize})
+		width := minFloat32(viewport.W-32, maxFloat32(220, textSize.X+36))
+		rect := Rect{X: (viewport.W - width) * 0.5, Y: y, W: width, H: maxFloat32(42, textSize.Y+14)}
+		canvas.RoundedRect(rect, radius, canvas.theme.PanelAlt)
+		canvas.RoundedBorder(rect, radius, 1, canvas.theme.Accent)
+		canvas.Text(item.text, rect.Inset(Symmetric(12, 4)), canvas.theme.FontSize, TextCenter, canvas.theme.Text)
+		y += rect.H + 8
 	}
 }

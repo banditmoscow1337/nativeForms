@@ -255,6 +255,19 @@ func graphemeBreak(r []rune, i int) bool {
 		return true
 	}
 	a, b := r[i-1], r[i]
+	// Fast path for printable ASCII and precomposed Latin/Cyrillic runes (< U+0300,
+	// or U+0400..U+0482 before Cyrillic combining marks).
+	if a >= 0x20 && b >= 0x20 {
+		if a < 0x7f && b < 0x7f {
+			return true
+		}
+		if (a < 0x0300 || (a >= 0x0400 && a <= 0x0482)) &&
+			(b < 0x0300 || (b >= 0x0400 && b <= 0x0482)) &&
+			(a < 0x7f || a > 0x9f) && a != 0xad &&
+			(b < 0x7f || b > 0x9f) && b != 0xad {
+			return true
+		}
+	}
 	if a == '\r' && b == '\n' {
 		return false
 	}

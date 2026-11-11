@@ -1,13 +1,6 @@
 package nativeforms
 
-import (
-	"fmt"
-	"math"
-	"strconv"
-	"strings"
-	"sync/atomic"
-	"unicode/utf8"
-)
+import "sync/atomic"
 
 type AccessibleID uint64
 
@@ -16,15 +9,24 @@ var nextAccessibleID atomic.Uint64
 type AccessibleRole string
 
 const (
-	RoleGroup       AccessibleRole = "group"
-	RoleText        AccessibleRole = "text"
-	RoleButton      AccessibleRole = "button"
-	RoleCheckbox    AccessibleRole = "checkbox"
-	RoleSwitch      AccessibleRole = "switch"
-	RoleSlider      AccessibleRole = "slider"
-	RoleProgressBar AccessibleRole = "progressbar"
-	RoleTextField   AccessibleRole = "textfield"
-	RoleDialog      AccessibleRole = "dialog"
+	RoleGroup        AccessibleRole = "group"
+	RoleText         AccessibleRole = "text"
+	RoleButton       AccessibleRole = "button"
+	RoleCheckbox     AccessibleRole = "checkbox"
+	RoleSwitch       AccessibleRole = "switch"
+	RoleSlider       AccessibleRole = "slider"
+	RoleSpinBox      AccessibleRole = "spinbox"
+	RoleProgressBar  AccessibleRole = "progressbar"
+	RoleTextField    AccessibleRole = "textfield"
+	RoleDialog       AccessibleRole = "dialog"
+	RoleMenu         AccessibleRole = "menu"
+	RoleColorPicker  AccessibleRole = "colorpicker"
+	RoleLink         AccessibleRole = "link"
+	RoleTabList      AccessibleRole = "tablist"
+	RoleSeparator    AccessibleRole = "separator"
+	RoleToolbar      AccessibleRole = "toolbar"
+	RoleStatus       AccessibleRole = "status"
+	RoleCollapsible  AccessibleRole = "collapsible"
 )
 
 type AccessibilityInfo struct {
@@ -36,7 +38,7 @@ type AccessibilityInfo struct {
 
 func (s *State) SetAccessibility(info AccessibilityInfo) {
 	s.accessibility = info
-	s.invalidatePaint()
+	s.InvalidatePaint()
 }
 func (s *State) Accessibility() AccessibilityInfo { return s.accessibility }
 
@@ -103,16 +105,23 @@ func (t AccessibilityTree) Node(id AccessibleID) (AccessibilityNode, bool) {
 }
 
 func (m *Manager) AccessibilitySnapshot() AccessibilityTree {
-	tree, _ := m.accessibilitySnapshot()
+	tree, _ := m.accessibilitySnapshot(false)
 	return tree
 }
 
-func (m *Manager) accessibilitySnapshot() (AccessibilityTree, map[AccessibleID]Component) {
+func (m *Manager) accessibilitySnapshot(needMap bool) (AccessibilityTree, map[AccessibleID]Component) {
 	var tree AccessibilityTree
-	components := make(map[AccessibleID]Component)
 	if !m.Visible() {
-		return tree, components
+		return tree, nil
 	}
+	var components map[AccessibleID]Component
+	if needMap {
+		components = make(map[AccessibleID]Component, 64)
+	}
+	tree.Nodes = make([]AccessibilityNode, 0, 64)
+	var nodeCompsBuf [128]Component
+	nodeComps := nodeCompsBuf[:0]
+	hasLabelledBy := false
 	interactive := m.Interactive()
 	viewport := Rect{W: float32(m.layoutWidth), H: float32(m.layoutHeight)}
 	var walk func(Component, AccessibleID, Rect, bool, string) AccessibleID
@@ -125,10 +134,15 @@ func (m *Manager) accessibilitySnapshot() (AccessibilityTree, map[AccessibleID]C
 			return 0
 		}
 		id := s.AccessibilityID()
-		if _, duplicate := components[id]; duplicate {
-			return 0
+		if components != nil {
+			if _, duplicate := components[id]; duplicate {
+				return 0
+			}
+			components[id] = c
 		}
-		components[id] = c
+		if s.accessibility.LabelledBy != nil {
+			hasLabelledBy = true
+		}
 		if s.accessibility.Language != "" {
 			language = s.accessibility.Language
 		}
@@ -153,12 +167,18 @@ func (m *Manager) accessibilitySnapshot() (AccessibilityTree, map[AccessibleID]C
 		}
 		index := len(tree.Nodes)
 		tree.Nodes = append(tree.Nodes, node)
+		nodeComps = append(nodeComps, c)
 		if s.clip || s.rect.Empty() {
 			clip = intersect(clip, s.rect)
 		}
-		for _, child := range s.children {
-			if childID := walk(child, id, clip, disabled, language); childID != 0 {
-				tree.Nodes[index].Children = append(tree.Nodes[index].Children, childID)
+		if len(s.children) > 0 {
+			for _, child := range s.children {
+				if childID := walk(child, id, clip, disabled, language); childID != 0 {
+					if tree.Nodes[index].Children == nil {
+						tree.Nodes[index].Children = make([]AccessibleID, 0, len(s.children))
+					}
+					tree.Nodes[index].Children = append(tree.Nodes[index].Children, childID)
+				}
 			}
 		}
 		return id
@@ -185,175 +205,25 @@ func (m *Manager) accessibilitySnapshot() (AccessibilityTree, map[AccessibleID]C
 		}
 	}
 
-	indices := make(map[AccessibleID]int, len(tree.Nodes))
-	for i := range tree.Nodes {
-		indices[tree.Nodes[i].ID] = i
-	}
-
-	for i := range tree.Nodes {
-		node := &tree.Nodes[i]
-		info := components[node.ID].UIState().accessibility
-		if info.LabelledBy != nil {
-			labelID := info.LabelledBy.UIState().accessibleID
-			if label, ok := indices[labelID]; ok && labelID != node.ID {
-				node.LabelledBy = labelID
-				if info.Name == "" && tree.Nodes[label].Name != "" {
-					node.Name = tree.Nodes[label].Name
+	if hasLabelledBy {
+		for i := range tree.Nodes {
+			node := &tree.Nodes[i]
+			info := nodeComps[i].UIState().accessibility
+			if info.LabelledBy != nil {
+				labelID := info.LabelledBy.UIState().accessibleID
+				if labelID != 0 && labelID != node.ID {
+					for j := range tree.Nodes {
+						if tree.Nodes[j].ID == labelID {
+							node.LabelledBy = labelID
+							if info.Name == "" && tree.Nodes[j].Name != "" {
+								node.Name = tree.Nodes[j].Name
+							}
+							break
+						}
+					}
 				}
 			}
 		}
 	}
 	return tree, components
-}
-
-func describeAccessible(c Component) AccessibilityNode {
-	s := c.UIState()
-	n := AccessibilityNode{Role: RoleGroup, Description: s.tooltip}
-	if s.Focusable() {
-		n.State |= AccessibleFocusable
-		n.Actions |= AccessibilityFocus
-	}
-	switch w := c.(type) {
-	case *Label:
-		n.Role, n.Name = RoleText, w.currentText()
-	case *Button:
-		n.Role, n.Name = RoleButton, w.Text
-		n.Actions |= AccessibilityActivate
-	case *Checkbox:
-		n.Role, n.Name = RoleCheckbox, w.Text
-		if w.Checked {
-			n.State |= AccessibleChecked
-		}
-		n.Actions |= AccessibilityActivate
-	case *Toggle:
-		n.Role, n.Name = RoleSwitch, w.Text
-		if w.Value {
-			n.State |= AccessibleChecked
-		}
-		n.Actions |= AccessibilityActivate
-	case *Slider:
-		minimum, maximum := w.bounds()
-		n.Role, n.Name, n.Value = RoleSlider, w.Text, w.formattedValue()
-		n.Range = &AccessibleRange{Min: minimum, Max: maximum, Value: w.Value, Step: w.Step}
-		n.Actions |= AccessibilityIncrement | AccessibilityDecrement | AccessibilitySetValue
-	case *ProgressBar:
-		value := clampFloat32(w.Value, 0, 1)
-		n.Role, n.Value = RoleProgressBar, fmt.Sprintf("%d%%", int(value*100+0.5))
-		n.Range = &AccessibleRange{Min: 0, Max: 1, Value: value}
-		n.State |= AccessibleReadOnly
-	case *TextField:
-		e := w.Editor()
-		n.Role, n.Name = RoleTextField, w.Placeholder
-		if w.ReadOnly {
-			n.State |= AccessibleReadOnly
-		} else {
-			n.Actions |= AccessibilitySetValue
-		}
-		if w.Multiline {
-			n.State |= AccessibleMultiline
-		}
-		if w.Password {
-			n.State |= AccessibleProtected
-		} else {
-			n.Value = e.Text
-			n.Selection = &AccessibleSelection{
-				Anchor: textByteOffset(e.Text, e.Anchor),
-				Cursor: textByteOffset(e.Text, e.Caret),
-			}
-		}
-	}
-	info := s.accessibility
-	if info.Role != "" {
-		n.Role = info.Role
-	}
-	if info.Name != "" {
-		n.Name = info.Name
-	}
-	if info.Description != "" {
-		n.Description = info.Description
-	}
-	return n
-}
-
-func (m *Manager) PerformAccessibilityAction(id AccessibleID, action AccessibilityAction, value string) bool {
-	if action == 0 || action&(action-1) != 0 || !m.Visible() || !m.Interactive() {
-		return false
-	}
-	tree, components := m.accessibilitySnapshot()
-	node, ok := tree.Node(id)
-	if !ok || node.Actions&action == 0 {
-		return false
-	}
-	c := components[id]
-	if action == AccessibilityFocus {
-		m.setFocus(c)
-		current := m.AccessibilitySnapshot()
-		now, exists := current.Node(id)
-		if !exists || now.Actions&AccessibilityFocus == 0 {
-			if sameComponent(m.focused, c) {
-				m.setFocus(nil)
-			}
-			return false
-		}
-		return sameComponent(m.focused, c)
-	}
-	switch w := c.(type) {
-	case *Button:
-		if action == AccessibilityActivate {
-			if w.OnClick != nil {
-				w.OnClick()
-			}
-			m.InvalidatePaint()
-			return true
-		}
-	case *Checkbox:
-		if action == AccessibilityActivate {
-			w.SetChecked(!w.Checked)
-			return true
-		}
-	case *Toggle:
-		if action == AccessibilityActivate {
-			w.SetValue(!w.Value)
-			return true
-		}
-	case *Slider:
-		next := w.Value
-		switch action {
-		case AccessibilitySetValue:
-			v, err := strconv.ParseFloat(value, 32)
-			if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-				return false
-			}
-			next = float32(v)
-		case AccessibilityIncrement, AccessibilityDecrement:
-			step := w.stepSize()
-			if action == AccessibilityDecrement {
-				step = -step
-			}
-			next += step
-		default:
-			return false
-		}
-		w.SetValue(next)
-		return true
-	case *TextField:
-		if action == AccessibilitySetValue && !w.ReadOnly && utf8.ValidString(value) {
-			if !w.Multiline {
-				value = strings.ReplaceAll(normalizeTextBreaks(value), "\n", "")
-			}
-			e := w.Editor()
-			if w.Validate != nil && !w.Validate(value) {
-				return false
-			}
-			if e.Text == value {
-				return true
-			}
-			e.Anchor, e.Caret, e.Preedit = 0, utf8.RuneCountInString(e.Text), ""
-			if e.Replace(value) {
-				w.changed()
-				return true
-			}
-		}
-	}
-	return false
 }

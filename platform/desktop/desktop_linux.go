@@ -14,6 +14,15 @@ type linuxDriver struct{ *linux.App }
 
 func newAppDriver() appDriver            { return linuxDriver{linux.NewApp()} }
 func (a linuxDriver) Add(w Window) error { return a.App.Add(w) }
+func (a linuxDriver) SetTray(options TrayOptions) error {
+	return a.App.SetTray(linux.TrayOptions{
+		Title:   options.Title,
+		Tooltip: options.Tooltip,
+		Icon:    options.Icon,
+		Menu:    options.Menu,
+		OnClick: options.OnClick,
+	})
+}
 
 func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	if manager == nil {
@@ -30,7 +39,8 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	switch backend {
 	case "wayland":
 		return linux.NewWayland(manager, linux.WaylandOptions{
-			Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
+			Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.Scale, Graphics: options.Graphics,
+			Frameless: options.Frameless, HideWindowControls: options.HideWindowControls,
 			OnReady: func(w *linux.WaylandWindow) {
 				if options.OnReady != nil {
 					options.OnReady(w)
@@ -44,8 +54,13 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 			},
 		}), nil
 	case "x11":
+		x11Scale := options.X11Scale
+		if x11Scale <= 0 {
+			x11Scale = options.Scale
+		}
 		return linux.NewX11(manager, linux.X11Options{
-			Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.X11Scale, Graphics: options.Graphics,
+			Title: options.Title, Width: options.Width, Height: options.Height, Scale: x11Scale, Graphics: options.Graphics,
+			Frameless: options.Frameless, HideWindowControls: options.HideWindowControls,
 			OnReady: func(w *linux.X11Window) {
 				if options.OnReady != nil {
 					options.OnReady(w)

@@ -47,6 +47,9 @@ func BuildWithAtlas(list *DisplayList, mesh Mesh, atlas *GlyphAtlas) (Mesh, erro
 func buildCommands(commands []ui.DrawCommand, mesh Mesh, atlas *GlyphAtlas) (Mesh, error) {
 	mesh.Vertices = mesh.Vertices[:0]
 	mesh.Batches = mesh.Batches[:0]
+	if minVerts := len(commands) * 6; cap(mesh.Vertices) < minVerts {
+		mesh.Vertices = make([]ui.Vertex, 0, minVerts)
+	}
 	for i := range commands {
 		command := commands[i]
 		if command.Kind > ui.CommandRoundedRect {
@@ -71,12 +74,10 @@ func buildCommands(commands []ui.DrawCommand, mesh Mesh, atlas *GlyphAtlas) (Mes
 				key = MaskTexture
 				mesh.Vertices = appendAtlasMask(mesh.Vertices, command, rect, atlas.Size())
 			} else {
-				mesh.scratch = ui.Tessellate(commands[i:i+1], mesh.scratch)
-				mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
+				mesh.Vertices = ui.AppendTessellatedCommand(command, mesh.Vertices)
 			}
 		} else {
-			mesh.scratch = ui.Tessellate(commands[i:i+1], mesh.scratch)
-			mesh.Vertices = append(mesh.Vertices, mesh.scratch...)
+			mesh.Vertices = ui.AppendTessellatedCommand(command, mesh.Vertices)
 		}
 		count := len(mesh.Vertices) - first
 		if count == 0 {
@@ -110,14 +111,24 @@ func appendAtlasMask(dst []ui.Vertex, c ui.DrawCommand, region image.Rectangle, 
 	if x1 <= x0 || y1 <= y0 {
 		return dst
 	}
-	vertex := func(x, y float32) ui.Vertex {
-		return ui.Vertex{X: x, Y: y,
-			U: (float32(region.Min.X) + (x-c.Rect.X)*float32(region.Dx())/c.Rect.W) / float32(size),
-			V: (float32(region.Min.Y) + (y-c.Rect.Y)*float32(region.Dy())/c.Rect.H) / float32(size),
-			R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
-	}
-	return append(dst, vertex(x0, y0), vertex(x1, y0), vertex(x0, y1),
-		vertex(x0, y1), vertex(x1, y0), vertex(x1, y1))
+	invSize := 1.0 / float32(size)
+	uBase := float32(region.Min.X) * invSize
+	vBase := float32(region.Min.Y) * invSize
+	uScale := (float32(region.Dx()) / c.Rect.W) * invSize
+	vScale := (float32(region.Dy()) / c.Rect.H) * invSize
+	u0 := uBase + (x0-c.Rect.X)*uScale
+	u1 := uBase + (x1-c.Rect.X)*uScale
+	v0 := vBase + (y0-c.Rect.Y)*vScale
+	v1 := vBase + (y1-c.Rect.Y)*vScale
+	tr, tg, tb, ta := c.Tint.R, c.Tint.G, c.Tint.B, c.Tint.A
+	return append(dst,
+		ui.Vertex{X: x0, Y: y0, U: u0, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y0, U: u1, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x0, Y: y1, U: u0, V: v1, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x0, Y: y1, U: u0, V: v1, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y0, U: u1, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y1, U: u1, V: v1, R: tr, G: tg, B: tb, A: ta},
+	)
 }
 
 func appendImage(vertices []ui.Vertex, c ui.DrawCommand) []ui.Vertex {
@@ -140,16 +151,19 @@ func appendImage(vertices []ui.Vertex, c ui.DrawCommand) []ui.Vertex {
 	if x1 <= x0 || y1 <= y0 {
 		return vertices
 	}
-	u := func(x float32) float32 {
-		return (source.X + (x-c.Rect.X)*source.W/c.Rect.W) / float32(bounds.Dx())
-	}
-	v := func(y float32) float32 {
-		return (source.Y + (y-c.Rect.Y)*source.H/c.Rect.H) / float32(bounds.Dy())
-	}
-	point := func(x, y float32) ui.Vertex {
-		return ui.Vertex{X: x, Y: y, U: u(x), V: v(y), R: c.Tint.R * c.Tint.A,
-			G: c.Tint.G * c.Tint.A, B: c.Tint.B * c.Tint.A, A: c.Tint.A}
-	}
-	return append(vertices, point(x0, y0), point(x1, y0), point(x0, y1),
-		point(x0, y1), point(x1, y0), point(x1, y1))
+	invW := 1.0 / float32(bounds.Dx())
+	invH := 1.0 / float32(bounds.Dy())
+	u0 := (source.X + (x0-c.Rect.X)*source.W/c.Rect.W) * invW
+	u1 := (source.X + (x1-c.Rect.X)*source.W/c.Rect.W) * invW
+	v0 := (source.Y + (y0-c.Rect.Y)*source.H/c.Rect.H) * invH
+	v1 := (source.Y + (y1-c.Rect.Y)*source.H/c.Rect.H) * invH
+	tr, tg, tb, ta := c.Tint.R*c.Tint.A, c.Tint.G*c.Tint.A, c.Tint.B*c.Tint.A, c.Tint.A
+	return append(vertices,
+		ui.Vertex{X: x0, Y: y0, U: u0, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y0, U: u1, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x0, Y: y1, U: u0, V: v1, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x0, Y: y1, U: u0, V: v1, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y0, U: u1, V: v0, R: tr, G: tg, B: tb, A: ta},
+		ui.Vertex{X: x1, Y: y1, U: u1, V: v1, R: tr, G: tg, B: tb, A: ta},
+	)
 }

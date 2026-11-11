@@ -3,35 +3,27 @@
 package linux
 
 import (
-	"encoding/binary"
 	"fmt"
 	"image"
-	"io"
 	"net"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
-	"unicode"
 
 	ui "github.com/banditmoscow1337/nativeForms"
 	"github.com/banditmoscow1337/nativeForms/platform"
 	"github.com/banditmoscow1337/nativeForms/render"
-	"github.com/banditmoscow1337/nativeForms/software"
 )
 
-var le = binary.LittleEndian
-
 type X11Options struct {
-	Title          string
-	Width, Height  int
-	Scale          float32 // Zero uses the Xft.dpi setting, falling back to 96 DPI.
-	OnReady        func(*X11Window)
-	OnFilesDropped func([]string)
-	OnCloseRequest func(*X11Window) platform.CloseAction
-	Graphics       render.Kind
+	Title              string
+	Width, Height      int
+	Scale              float32 // Zero uses the Xft.dpi setting, falling back to 96 DPI.
+	Frameless          bool
+	HideWindowControls bool
+	OnReady            func(*X11Window)
+	OnFilesDropped     func([]string)
+	OnCloseRequest     func(*X11Window) platform.CloseAction
+	Graphics           render.Kind
 }
 
 type X11Window struct {
@@ -45,7 +37,7 @@ type X11Window struct {
 	minKey, maxKey                                                byte
 	maxRequest                                                    int
 	width, height                                                 int
-	scale                                                         float32
+	scale, lastRenderScale                                        float32
 	framebuffer                                                   *image.RGBA
 	staging                                                       []byte
 	stagingValid                                                  bool
@@ -59,7 +51,7 @@ type X11Window struct {
 	lastReleaseCode                                               byte
 	lastReleaseTime                                               uint32
 	hadRelease                                                    bool
-	wmDelete, wmProtocols                                         uint32
+	wmDelete, wmProtocols, motifHintsAtom                         uint32
 	incrAtom                                                      uint32
 	transfers                                                     map[selectionKey]*selectionTransfer
 	peerRequests                                                  map[uint16]bool
@@ -86,6 +78,93 @@ type X11Window struct {
 
 func NewX11(manager *ui.Manager, options X11Options) *X11Window {
 	return &X11Window{manager: manager, options: options}
+}
+
+func (w *X11Window) applyMotifHints() {
+	if w.conn == nil || w.id == 0 || w.motifHintsAtom == 0 {
+		return
+	}
+	prop := make([]byte, 44) // 24-byte header + 5 uint32 _MOTIF_WM_HINTS fields
+	prop[0] = 18             // ChangeProperty
+	prop[1] = 0              // PropModeReplace
+	le.PutUint32(prop[4:], w.id)
+	le.PutUint32(prop[8:], w.motifHintsAtom)
+	le.PutUint32(prop[12:], w.motifHintsAtom)
+	prop[16] = 32
+	le.PutUint32(prop[20:], 5)
+	flags := uint32(2) // MWM_HINTS_DECORATIONS
+	decorations := uint32(1)
+	if w.options.Frameless {
+		decorations = 0
+	} else if w.options.HideWindowControls {
+		// MWM_DECOR_BORDER (2) | MWM_DECOR_RESIZEH (4) | MWM_DECOR_TITLE (8)
+		decorations = 2 | 4 | 8
+	}
+	le.PutUint32(prop[24:], flags)
+	le.PutUint32(prop[32:], decorations)
+	_ = w.send(prop)
+}
+
+func (w *X11Window) SetFrameless(frameless bool) {
+	if w == nil {
+		return
+	}
+	w.options.Frameless = frameless
+	if w.app != nil && w.running {
+		w.app.Post(func() {
+			w.applyMotifHints()
+			w.manager.InvalidateLayout()
+		})
+	}
+}
+
+func (w *X11Window) Frameless() bool {
+	if w == nil {
+		return false
+	}
+	return w.options.Frameless
+}
+
+func (w *X11Window) SetWindowControls(visible bool) {
+	if w == nil {
+		return
+	}
+	w.options.HideWindowControls = !visible
+	if w.app != nil && w.running {
+		w.app.Post(func() {
+			w.applyMotifHints()
+			w.manager.InvalidatePaint()
+		})
+	}
+}
+
+func (w *X11Window) WindowControlsVisible() bool {
+	if w == nil {
+		return false
+	}
+	return !w.options.HideWindowControls && !w.options.Frameless
+}
+
+func (w *X11Window) Minimize() {
+	if w == nil || w.app == nil {
+		return
+	}
+	w.app.Post(func() {
+		if w.conn != nil && w.id != 0 {
+			w.setVisible(false)
+		}
+	})
+}
+
+func (w *X11Window) Maximize() {
+	if w == nil || w.app == nil {
+		return
+	}
+	w.app.Post(func() {
+		if w.conn != nil && w.id != 0 {
+			w.manager.InvalidateLayout()
+		}
+	})
 }
 
 // SetSize requests a new logical client size. Call it on the window's UI
@@ -180,965 +259,4 @@ func (w *X11Window) closeAction() {
 		decision = w.options.OnCloseRequest(w)
 	}
 	applyCloseDecision(decision, w.app, w.Hide, w.Close)
-}
-
-func x11Display() (string, int, string, error) {
-	display := os.Getenv("DISPLAY")
-	if !strings.HasPrefix(display, ":") && !strings.HasPrefix(display, "unix:") {
-		return "", 0, "", fmt.Errorf("x11: only local Unix DISPLAY is supported: %q", display)
-	}
-	display = strings.TrimPrefix(display, "unix:")
-	display = strings.TrimPrefix(display, ":")
-	parts := strings.SplitN(display, ".", 2)
-	n, err := strconv.Atoi(parts[0])
-	if err != nil || n < 0 || n > 65535 {
-		return "", 0, "", fmt.Errorf("x11: invalid DISPLAY")
-	}
-	screen := 0
-	if len(parts) == 2 {
-		screen, err = strconv.Atoi(parts[1])
-		if err != nil || screen < 0 {
-			return "", 0, "", fmt.Errorf("x11: invalid screen")
-		}
-	}
-	return fmt.Sprintf("/tmp/.X11-unix/X%d", n), screen, parts[0], nil
-}
-
-func x11Authority(display string) ([]byte, []byte) {
-	path := os.Getenv("XAUTHORITY")
-	if path == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			path = filepath.Join(home, ".Xauthority")
-		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil
-	}
-
-	for len(data) >= 2 {
-		family := binary.BigEndian.Uint16(data[:2])
-		data = data[2:]
-		fields := make([][]byte, 4)
-		valid := true
-		for i := range fields {
-			if len(data) < 2 {
-				valid = false
-				break
-			}
-			n := int(binary.BigEndian.Uint16(data[:2]))
-			data = data[2:]
-			if len(data) < n {
-				valid = false
-				break
-			}
-			fields[i] = data[:n]
-			data = data[n:]
-		}
-		if !valid {
-			break
-		}
-		if (family == 256 || family == 65535) && string(fields[1]) == display && string(fields[2]) == "MIT-MAGIC-COOKIE-1" {
-			return append([]byte(nil), fields[2]...), append([]byte(nil), fields[3]...)
-		}
-	}
-	return nil, nil
-}
-
-func padded(n int) int { return (n + 3) &^ 3 }
-
-func (w *X11Window) open(screen int, display string) error {
-	name, cookie := x11Authority(display)
-	setup := make([]byte, 12+padded(len(name))+padded(len(cookie)))
-	setup[0] = 'l'
-	le.PutUint16(setup[2:], 11)
-	le.PutUint16(setup[6:], uint16(len(name)))
-	le.PutUint16(setup[8:], uint16(len(cookie)))
-	copy(setup[12:], name)
-	copy(setup[12+padded(len(name)):], cookie)
-	if _, err := w.conn.Write(setup); err != nil {
-		return err
-	}
-	header := make([]byte, 8)
-	if _, err := io.ReadFull(w.conn, header); err != nil {
-		return err
-	}
-	length := int(le.Uint16(header[6:])) * 4
-	if length > 16<<20 {
-		return fmt.Errorf("x11: setup response too large")
-	}
-	data := make([]byte, length)
-	if _, err := io.ReadFull(w.conn, data); err != nil {
-		return err
-	}
-	if header[0] != 1 {
-		return fmt.Errorf("x11: connection rejected: %s", string(data[:min(int(header[1]), len(data))]))
-	}
-	if len(data) < 32 {
-		return fmt.Errorf("x11: short server setup")
-	}
-	w.base = le.Uint32(data[4:])
-	w.mask = le.Uint32(data[8:])
-	w.minKey, w.maxKey = data[26], data[27]
-	if w.maxKey < w.minKey || w.minKey < 8 {
-		return fmt.Errorf("x11: invalid keycode range")
-	}
-	w.maxRequest = int(le.Uint16(data[18:])) * 4
-	if w.maxRequest < 1024 {
-		return fmt.Errorf("x11: request size too small")
-	}
-	if data[22] != 0 {
-		return fmt.Errorf("x11: MSB image order is unsupported")
-	}
-	rootCount, formatCount := int(data[20]), int(data[21])
-	if screen >= rootCount {
-		return fmt.Errorf("x11: screen %d is unavailable", screen)
-	}
-	offset := 32 + padded(int(le.Uint16(data[16:])))
-	if offset+formatCount*8 > len(data) {
-		return fmt.Errorf("x11: truncated pixmap formats")
-	}
-	formats := data[offset : offset+formatCount*8]
-	offset += formatCount * 8
-	for s := 0; s < rootCount; s++ {
-		if offset+40 > len(data) {
-			return fmt.Errorf("x11: truncated screen")
-		}
-		root := data[offset:]
-		depth := root[38]
-		visual := le.Uint32(root[32:])
-		depths := int(root[39])
-		depthOffset := offset + 40
-		validVisual := false
-		for j := 0; j < depths; j++ {
-			if depthOffset+8 > len(data) {
-				return fmt.Errorf("x11: truncated depth")
-			}
-			vcount := int(le.Uint16(data[depthOffset+2:]))
-			depthOffset += 8
-			if depthOffset+vcount*24 > len(data) {
-				return fmt.Errorf("x11: truncated visual")
-			}
-			for k := 0; k < vcount; k++ {
-				v := data[depthOffset+k*24:]
-				if le.Uint32(v) == visual && v[4] == 4 && le.Uint32(v[8:]) == 0xff0000 &&
-					le.Uint32(v[12:]) == 0x00ff00 && le.Uint32(v[16:]) == 0x0000ff {
-					validVisual = true
-				}
-			}
-			depthOffset += vcount * 24
-		}
-		if s == screen {
-			formatOK := false
-			for i := 0; i < formatCount; i++ {
-				f := formats[i*8:]
-				if f[0] == depth && f[1] == 32 && f[2] == 32 {
-					formatOK = true
-				}
-			}
-			if !formatOK || !validVisual {
-				return fmt.Errorf("x11: a 32 bpp TrueColor RGB visual is required")
-			}
-			w.root = le.Uint32(root)
-			w.depth = depth
-			break
-		}
-		offset = depthOffset
-	}
-	return nil
-}
-
-func (w *X11Window) resource() (uint32, error) {
-	step := w.mask & -w.mask
-	w.nextID += step
-	if w.nextID == 0 || w.nextID&^w.mask != 0 {
-		return 0, fmt.Errorf("x11: resource ID space exhausted")
-	}
-	return w.base | w.nextID, nil
-}
-
-func (w *X11Window) send(req []byte) error {
-	if len(req) < 4 || len(req)%4 != 0 || len(req) > w.maxRequest {
-		return fmt.Errorf("x11: invalid request length")
-	}
-	le.PutUint16(req[2:], uint16(len(req)/4))
-	w.sequence++
-	delete(w.peerRequests, w.sequence)
-	for len(req) > 0 {
-		n, err := w.conn.Write(req)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		req = req[n:]
-	}
-	return nil
-}
-
-func (w *X11Window) reply() ([]byte, error) {
-	for {
-		header := make([]byte, 32)
-		if _, err := io.ReadFull(w.conn, header); err != nil {
-			return nil, err
-		}
-		if header[0] == 0 {
-			return nil, fmt.Errorf("x11: request %d failed with code %d", le.Uint16(header[2:]), header[1])
-		}
-		if header[0] == 1 {
-			extra := int(le.Uint32(header[4:])) * 4
-			if extra > 16<<20 {
-				return nil, fmt.Errorf("x11: reply too large")
-			}
-			data := make([]byte, 32+extra)
-			copy(data, header)
-			_, err := io.ReadFull(w.conn, data[32:])
-			return data, err
-		}
-	}
-}
-
-func (w *X11Window) atom(name string) (uint32, error) {
-	request := make([]byte, 8+padded(len(name)))
-	request[0] = 16
-	le.PutUint16(request[4:], uint16(len(name)))
-	copy(request[8:], name)
-	if err := w.send(request); err != nil {
-		return 0, err
-	}
-	reply, err := w.reply()
-	if err != nil {
-		return 0, err
-	}
-	return le.Uint32(reply[8:]), nil
-}
-
-func (w *X11Window) createWindow() error {
-	var err error
-	w.id, err = w.resource()
-	if err != nil {
-		return err
-	}
-	w.gc, err = w.resource()
-	if err != nil {
-		return err
-	}
-	w.width, w.height = w.options.Width, w.options.Height
-	if w.width <= 0 {
-		w.width = 800
-	}
-	if w.height <= 0 {
-		w.height = 600
-	}
-	w.width = platform.PixelSize(w.width, w.scale)
-	w.height = platform.PixelSize(w.height, w.scale)
-	if w.width > 16384 || w.height > 16384 || int64(w.width)*int64(w.height) > 64*1024*1024 {
-		return fmt.Errorf("x11: window exceeds framebuffer limit")
-	}
-	request := make([]byte, 36)
-	request[0] = 1
-	le.PutUint32(request[4:], w.id)
-	le.PutUint32(request[8:], w.root)
-	le.PutUint16(request[16:], uint16(w.width))
-	le.PutUint16(request[18:], uint16(w.height))
-	le.PutUint16(request[22:], 1)
-	le.PutUint32(request[28:], 1<<11)
-	le.PutUint32(request[32:], 1|2|4|8|32|64|1<<15|1<<17|1<<21|1<<22)
-	if err = w.send(request); err != nil {
-		return err
-	}
-	gc := make([]byte, 16)
-	gc[0] = 55
-	le.PutUint32(gc[4:], w.gc)
-	le.PutUint32(gc[8:], w.id)
-	if err = w.send(gc); err != nil {
-		return err
-	}
-	protocols, err := w.atom("WM_PROTOCOLS")
-	if err != nil {
-		return err
-	}
-	w.wmProtocols = protocols
-	w.wmDelete, err = w.atom("WM_DELETE_WINDOW")
-	if err != nil {
-		return err
-	}
-	for _, entry := range []struct {
-		name string
-		dst  *uint32
-	}{
-		{"INCR", &w.incrAtom}, {"CLIPBOARD", &w.clipboard}, {"UTF8_STRING", &w.utf8Atom},
-		{"TARGETS", &w.targetsAtom}, {"TEXT", &w.textAtom},
-		{"_NATIVEFORMS_CLIPBOARD", &w.selectionProperty},
-	} {
-		*entry.dst, err = w.atom(entry.name)
-		if err != nil {
-			return err
-		}
-	}
-	prop := make([]byte, 28)
-	prop[0] = 18
-	prop[1] = 0
-	le.PutUint32(prop[4:], w.id)
-	le.PutUint32(prop[8:], protocols)
-	le.PutUint32(prop[12:], 4) // ATOM
-	prop[16] = 32
-	le.PutUint32(prop[20:], 1)
-	le.PutUint32(prop[24:], w.wmDelete)
-	if err = w.send(prop); err != nil {
-		return err
-	}
-	title := w.options.Title
-	if title == "" {
-		title = "nativeForms"
-	}
-	if len(title) > 1024 {
-		title = title[:1024]
-	}
-	name := make([]byte, 24+padded(len(title)))
-	name[0] = 18
-	le.PutUint32(name[4:], w.id)
-	le.PutUint32(name[8:], 39)
-	le.PutUint32(name[12:], 31) // WM_NAME, STRING
-	name[16] = 8
-	le.PutUint32(name[20:], uint32(len(title)))
-	copy(name[24:], title)
-	if err = w.send(name); err != nil {
-		return err
-	}
-	if err = w.readKeyboardMapping(); err != nil {
-		return err
-	}
-	if err = w.setupDND(); err != nil {
-		return err
-	}
-	mapWindow := make([]byte, 8)
-	mapWindow[0] = 8
-	le.PutUint32(mapWindow[4:], w.id)
-	return w.send(mapWindow)
-}
-
-func (w *X11Window) readKeyboardMapping() error {
-	request := make([]byte, 8)
-	request[0] = 101
-	request[4] = w.minKey
-	request[5] = w.maxKey - w.minKey + 1
-	if err := w.send(request); err != nil {
-		return err
-	}
-	var answer []byte
-	var err error
-	if w.running {
-		answer, err = w.waitReply(w.sequence, time.Now().Add(2*time.Second))
-	} else {
-		answer, err = w.reply()
-	}
-	if err != nil {
-		return err
-	}
-	per := int(answer[1])
-	count := int(request[5])
-	if per == 0 || len(answer) < 32+count*per*4 {
-		return fmt.Errorf("x11: invalid keyboard mapping")
-	}
-	w.keysyms = make(map[byte][]uint32, count)
-	for k := 0; k < count; k++ {
-		values := make([]uint32, per)
-		for j := range values {
-			values[j] = le.Uint32(answer[32+(k*per+j)*4:])
-		}
-		w.keysyms[byte(k)+w.minKey] = values
-	}
-	return nil
-}
-
-func (w *X11Window) Run() error {
-	a := NewApp()
-	a.autoQuit = true
-	if err := a.Add(w); err != nil {
-		return err
-	}
-	return a.Run()
-}
-
-func (w *X11Window) appStart() error {
-	if w == nil || w.manager == nil {
-		return fmt.Errorf("x11: nil window or manager")
-	}
-	path, screen, display, err := x11Display()
-	if err != nil {
-		return err
-	}
-	w.conn, err = net.Dial("unix", path)
-	if err != nil {
-		return err
-	}
-	if err = w.open(screen, display); err != nil {
-		return err
-	}
-	w.scale = w.options.Scale
-	if !(w.scale > 0 && w.scale <= 8) {
-		w.scale = w.resourceScale()
-	}
-	w.manager.SetDisplayScale(w.scale)
-	if err = w.createWindow(); err != nil {
-		return err
-	}
-	w.originDirty = true
-	w.running = true
-	w.portal = portalAvailable()
-	w.ime = openLinuxIME(w.manager)
-	if w.ime != nil {
-		w.ime.scale = w.scale
-	}
-	selection, err := software.Open(w.options.Graphics, nil)
-	if err != nil {
-		return err
-	}
-	w.renderer = selection.Backend
-	w.fallbackReason = selection.FallbackReason()
-	w.lastFrame = time.Now()
-	w.manager.SetInteractive(true)
-	w.manager.SetClipboardHandlers(w.ClipboardText, w.SetClipboardText)
-	w.manager.SetWakeHandler(w.app.wake)
-	if w.options.OnReady != nil {
-		w.options.OnReady(w)
-	}
-	if w.hidden.Load() {
-		w.setVisible(false)
-	}
-	return nil
-}
-
-func (w *X11Window) appStep(read bool) (time.Time, error) {
-	if !w.closeRequested.Load() {
-		w.manager.ProcessPending()
-		if w.ime != nil {
-			if w.originDirty && w.manager.TextInputFocused() {
-				_ = w.refreshOrigin()
-			}
-			w.ime.screenX, w.ime.screenY = w.screenX, w.screenY
-			if err := w.ime.sync(); err != nil {
-				w.ime.close()
-				w.ime = nil
-			}
-		}
-		for k, t := range w.transfers {
-			if time.Now().After(t.expires) {
-				delete(w.transfers, k)
-			}
-		}
-		if !w.hidden.Load() && (w.framebuffer == nil || w.manager.NeedsFrame()) {
-			if err := w.paint(); err != nil {
-				return time.Time{}, err
-			}
-		}
-		deadline := time.Now().Add(50 * time.Millisecond)
-		if next, scheduled := w.manager.NextFrameDeadline(); !w.hidden.Load() && w.width > 0 && w.height > 0 && scheduled && next.Before(deadline) {
-			deadline = next
-		}
-		w.manager.ProcessPending()
-		if !read || (!w.hidden.Load() && w.width > 0 && w.height > 0 && w.manager.NeedsFrame()) {
-			return deadline, nil
-		}
-		message, err := w.clipboardPacket(time.Now().Add(5 * time.Millisecond))
-		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
-			return deadline, nil
-		}
-		if err != nil {
-			return time.Time{}, err
-		}
-		if err := w.clipboardDispatch(message); err != nil {
-			return time.Time{}, err
-		}
-		return time.Now(), nil // drain other pending events before sleeping
-	}
-	return time.Time{}, nil
-}
-
-func (w *X11Window) appStop() {
-	w.running = false
-	w.manager.SetWakeHandler(nil)
-	w.manager.SetClipboardHandlers(nil, nil)
-	w.manager.SetInteractive(false)
-	if w.ime != nil {
-		w.ime.close()
-		w.ime = nil
-	}
-	if w.conn != nil {
-		_ = w.conn.Close()
-		w.conn = nil
-	}
-	if w.renderer != nil {
-		_ = w.renderer.Close()
-	}
-	w.framebuffer, w.renderer = nil, nil
-}
-
-func (w *X11Window) appClosed() bool         { return w.closeRequested.Load() }
-func (w *X11Window) appManager() *ui.Manager { return w.manager }
-func (w *X11Window) appOwner() *App          { return w.app }
-func (w *X11Window) appSetApp(a *App)        { w.app = a }
-func (w *X11Window) appFD() (int, error)     { return unixFD(w.conn.(*net.UnixConn)) }
-
-func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
-	_ = w.conn.SetReadDeadline(deadline)
-	for w.have < len(w.incoming) {
-		n, err := w.conn.Read(w.incoming[w.have:])
-		w.have += n
-		if err != nil {
-			return nil, err
-		}
-		if n == 0 {
-			return nil, io.ErrUnexpectedEOF
-		}
-	}
-	packet := append([]byte(nil), w.incoming[:]...)
-	w.have = 0
-	return packet, nil
-}
-
-func (w *X11Window) paint() error {
-	if w.width <= 0 || w.height <= 0 {
-		return nil
-	}
-	if int64(w.width)*int64(w.height) > 64*1024*1024 {
-		return fmt.Errorf("x11: framebuffer exceeds 64 megapixels")
-	}
-	if w.framebuffer == nil || w.framebuffer.Bounds().Dx() != w.width || w.framebuffer.Bounds().Dy() != w.height {
-		w.framebuffer = image.NewRGBA(image.Rect(0, 0, w.width, w.height))
-		w.staging = make([]byte, w.width*w.height*4)
-		w.stagingValid = false
-	}
-	now := time.Now()
-	w.manager.BeginFrame(platform.LogicalSize(w.width, w.scale), platform.LogicalSize(w.height, w.scale), now.Sub(w.lastFrame).Seconds())
-	w.lastFrame = now
-	trace := w.manager.FrameTrace()
-	rasterStart := trace.Start()
-	err := w.renderer.RenderAtScale(w.manager.Frame(), w.framebuffer, w.scale)
-	trace.Record(ui.PhaseRaster, rasterStart)
-	if err != nil {
-		return err
-	}
-	uploadStart := trace.Start()
-	dirty := software.UpdateBGRA(w.staging, w.framebuffer, w.stagingValid)
-	trace.RecordDamage(dirty.Dx(), dirty.Dy())
-	w.stagingValid = true
-	trace.Record(ui.PhaseUpload, uploadStart)
-	if dirty.Empty() {
-		trace.Finish("software/x11", w.fallbackReason)
-		return nil
-	}
-	rowBytes := dirty.Dx() * 4
-	rowsPerRequest := (w.maxRequest - 24) / rowBytes
-	if rowsPerRequest < 1 {
-		return fmt.Errorf("x11: scanline exceeds maximum request size")
-	}
-	for y := dirty.Min.Y; y < dirty.Max.Y; {
-		uploadStart := trace.Start()
-		n := min(rowsPerRequest, dirty.Max.Y-y)
-		length := 24 + n*rowBytes
-		if cap(w.request) < length {
-			w.request = make([]byte, length)
-		}
-		request := w.request[:length]
-		clear(request[:24])
-		request[0] = 72
-		request[1] = 2 // ZPixmap
-		le.PutUint32(request[4:], w.id)
-		le.PutUint32(request[8:], w.gc)
-		le.PutUint16(request[12:], uint16(dirty.Dx()))
-		le.PutUint16(request[14:], uint16(n))
-		le.PutUint16(request[16:], uint16(dirty.Min.X))
-		le.PutUint16(request[18:], uint16(y))
-		request[21] = w.depth
-		for row := 0; row < n; row++ {
-			start := ((y+row)*w.width + dirty.Min.X) * 4
-			output := request[24+row*rowBytes : 24+(row+1)*rowBytes]
-			copy(output, w.staging[start:start+rowBytes])
-			if w.depth == 24 {
-				for x := 3; x < len(output); x += 4 {
-					output[x] = 0 // preserve unused pad bits in 24-bit ZPixmap
-				}
-			}
-		}
-		trace.Record(ui.PhaseUpload, uploadStart)
-		presentStart := trace.Start()
-		if err := w.send(request); err != nil {
-			return err
-		}
-		trace.Record(ui.PhasePresent, presentStart)
-		y += n
-	}
-	trace.Finish("software/x11", w.fallbackReason)
-	return nil
-}
-
-func x11Mods(state uint16) int {
-	mods := 0
-	if state&1 != 0 {
-		mods |= ui.ModShift
-	}
-	if state&4 != 0 {
-		mods |= ui.ModControl
-	}
-	if state&8 != 0 {
-		mods |= ui.ModAlt
-	}
-	if state&64 != 0 {
-		mods |= ui.ModSuper
-	}
-	return mods
-}
-
-func letterKey(r rune) ui.Key {
-	switch unicode.ToLower(r) {
-	case 'a':
-		return ui.KeyA
-	case 'b':
-		return ui.KeyB
-	case 'c':
-		return ui.KeyC
-	case 'd':
-		return ui.KeyD
-	case 'e':
-		return ui.KeyE
-	case 'f':
-		return ui.KeyF
-	case 'g':
-		return ui.KeyG
-	case 'h':
-		return ui.KeyH
-	case 'i':
-		return ui.KeyI
-	case 'j':
-		return ui.KeyJ
-	case 'k':
-		return ui.KeyK
-	case 'l':
-		return ui.KeyL
-	case 'm':
-		return ui.KeyM
-	case 'n':
-		return ui.KeyN
-	case 'o':
-		return ui.KeyO
-	case 'p':
-		return ui.KeyP
-	case 'q':
-		return ui.KeyQ
-	case 'r':
-		return ui.KeyR
-	case 's':
-		return ui.KeyS
-	case 't':
-		return ui.KeyT
-	case 'u':
-		return ui.KeyU
-	case 'v':
-		return ui.KeyV
-	case 'w':
-		return ui.KeyW
-	case 'x':
-		return ui.KeyX
-	case 'y':
-		return ui.KeyY
-	case 'z':
-		return ui.KeyZ
-	}
-	return ui.KeyUnknown
-}
-
-func x11Key(sym uint32) ui.Key {
-	switch sym {
-	case 0xff08:
-		return ui.KeyBackspace
-	case 0xff09:
-		return ui.KeyTab
-	case 0xff0d:
-		return ui.KeyEnter
-	case 0xff1b:
-		return ui.KeyEscape
-	case 0xffff:
-		return ui.KeyDelete
-	case 0xff50:
-		return ui.KeyHome
-	case 0xff57:
-		return ui.KeyEnd
-	case 0xff55:
-		return ui.KeyPageUp
-	case 0xff56:
-		return ui.KeyPageDown
-	case 0xff63:
-		return ui.KeyInsert
-	case 0xff51:
-		return ui.KeyLeftArrow
-	case 0xff52:
-		return ui.KeyUpArrow
-	case 0xff53:
-		return ui.KeyRightArrow
-	case 0xff54:
-		return ui.KeyDownArrow
-	case 0xffbe:
-		return ui.KeyF1
-	case 0xffbf:
-		return ui.KeyF2
-	case 0xffc0:
-		return ui.KeyF3
-	case 0xffc1:
-		return ui.KeyF4
-	case 0xffc2:
-		return ui.KeyF5
-	case 0xffc3:
-		return ui.KeyF6
-	case 0xffc4:
-		return ui.KeyF7
-	case 0xffc5:
-		return ui.KeyF8
-	case 0xffc6:
-		return ui.KeyF9
-	case 0xffc7:
-		return ui.KeyF10
-	case 0xffc8:
-		return ui.KeyF11
-	case 0xffc9:
-		return ui.KeyF12
-	case 0x20:
-		return ui.KeySpace
-	case '0', ')':
-		return ui.KeyDigit0
-	case '1', '!':
-		return ui.KeyDigit1
-	case '2', '@':
-		return ui.KeyDigit2
-	case '3', '#':
-		return ui.KeyDigit3
-	case '4', '$':
-		return ui.KeyDigit4
-	case '5', '%':
-		return ui.KeyDigit5
-	case '6', '^':
-		return ui.KeyDigit6
-	case '7', '&':
-		return ui.KeyDigit7
-	case '8', '*':
-		return ui.KeyDigit8
-	case '9', '(':
-		return ui.KeyDigit9
-	case '-', '_':
-		return ui.KeyMinus
-	case '=', '+':
-		return ui.KeyEqual
-	case '[', '{':
-		return ui.KeyLeftBracket
-	case ']', '}':
-		return ui.KeyRightBracket
-	case '\\', '|':
-		return ui.KeyBackslash
-	case ';', ':':
-		return ui.KeySemicolon
-	case '\'', '"':
-		return ui.KeyQuote
-	case '`', '~':
-		return ui.KeyBackquote
-	case ',', '<':
-		return ui.KeyComma
-	case '.', '>':
-		return ui.KeyPeriod
-	case '/', '?':
-		return ui.KeySlash
-	}
-	return letterKey(rune(sym))
-}
-
-func (w *X11Window) handle(message []byte) bool {
-	typ := message[0] & 0x7f
-	// X11 autorepeat sends an adjacent KeyRelease/KeyPress pair with the same
-	// keycode and timestamp. Preserve repeat information for controls and
-	// shortcuts that should activate only once per held key.
-	repeat := typ == 2 && w.hadRelease && message[1] == w.lastReleaseCode &&
-		le.Uint32(message[4:]) == w.lastReleaseTime
-	w.hadRelease = typ == 3
-	if w.hadRelease {
-		w.lastReleaseCode = message[1]
-		w.lastReleaseTime = le.Uint32(message[4:])
-	}
-	if w.modal && typ >= 2 && typ <= 8 {
-		return false
-	}
-	switch typ {
-	case 2, 3:
-		syms := w.keysyms[message[1]]
-		if len(syms) == 0 {
-			return false
-		}
-		state := le.Uint16(message[28:])
-		group := int((state >> 13) & 3)
-		base := group * 2
-		if state&128 != 0 && len(syms) > 2 {
-			base += 2
-		}
-		if base >= len(syms) || syms[base] == 0 {
-			base = 0
-		}
-		sym := syms[base]
-		upper := uint32(0)
-		if base+1 < len(syms) {
-			upper = syms[base+1]
-		}
-		shift := state&1 != 0
-		if state&2 != 0 && unicode.IsLetter(keysymRune(sym)) {
-			shift = !shift
-		}
-		if state&16 != 0 && upper >= 0xffb0 && upper <= 0xffb9 {
-			shift = !shift
-		}
-		if shift {
-			if upper != 0 {
-				sym = upper
-			} else if r := keysymRune(sym); unicode.IsLetter(r) {
-				sym = uint32(unicode.ToUpper(r)) | 0x1000000
-			}
-		}
-		if w.ime != nil && w.ime.key(sym, uint32(message[1]-8), uint32(state), typ == 2) {
-			return false
-		}
-
-		kind := ui.KeyDown
-		if typ == 3 {
-			kind = ui.KeyUp
-		}
-		mods := x11Mods(state)
-		if typ == 2 && w.compose.node != nil && (sym == 0xff08 || sym == 0xff1b) {
-			w.compose.input(w.manager, sym)
-			return false
-		}
-		if mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) != 0 {
-			w.compose.reset(w.manager)
-		}
-		key := x11Key(sym)
-		if mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) != 0 {
-			key = x11Key(syms[0])
-			if key == ui.KeyUnknown {
-				key, _ = evdevUS(uint32(message[1]-8), false)
-			}
-		}
-		w.manager.HandleEvent(ui.Event{Type: kind, Key: key, Mods: mods, Repeat: repeat})
-		if typ == 2 && mods&(ui.ModControl|ui.ModAlt|ui.ModSuper) == 0 {
-			w.compose.input(w.manager, sym)
-		}
-
-	case 4, 5, 6:
-		if typ == 4 {
-			w.compose.reset(w.manager)
-		}
-		w.screenX = int(int16(le.Uint16(message[20:]))) - int(int16(le.Uint16(message[24:])))
-		w.screenY = int(int16(le.Uint16(message[22:]))) - int(int16(le.Uint16(message[26:])))
-		x, y := float32(int16(le.Uint16(message[24:])))/w.scale, float32(int16(le.Uint16(message[26:])))/w.scale
-		mods := x11Mods(le.Uint16(message[28:]))
-		if typ == 6 {
-			w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: x, Y: y, Mods: mods})
-			break
-		}
-		button := message[1]
-		if button == 4 || button == 5 || button == 6 || button == 7 {
-			if typ == 4 {
-				scroll := ui.Vec2{}
-				switch button {
-				case 4:
-					scroll.Y = 1
-				case 5:
-					scroll.Y = -1
-				case 6:
-					scroll.X = 1
-				case 7:
-					scroll.X = -1
-				}
-				w.manager.HandleEvent(ui.Event{Type: ui.PointerScroll, X: x, Y: y, Scroll: scroll, Mods: mods})
-			}
-			break
-		}
-		mouse := ui.MouseLeft
-		if button == 2 {
-			mouse = ui.MouseMiddle
-		}
-		if button == 3 {
-			mouse = ui.MouseRight
-		}
-		kind := ui.PointerDown
-		if typ == 5 {
-			kind = ui.PointerUp
-		}
-		w.manager.HandleEvent(ui.Event{Type: kind, Button: mouse, X: x, Y: y, Mods: mods})
-	case 10:
-		w.compose.reset(w.manager)
-		if w.ime != nil {
-			w.ime.focusOut()
-		}
-		w.manager.ClearInteraction()
-	case 34:
-		if message[4] == 1 {
-			if err := w.readKeyboardMapping(); err != nil {
-				w.clipboardError = err
-			}
-		}
-	case 28:
-		if err := w.selectionProgress(message); err != nil {
-			w.clipboardError = err
-		}
-	case 29: // SelectionClear
-		if le.Uint32(message[12:]) == w.clipboard {
-			w.clipboardOwned = false
-			w.clipboardText = ""
-		}
-	case 30: // SelectionRequest
-		if err := w.selectionRequest(message); err != nil {
-			w.clipboardError = err
-		}
-	case 12:
-		w.stagingValid = false // Expose needs a full upload even if UI pixels match
-		return true
-	case 22:
-		w.originDirty = true
-		if message[0]&128 != 0 {
-			w.screenX = int(int16(le.Uint16(message[16:])))
-			w.screenY = int(int16(le.Uint16(message[18:])))
-		}
-		width, height := int(le.Uint16(message[20:])), int(le.Uint16(message[22:]))
-		if width != w.width || height != w.height {
-			w.width, w.height = width, height
-			w.manager.InvalidateLayout()
-			return true
-		}
-	case 33:
-		if message[1] == 32 && le.Uint32(message[8:]) == w.wmProtocols && le.Uint32(message[12:]) == w.wmDelete {
-			w.closeAction()
-		} else {
-			w.handleDND(message)
-		}
-	}
-	return false
-}
-
-// IBus expects screen coordinates. WM-reparented X11 windows may report
-// ConfigureNotify positions relative to their decoration frame instead.
-func (w *X11Window) refreshOrigin() error {
-	w.originDirty = false
-	request := make([]byte, 16)
-	request[0] = 40 // TranslateCoordinates, from the client window to the root.
-	le.PutUint32(request[4:], w.id)
-	le.PutUint32(request[8:], w.root)
-	if err := w.send(request); err != nil {
-		return err
-	}
-	reply, err := w.waitReply(w.sequence, time.Now().Add(time.Second))
-	if err != nil {
-		return err
-	}
-	if reply[1] != 0 {
-		w.screenX = int(int16(le.Uint16(reply[12:])))
-		w.screenY = int(int16(le.Uint16(reply[14:])))
-	}
-	return nil
 }

@@ -30,15 +30,17 @@ const fastGlyphLimit = 0x530
 var scalableGlyphs map[rune]glyphInfo
 var fastGlyphs [fastGlyphLimit]glyphInfo
 var fastGlyphsValid [fastGlyphLimit]bool
+var metricsOnce sync.Once
 var atlasOnce sync.Once
 var atlasImage image.Image
 var fontMu sync.Mutex
 var selectedFace *TrueTypeFace
 var fallbackFaces []*TrueTypeFace
+var metricsReady bool
 var atlasReady bool
 
 func SetFontData(data []byte) error {
-	face, err := ParseTrueType(append([]byte(nil), data...))
+	face, err := ParseTrueType(data)
 	if err != nil {
 		return err
 	}
@@ -48,13 +50,16 @@ func SetFontData(data []byte) error {
 		return fmt.Errorf("font atlas has already been initialized")
 	}
 	selectedFace = face
+	if metricsReady {
+		rebuildFontMetricsLocked()
+	}
 	return nil
 }
 
 func SetFallbackFontData(fonts ...[]byte) error {
 	faces := make([]*TrueTypeFace, 0, len(fonts))
 	for i, data := range fonts {
-		face, err := ParseTrueType(append([]byte(nil), data...))
+		face, err := ParseTrueType(data)
 		if err != nil {
 			return fmt.Errorf("fallback font %d: %w", i, err)
 		}
@@ -66,51 +71,164 @@ func SetFallbackFontData(fonts ...[]byte) error {
 		return fmt.Errorf("font atlas has already been initialized")
 	}
 	fallbackFaces = faces
+	if metricsReady {
+		rebuildFontMetricsLocked()
+	}
 	return nil
 }
 
+func currentAtlasFacesLocked() []*TrueTypeFace {
+	var faces []*TrueTypeFace
+	if selectedFace != nil {
+		faces = append(faces, selectedFace)
+	}
+	faces = append(faces, fallbackFaces...)
+	if len(faces) == 0 {
+		faces = defaultSystemFaces()
+	}
+	return faces
+}
+
+func ensureFontMetrics() {
+	metricsOnce.Do(func() {
+		fontMu.Lock()
+		defer fontMu.Unlock()
+		if !metricsReady {
+			rebuildFontMetricsLocked()
+		}
+	})
+}
+
+func rebuildFontMetricsLocked() {
+	faces := currentAtlasFacesLocked()
+	characters := atlasCharacterSet()
+	cellsPerRow := fontAtlasSize / fontCellSize
+	scalableGlyphs = make(map[rune]glyphInfo, len(characters))
+	clear(fastGlyphs[:])
+	clear(fastGlyphsValid[:])
+	for index, character := range characters {
+		if index >= cellsPerRow*cellsPerRow {
+			break
+		}
+		x, y := index%cellsPerRow, index/cellsPerRow
+		glyph := glyphInfo{cellX: x, cellY: y, advance: 0.75, visible: !unicode.IsSpace(character)}
+		for _, face := range faces {
+			id := face.glyphIndex(character)
+			if id == 0 {
+				continue
+			}
+			if !face.canDrawGlyph(id) {
+				continue
+			}
+			glyph.advance, glyph.face, glyph.id = face.advance(id), face, id
+			break
+		}
+		scalableGlyphs[character] = glyph
+		if character >= 0 && character < fastGlyphLimit {
+			fastGlyphs[character] = glyph
+			fastGlyphsValid[character] = true
+		}
+	}
+	metricsReady = true
+}
+
+func atlasCharacterSet() []rune {
+	characters := make([]rune, 0, 800)
+	appendRange := func(first, last rune) {
+		for character := first; character <= last; character++ {
+			characters = append(characters, character)
+		}
+	}
+	appendRange(32, 126)
+	appendRange(160, 383)
+	appendRange(0x370, 0x52f) // Greek, Coptic and Cyrillic.
+	characters = append(characters, '‐', '‑', '–', '—', '‘', '’', '“', '”', '„', '…', '№', '€', '₽', '•', '−')
+	return characters
+}
+
 func FontAtlas() image.Image {
+	ensureFontMetrics()
 	atlasOnce.Do(func() {
 		fontMu.Lock()
 		defer fontMu.Unlock()
-		var faces []*TrueTypeFace
-		if selectedFace != nil {
-			faces = append(faces, selectedFace)
-		}
-		faces = append(faces, fallbackFaces...)
-		if len(faces) == 0 {
-			faces = defaultSystemFaces()
-		}
+		faces := currentAtlasFacesLocked()
 		atlasImage = buildFontAtlas(faces)
 		atlasReady = true
 	})
 	return atlasImage
 }
 
-func defaultSystemFaces() []*TrueTypeFace {
-	var paths []string
+type systemFontCandidate struct {
+	path   string
+	family string
+	weight int
+	italic bool
+}
+
+func systemFontCandidates() []systemFontCandidate {
 	switch runtime.GOOS {
 	case "windows":
 		windir := os.Getenv("WINDIR")
 		if windir == "" {
 			windir = "C:\\Windows"
 		}
-		paths = []string{windir + "\\Fonts\\segoeui.ttf", windir + "\\Fonts\\arial.ttf"}
+		f := windir + "\\Fonts\\"
+		return []systemFontCandidate{
+			{path: f + "segoeui.ttf", family: "", weight: 400},
+			{path: f + "segoeuib.ttf", family: "", weight: 700},
+			{path: f + "arial.ttf", family: "", weight: 400},
+			{path: f + "arialbd.ttf", family: "", weight: 700},
+			{path: f + "consola.ttf", family: "monospace", weight: 400},
+			{path: f + "consolab.ttf", family: "monospace", weight: 700},
+			{path: f + "cour.ttf", family: "monospace", weight: 400},
+			{path: f + "courbd.ttf", family: "monospace", weight: 700},
+		}
 	case "darwin":
-		paths = []string{"/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"}
+		return []systemFontCandidate{
+			{path: "/System/Library/Fonts/Supplemental/Arial.ttf", family: "", weight: 400},
+			{path: "/System/Library/Fonts/Supplemental/Arial Bold.ttf", family: "", weight: 700},
+			{path: "/Library/Fonts/Arial.ttf", family: "", weight: 400},
+			{path: "/Library/Fonts/Arial Bold.ttf", family: "", weight: 700},
+			{path: "/System/Library/Fonts/SFNSMono.ttf", family: "monospace", weight: 400},
+			{path: "/System/Library/Fonts/Monaco.ttf", family: "monospace", weight: 400},
+			{path: "/System/Library/Fonts/Supplemental/Andale Mono.ttf", family: "monospace", weight: 400},
+			{path: "/System/Library/Fonts/Supplemental/Courier New.ttf", family: "monospace", weight: 400},
+			{path: "/System/Library/Fonts/Supplemental/Courier New Bold.ttf", family: "monospace", weight: 700},
+		}
 	default:
-		paths = []string{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-			"/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"}
+		return []systemFontCandidate{
+			{path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", family: "", weight: 400},
+			{path: "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", family: "", weight: 700},
+			{path: "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf", family: "", weight: 400},
+			{path: "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf", family: "", weight: 700},
+			{path: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", family: "monospace", weight: 400},
+			{path: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", family: "monospace", weight: 700},
+			{path: "/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf", family: "monospace", weight: 400},
+			{path: "/usr/share/fonts/truetype/liberation2/LiberationMono-Bold.ttf", family: "monospace", weight: 700},
+		}
+	}
+}
+
+func defaultSystemFaces() []*TrueTypeFace {
+	shared := getSharedSystemFaces()
+	for _, f := range shared {
+		if f.family == "" && f.weight == 400 && !f.italic {
+			return []*TrueTypeFace{f.face}
+		}
 	}
 	var faces []*TrueTypeFace
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
+	for _, c := range systemFontCandidates() {
+		if c.family != "" || c.weight != 400 || c.italic {
+			continue
+		}
+		data, err := os.ReadFile(c.path)
 		if err != nil {
 			continue
 		}
 		face, err := ParseTrueType(data)
 		if err == nil {
 			faces = append(faces, face)
+			break
 		}
 	}
 	return faces
@@ -144,7 +262,7 @@ var glyphRows = map[byte][7]byte{
 	'9':  {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},
 	':':  {0x00, 0x06, 0x06, 0x00, 0x06, 0x06},
 	';':  {0x00, 0x06, 0x06, 0x00, 0x04, 0x04, 0x08},
-	'<':  {0x02, 0x04, 0x08, 0x10, 0x08, 0x04, 0x02},
+	'<':  {0x02, 0x04, 0x08, 16, 0x08, 0x04, 0x02},
 	'=':  {0x00, 0x00, 0x1F, 0x00, 0x1F},
 	'>':  {0x08, 0x04, 0x02, 0x01, 0x02, 0x04, 0x08},
 	'?':  {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04},
@@ -191,16 +309,7 @@ func buildFontAtlas(faces []*TrueTypeFace) image.Image {
 	atlas := image.NewNRGBA(image.Rect(0, 0, fontAtlasSize, fontAtlasSize))
 	atlas.SetNRGBA(0, 0, color.NRGBA{R: 255, G: 255, B: 255, A: 255})
 
-	characters := make([]rune, 0, 800)
-	appendRange := func(first, last rune) {
-		for character := first; character <= last; character++ {
-			characters = append(characters, character)
-		}
-	}
-	appendRange(32, 126)
-	appendRange(160, 383)
-	appendRange(0x370, 0x52f) // Greek, Coptic and Cyrillic.
-	characters = append(characters, '‐', '‑', '–', '—', '‘', '’', '“', '”', '„', '…', '№', '€', '₽', '•', '−')
+	characters := atlasCharacterSet()
 	cellsPerRow := fontAtlasSize / fontCellSize
 	scalableGlyphs = make(map[rune]glyphInfo, len(characters))
 	for index, character := range characters {
@@ -235,6 +344,7 @@ func buildFontAtlas(faces []*TrueTypeFace) image.Image {
 			fastGlyphsValid[character] = true
 		}
 	}
+	metricsReady = true
 	return atlas
 }
 
@@ -255,8 +365,8 @@ func drawBitmapGlyph(atlas *image.NRGBA, rows [7]byte, x, y int) {
 }
 
 func glyphForRune(character rune) glyphInfo {
-	if !atlasReady {
-		FontAtlas()
+	if !metricsReady {
+		ensureFontMetrics()
 	}
 	if character >= 32 && character < fastGlyphLimit {
 		if character == '\u0085' || character == '\u00ad' {

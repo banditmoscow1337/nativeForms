@@ -20,6 +20,10 @@ type StackModelUpdater interface {
 	Update(index int, row Component)
 }
 
+func recycleVirtualRow(child Component) {
+	ReleaseComponent(child)
+}
+
 // VirtualStack is a vertical container for large forms. Place it inside a
 // ScrollPanel; only rows near the clipped viewport are created and arranged.
 // Heights are indexed once and rebuilt when ModelChanged is called.
@@ -34,8 +38,10 @@ type VirtualStack struct {
 	activeKeys     []string
 	activeChildren []Component
 	scratchKeys    []string
+	evicted        []Component
 	dirty          bool
 	reconcileKeys  bool
+	keysSynced     bool
 }
 
 func NewVirtualStack(model StackModel) *VirtualStack {
@@ -46,8 +52,10 @@ func NewVirtualStack(model StackModel) *VirtualStack {
 		activeKeys:     make([]string, 0, 64),
 		activeChildren: make([]Component, 0, 64),
 		scratchKeys:    make([]string, 0, 64),
+		evicted:        make([]Component, 0, 16),
 		dirty:          true,
 		reconcileKeys:  true,
+		keysSynced:     true,
 	}
 	v.children = make([]Component, 0, 64)
 	v.owner = v
@@ -79,12 +87,44 @@ func (v *VirtualStack) indexRows() {
 	v.reconcileKeys = true
 }
 
+func (v *VirtualStack) syncActiveKeysToMap() {
+	if v.keysSynced {
+		return
+	}
+	clear(v.current)
+	for offset, child := range v.activeChildren {
+		if child == nil {
+			continue
+		}
+		var key string
+		if offset < len(v.activeKeys) && v.activeKeys[offset] != "" {
+			key = v.activeKeys[offset]
+		} else if v.Model != nil {
+			key = v.Model.Key(v.activeStart + offset)
+		}
+		if key != "" {
+			v.current[key] = child
+		}
+	}
+	v.keysSynced = true
+}
+
 func (v *VirtualStack) ModelChanged() {
+	var beforeTotal float32
+	if len(v.prefix) > 0 {
+		beforeTotal = v.prefix[len(v.prefix)-1]
+	}
+	v.syncActiveKeysToMap()
 	v.dirty = true
 	v.reconcileKeys = true
 	v.indexRows()
 	v.Arrange(v.rect)
-	v.invalidateLayout()
+	afterTotal := v.prefix[len(v.prefix)-1]
+	if !v.rect.Empty() && (v.flex > 0 || beforeTotal == afterTotal) {
+		v.InvalidatePaint()
+	} else {
+		v.invalidateLayout()
+	}
 }
 
 func (v *VirtualStack) Measure(c Constraints) Vec2 {
@@ -120,64 +160,66 @@ func (v *VirtualStack) Arrange(r Rect) {
 		v.spare = make(map[string]Component, 64)
 	}
 
+	updater, canUpdate := v.Model.(StackModelUpdater)
+
 	// Fast path when scrolling without ModelChanged: rows in the overlapping
-	// index window retain their keys and components without re-querying Key(i).
-	if !v.reconcileKeys && len(v.activeChildren) == v.activeEnd-v.activeStart && len(v.activeKeys) == len(v.activeChildren) {
+	// index window retain their components by index offset without calling
+	// Model.Key(i) or mutating the key map.
+	if !v.reconcileKeys && len(v.activeChildren) == v.activeEnd-v.activeStart {
+		evicted := v.evicted[:0]
 		for i := v.activeStart; i < v.activeEnd; i++ {
 			if i >= start && i < end {
 				continue
 			}
 			child := v.activeChildren[i-v.activeStart]
-			key := v.activeKeys[i-v.activeStart]
-			delete(v.current, key)
 			if child != nil {
 				if v.manager != nil {
 					v.manager.clearSubtreeInteraction(child.UIState())
 				}
-				bindTree(child, nil, nil)
+				if canUpdate {
+					evicted = append(evicted, child)
+				} else {
+					bindTree(child, nil, nil)
+					recycleVirtualRow(child)
+				}
 			}
 		}
-		nextKeys := v.scratchKeys[:0]
 		v.children = v.children[:0]
 		for i := start; i < end; i++ {
-			var key string
 			var child Component
 			if i >= v.activeStart && i < v.activeEnd {
-				offset := i - v.activeStart
-				key = v.activeKeys[offset]
-				child = v.activeChildren[offset]
+				child = v.activeChildren[i-v.activeStart]
+			} else if canUpdate && len(evicted) > 0 {
+				child = evicted[len(evicted)-1]
+				evicted = evicted[:len(evicted)-1]
+				updater.Update(i, child)
 			} else {
-				key = v.Model.Key(i)
-				child = v.current[key]
+				child = v.Model.Build(i)
 				if child != nil {
-					if updater, ok := v.Model.(StackModelUpdater); ok {
-						updater.Update(i, child)
+					bindTree(child, v, v.manager)
+					if v.themed {
+						applyTheme(child, v.theme)
 					}
-				} else {
-					child = v.Model.Build(i)
-					if child != nil {
-						bindTree(child, v, v.manager)
-						if v.themed {
-							applyTheme(child, v.theme)
-						}
-					}
-				}
-				if child != nil {
-					v.current[key] = child
 				}
 			}
-			nextKeys = append(nextKeys, key)
 			if child != nil {
 				v.children = append(v.children, child)
 				child.Arrange(Rect{X: r.X, Y: r.Y + v.prefix[i], W: r.W, H: v.prefix[i+1] - v.prefix[i]})
 			}
 		}
+		for _, child := range evicted {
+			bindTree(child, nil, nil)
+			recycleVirtualRow(child)
+		}
+		v.evicted = evicted[:0]
 		v.activeStart, v.activeEnd = start, end
-		v.activeKeys, v.scratchKeys = nextKeys, v.activeKeys[:0]
+		v.activeKeys = v.activeKeys[:0]
 		v.activeChildren = append(v.activeChildren[:0], v.children...)
+		v.keysSynced = false
 		return
 	}
 
+	v.syncActiveKeysToMap()
 	clear(v.spare)
 	v.children = v.children[:0]
 	v.activeKeys = v.activeKeys[:0]
@@ -185,7 +227,7 @@ func (v *VirtualStack) Arrange(r Rect) {
 		key := v.Model.Key(i)
 		child := v.current[key]
 		if child != nil {
-			if updater, ok := v.Model.(StackModelUpdater); ok {
+			if canUpdate {
 				updater.Update(i, child)
 			}
 		} else {
@@ -210,12 +252,14 @@ func (v *VirtualStack) Arrange(r Rect) {
 				v.manager.clearSubtreeInteraction(child.UIState())
 			}
 			bindTree(child, nil, nil)
+			recycleVirtualRow(child)
 		}
 	}
 	v.current, v.spare = v.spare, v.current
 	v.activeStart, v.activeEnd = start, end
 	v.activeChildren = append(v.activeChildren[:0], v.children...)
 	v.reconcileKeys = false
+	v.keysSynced = true
 }
 
 func (v *VirtualStack) Paint(*Canvas) {}

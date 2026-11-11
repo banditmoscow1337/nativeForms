@@ -26,22 +26,26 @@ type shapeKey struct {
 }
 type coreTextShaper struct {
 	sync.Mutex
-	cache          map[shapeKey]ui.ShapedText
-	bytes          int
-	fontKey        uintptr
-	font           func(uint32, float64, uintptr) uintptr
-	line           func(uintptr) uintptr
-	bounds         func(uintptr, *float64, *float64, *float64) float64
-	ink            func(uintptr, uintptr) rect
-	offset         func(uintptr, int64, *float64) float64
-	draw           func(uintptr, uintptr)
-	release        func(uintptr)
-	bitmap         func(unsafe.Pointer, uintptr, uintptr, uintptr, uintptr, uintptr, uint32) uintptr
-	translate      func(uintptr, float64, float64)
-	scale          func(uintptr, float64, float64)
-	textPosition   func(uintptr, float64, float64)
-	fill           func(uintptr, float64, float64, float64, float64)
-	contextRelease func(uintptr)
+	cache           map[shapeKey]ui.ShapedText
+	bytes           int
+	fontKey         uintptr
+	font            func(uint32, float64, uintptr) uintptr
+	line            func(uintptr) uintptr
+	bounds          func(uintptr, *float64, *float64, *float64) float64
+	ink             func(uintptr, uintptr) rect
+	offset          func(uintptr, int64, *float64) float64
+	draw            func(uintptr, uintptr)
+	release         func(uintptr)
+	bitmap          func(unsafe.Pointer, uintptr, uintptr, uintptr, uintptr, uintptr, uint32) uintptr
+	translate       func(uintptr, float64, float64)
+	scale           func(uintptr, float64, float64)
+	textPosition    func(uintptr, float64, float64)
+	fill            func(uintptr, float64, float64, float64, float64)
+	antialias       func(uintptr, bool)
+	smoothFonts     func(uintptr, bool)
+	subpixelPos     func(uintptr, bool)
+	quantizeSubpix  func(uintptr, bool)
+	contextRelease  func(uintptr)
 }
 
 func EnableCoreText() error {
@@ -77,6 +81,19 @@ func EnableCoreText() error {
 				return
 			}
 			purego.RegisterFunc(entry.fn, address)
+		}
+		for _, opt := range []struct {
+			name string
+			fn   any
+		}{
+			{"CGContextSetShouldAntialias", &s.antialias},
+			{"CGContextSetShouldSmoothFonts", &s.smoothFonts},
+			{"CGContextSetAllowsFontSubpixelPositioning", &s.subpixelPos},
+			{"CGContextSetShouldSubpixelPositionFonts", &s.quantizeSubpix},
+		} {
+			if addr, e := purego.Dlsym(cg, opt.name); e == nil && addr != 0 {
+				purego.RegisterFunc(opt.fn, addr)
+			}
 		}
 		key, err := purego.Dlsym(ct, "kCTFontAttributeName")
 		if err != nil {
@@ -153,13 +170,25 @@ func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32)
 		if width <= 0 || height <= 0 || width > 65536 || height > 2048 || int64(width)*int64(height) > 4<<20 {
 			return ui.ShapedText{}, false
 		}
-		pixels := make([]byte, width*height)
+		mask := image.NewAlpha(image.Rect(0, 0, width, height))
 		var pin runtime.Pinner
-		pin.Pin(&pixels[0])
+		pin.Pin(&mask.Pix[0])
 		defer pin.Unpin()
-		context := s.bitmap(unsafe.Pointer(&pixels[0]), uintptr(width), uintptr(height), 8, uintptr(width), 0, 7)
+		context := s.bitmap(unsafe.Pointer(&mask.Pix[0]), uintptr(width), uintptr(height), 8, uintptr(width), 0, 7)
 		if context == 0 {
 			return ui.ShapedText{}, false
+		}
+		if s.antialias != nil {
+			s.antialias(context, true)
+		}
+		if s.smoothFonts != nil {
+			s.smoothFonts(context, true)
+		}
+		if s.subpixelPos != nil {
+			s.subpixelPos(context, true)
+		}
+		if s.quantizeSubpix != nil {
+			s.quantizeSubpix(context, true)
 		}
 		s.scale(context, float64(pixelScale), float64(pixelScale))
 		s.translate(context, -x0, -y0)
@@ -167,8 +196,7 @@ func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32)
 		s.fill(context, 1, 1, 1, 1)
 		s.draw(line, context)
 		s.contextRelease(context)
-		runtime.KeepAlive(pixels)
-		mask := coreTextMask(pixels, width, height)
+		runtime.KeepAlive(mask.Pix)
 		baseline := (float64(fontSize)*1.2-ascent-descent)/2 + ascent
 		result.Mask = mask
 		result.Offset = ui.Vec2{X: float32(x0), Y: float32(baseline - y1)}
@@ -177,7 +205,7 @@ func (s *coreTextShaper) ShapeAtScale(text string, fontSize, pixelScale float32)
 	if result.Mask != nil {
 		cost += len(result.Mask.Pix)
 	}
-	if len(s.cache) >= 512 || s.bytes+cost > 8<<20 {
+	if len(s.cache) >= 512 || s.bytes+cost > 4<<20 {
 		s.cache = make(map[shapeKey]ui.ShapedText)
 		s.bytes = 0
 	}

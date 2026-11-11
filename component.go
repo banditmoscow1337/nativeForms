@@ -15,6 +15,12 @@ type ViewportCuller interface {
 	Cull(viewport Rect) bool
 }
 
+// textSizeMeasurer is implemented by text-bearing widgets to report their
+// natural size fitted tightly to their current text content.
+type textSizeMeasurer interface {
+	measureTextSize() Vec2
+}
+
 type State struct {
 	owner    Component
 	parent   Component
@@ -24,29 +30,34 @@ type State struct {
 	theme    Theme
 	themed   bool
 
-	preferred Vec2
-	minimum   Vec2
-	maximum   Vec2
-	margin    Insets
-	offset    Vec2
-	anchor    Anchor
-	flex      float32
-	basis     float32
-	shrink    float32
-	shrinkSet bool
+	preferred    Vec2
+	minimum      Vec2
+	maximum      Vec2
+	margin       Insets
+	offset       Vec2
+	anchor       Anchor
+	flex         float32
+	basis        float32
+	shrink       float32
+	shrinkSet    bool
+	cornerRadius float32
+	autoSize     bool
 
 	hidden    bool
 	disabled  bool
 	focusable bool
 	clip      bool
+	frameless bool
 	hovered   bool
 	pressed   bool
 	focused   bool
 
-	onEvent       func(Event) bool
-	tooltip       string
-	accessibleID  AccessibleID
-	accessibility AccessibilityInfo
+	onEvent         func(Event) bool
+	contextMenu     []MenuItem
+	contextMenuFunc func(x, y float32) []MenuItem
+	tooltip         string
+	accessibleID    AccessibleID
+	accessibility   AccessibilityInfo
 }
 
 func (state *State) UIState() *State { return state }
@@ -58,37 +69,46 @@ func (state *State) fontContext() *FontContext {
 	return state.manager.FontContext()
 }
 
+func (state *State) effectiveFontSpec(spec FontSpec) FontSpec {
+	if spec.Scale <= 0 && state.manager != nil {
+		if s := state.manager.effectiveScaleLocked(); s > 0 {
+			spec.Scale = s
+		}
+	}
+	return spec
+}
+
 func (state *State) textWidth(text string, spec FontSpec) float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.Advance(text, spec)
+		return fonts.Advance(text, state.effectiveFontSpec(spec))
 	}
 	return measureTextLine(text, spec.Size)
 }
 
 func (state *State) measureText(text string, spec FontSpec) Vec2 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.Measure(text, spec)
+		return fonts.Measure(text, state.effectiveFontSpec(spec))
 	}
 	return MeasureText(text, spec.Size)
 }
 
 func (state *State) caretX(text string, spec FontSpec, index int) float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.CaretX(text, spec, index)
+		return fonts.CaretX(text, state.effectiveFontSpec(spec), index)
 	}
 	return TextCaretX(text, spec.Size, index)
 }
 
 func (state *State) caretPositions(text string, spec FontSpec) []float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.layoutShared(text, spec).Carets
+		return fonts.layoutSharedCarets(text, state.effectiveFontSpec(spec)).Carets
 	}
 	return textCaretPositions(text, spec.Size)
 }
 
 func (state *State) caretPositionsInto(text string, spec FontSpec, dst []float32) []float32 {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.layoutShared(text, spec).Carets
+		return fonts.CaretPositionsInto(text, state.effectiveFontSpec(spec), dst)
 	}
 	return textCaretPositionsInto(text, spec.Size, dst)
 }
@@ -102,7 +122,7 @@ func (state *State) wrapText(text string, width float32, spec FontSpec) string {
 
 func (state *State) ellipsizeText(text string, width float32, spec FontSpec) string {
 	if fonts := state.fontContext(); fonts != nil {
-		return fonts.Ellipsize(text, width, spec)
+		return fonts.Ellipsize(text, width, state.effectiveFontSpec(spec))
 	}
 	return ellipsizeTextWith(text, width, func(s string) float32 { return measureTextLine(s, spec.Size) }, "…")
 }
@@ -115,10 +135,57 @@ func (state *State) Arrange(rect Rect)    { state.rect = rect }
 func (state *State) Paint(canvas *Canvas) {}
 
 func (state *State) Handle(event Event) bool {
-	if state.onEvent != nil {
-		return state.onEvent(event)
+	if state.onEvent != nil && state.onEvent(event) {
+		return true
+	}
+	if event.Type == PointerDown && event.Button == MouseRight {
+		return state.OpenContextMenuAt(event.X, event.Y)
 	}
 	return false
+}
+
+// SetContextMenu attaches a static right-click context menu to the component.
+func (state *State) SetContextMenu(items []MenuItem) {
+	if len(items) == 0 {
+		state.contextMenu = nil
+		return
+	}
+	state.contextMenu = append(state.contextMenu[:0], items...)
+}
+
+// ContextMenu returns a copy of the component's static context menu items.
+func (state *State) ContextMenu() []MenuItem {
+	return append([]MenuItem(nil), state.contextMenu...)
+}
+
+// SetContextMenuBuilder attaches a dynamic builder invoked on right-click (or
+// programmatic context menu activation) with the pointer coordinates.
+func (state *State) SetContextMenuBuilder(fn func(x, y float32) []MenuItem) {
+	state.contextMenuFunc = fn
+}
+
+// ContextMenuBuilder returns the dynamic context menu builder, if any.
+func (state *State) ContextMenuBuilder() func(x, y float32) []MenuItem {
+	return state.contextMenuFunc
+}
+
+func (state *State) buildContextMenuItems(x, y float32) []MenuItem {
+	if state.contextMenuFunc != nil {
+		return state.contextMenuFunc(x, y)
+	}
+	return state.contextMenu
+}
+
+// OpenContextMenuAt opens the component's configured context menu at (x, y).
+func (state *State) OpenContextMenuAt(x, y float32) bool {
+	if state == nil || state.manager == nil || !state.Enabled() {
+		return false
+	}
+	items := state.buildContextMenuItems(x, y)
+	if len(items) == 0 {
+		return false
+	}
+	return state.manager.OpenContextMenu(items, x, y) != 0
 }
 
 func (state *State) Add(children ...Component) {
@@ -197,462 +264,80 @@ func (state *State) Children() []Component {
 	return append([]Component(nil), state.children...)
 }
 
-func (state *State) Parent() Component   { return state.parent }
-func (state *State) Bounds() Rect        { return state.rect }
-func (state *State) Visible() bool       { return !state.hidden }
-func (state *State) Enabled() bool       { return !state.disabled }
-func (state *State) Focusable() bool     { return state.focusable }
-func (state *State) Hovered() bool       { return state.hovered }
-func (state *State) Pressed() bool       { return state.pressed }
-func (state *State) Focused() bool       { return state.focused }
-func (state *State) Clipped() bool       { return state.clip }
-func (state *State) Flex() float32       { return state.flex }
-func (state *State) Margin() Insets      { return state.margin }
-func (state *State) PreferredSize() Vec2 { return state.preferred }
-func (state *State) Theme() Theme {
-	if state.themed {
-		return state.theme
-	}
-	return DefaultTheme()
+// ChildCount returns the number of direct child components without allocating.
+func (state *State) ChildCount() int {
+	return len(state.children)
 }
 
-func (state *State) SetVisible(visible bool) {
-	if state.hidden == !visible {
-		return
+// ChildAt returns the direct child component at index, or nil if out of range.
+func (state *State) ChildAt(index int) Component {
+	if index < 0 || index >= len(state.children) {
+		return nil
 	}
-	if !visible && state.manager != nil {
-		state.manager.clearSubtreeInteraction(state)
-	}
-	state.hidden = !visible
-	state.invalidateLayout()
-}
-func (state *State) SetEnabled(enabled bool) {
-	if state.disabled == !enabled {
-		return
-	}
-	if !enabled && state.manager != nil {
-		state.manager.clearSubtreeInteraction(state)
-	}
-	state.disabled = !enabled
-	state.invalidatePaint()
-}
-func (state *State) SetFocusable(focusable bool) {
-	state.focusable = focusable
-	if !focusable && state.manager != nil && sameComponent(state.owner, state.manager.focused) {
-		state.manager.setFocus(nil)
-	}
-	state.invalidatePaint()
-}
-func (state *State) SetClip(clip bool)    { state.clip = clip; state.invalidatePaint() }
-func (state *State) SetFlex(flex float32) { state.flex = maxFloat32(0, flex); state.invalidateLayout() }
-func (state *State) SetFlexBasis(basis float32) {
-	state.basis = maxFloat32(0, basis)
-	state.invalidateLayout()
-}
-func (state *State) SetFlexShrink(shrink float32) {
-	state.shrink = maxFloat32(0, shrink)
-	state.shrinkSet = true
-	state.invalidateLayout()
-}
-func (state *State) SetMargin(margin Insets)             { state.margin = margin; state.invalidateLayout() }
-func (state *State) SetOffset(offset Vec2)               { state.offset = offset; state.invalidateLayout() }
-func (state *State) SetAnchor(anchor Anchor)             { state.anchor = anchor; state.invalidateLayout() }
-func (state *State) SetPreferredSize(size Vec2)          { state.preferred = size; state.invalidateLayout() }
-func (state *State) SetMinimumSize(size Vec2)            { state.minimum = size; state.invalidateLayout() }
-func (state *State) SetMaximumSize(size Vec2)            { state.maximum = size; state.invalidateLayout() }
-func (state *State) SetEventHandler(fn func(Event) bool) { state.onEvent = fn }
-func (state *State) SetTooltip(text string)              { state.tooltip = text }
-func (state *State) Tooltip() string                     { return state.tooltip }
-
-func (state *State) invalidateLayout() {
-	if state.manager != nil {
-		state.manager.InvalidateLayout()
-	}
-}
-func (state *State) invalidatePaint() {
-	if state.manager != nil {
-		state.manager.InvalidatePaint()
-	}
+	return state.children[index]
 }
 
-func bindTree(component Component, parent Component, manager *Manager) {
+// ReleaseComponent detaches and recycles a component subtree that is no longer
+// mounted in a parent or attached to an active Manager, returning pooled
+// widgets (such as TextField and CodeEditor) and unreferenced initial documents
+// back to their internal pools.
+func ReleaseComponent(component Component) {
 	if component == nil {
 		return
 	}
 	state := component.UIState()
-	state.owner = component
-	state.parent = parent
-	state.manager = manager
-	if manager != nil {
-		if panel, ok := component.(*Panel); ok && len(panel.children) > 0 {
-			panel.ensureLayoutCapacity(len(panel.children))
-		}
+	if state == nil || state.parent != nil || state.manager != nil {
+		return
 	}
-	for _, child := range state.children {
-		bindTree(child, component, manager)
-	}
+	releaseDetachedSubtree(component)
 }
 
-func applyTheme(component Component, theme Theme) {
+func releaseDetachedSubtree(component Component) {
 	if component == nil {
 		return
 	}
 	state := component.UIState()
-	state.theme = theme
-	state.themed = true
-	for _, child := range state.children {
-		applyTheme(child, theme)
-	}
-}
-
-type Panel struct {
-	State
-	Direction   Direction
-	Align       Align
-	Gap         float32
-	Padding     Insets
-	Background  Color
-	Border      Color
-	BorderWidth float32
-
-	layoutChildren []Component
-	layoutSizes    []Vec2
-	layoutWeights  []float32
-	layoutActive   []bool
-}
-
-func NewPanel(direction ...Direction) *Panel {
-	panel := &Panel{Align: AlignStretch}
-	if len(direction) > 0 {
-		panel.Direction = direction[0]
-	}
-	panel.State.owner = panel
-	return panel
-}
-
-func NewStack(direction Direction, gap float32) *Panel {
-	panel := NewPanel(direction)
-	panel.Gap = gap
-	return panel
-}
-
-func (panel *Panel) ensureLayoutCapacity(n int) {
-	if n <= 0 {
+	if state == nil || state.manager != nil {
 		return
 	}
-	if cap(panel.layoutChildren) < n {
-		panel.layoutChildren = make([]Component, 0, n)
+	children := state.children
+	state.children = nil
+	for _, child := range children {
+		if child != nil {
+			cs := child.UIState()
+			if cs != nil {
+				cs.parent = nil
+				cs.manager = nil
+			}
+			releaseDetachedSubtree(child)
+		}
 	}
-	if cap(panel.layoutSizes) < n {
-		panel.layoutSizes = make([]Vec2, 0, n)
-	}
-	if cap(panel.layoutWeights) < n {
-		panel.layoutWeights = make([]float32, n)
-	}
-	if cap(panel.layoutActive) < n {
-		panel.layoutActive = make([]bool, n)
+	switch w := component.(type) {
+	case *TextField:
+		recycleTextField(w)
+	case *CodeEditor:
+		recycleCodeEditor(w)
 	}
 }
 
-func (panel *Panel) Measure(constraints Constraints) Vec2 {
-	innerMax := Vec2{
-		X: maxFloat32(0, constraints.Max.X-panel.Padding.Left-panel.Padding.Right),
-		Y: maxFloat32(0, constraints.Max.Y-panel.Padding.Top-panel.Padding.Bottom),
+func canAutoRecycleRoot(component Component) bool {
+	if component == nil {
+		return false
 	}
-	childConstraints := Constraints{Max: innerMax, BoundedX: constraints.HasMaxX(), BoundedY: constraints.HasMaxY()}
-	visibleCount := 0
-	content := Vec2{}
-
-	for _, child := range panel.children {
-		if child == nil || !child.UIState().Visible() {
-			continue
-		}
-		visibleCount++
-		size := child.Measure(childConstraints)
-		margin := child.UIState().margin
-		outerW := size.X + margin.Left + margin.Right
-		outerH := size.Y + margin.Top + margin.Bottom
-		switch panel.Direction {
-		case Horizontal:
-			content.X += outerW
-			content.Y = maxFloat32(content.Y, outerH)
-		case Vertical:
-			content.X = maxFloat32(content.X, outerW)
-			content.Y += outerH
-		default:
-			content.X = maxFloat32(content.X, outerW)
-			content.Y = maxFloat32(content.Y, outerH)
-		}
+	state := component.UIState()
+	if state == nil || state.parent != nil || state.manager != nil || state.onEvent != nil || len(state.children) > 0 {
+		return false
 	}
-	if visibleCount > 1 && panel.Direction != Overlay {
-		gap := panel.Gap * float32(visibleCount-1)
-		if panel.Direction == Horizontal {
-			content.X += gap
-		} else {
-			content.Y += gap
-		}
-	}
-
-	content.X += panel.Padding.Left + panel.Padding.Right
-	content.Y += panel.Padding.Top + panel.Padding.Bottom
-	content.X = maxFloat32(content.X, panel.preferred.X)
-	content.Y = maxFloat32(content.Y, panel.preferred.Y)
-	content.X = maxFloat32(content.X, panel.minimum.X)
-	content.Y = maxFloat32(content.Y, panel.minimum.Y)
-	if panel.maximum.X > 0 {
-		content.X = minFloat32(content.X, panel.maximum.X)
-	}
-	if panel.maximum.Y > 0 {
-		content.Y = minFloat32(content.Y, panel.maximum.Y)
-	}
-	return constraints.Constrain(content)
-}
-
-func (panel *Panel) Arrange(rect Rect) {
-	panel.rect = rect
-	inner := rect.Inset(panel.Padding)
-	if panel.Direction == Overlay {
-		for _, child := range panel.children {
-			if child != nil && child.UIState().Visible() {
-				arrangeOverlayChild(child, inner)
-			}
-		}
-		return
-	}
-	panel.arrangeStack(inner)
-}
-
-func (panel *Panel) arrangeStack(inner Rect) {
-	panel.ensureLayoutCapacity(len(panel.children))
-	children := panel.layoutChildren[:0]
-	sizes := panel.layoutSizes[:0]
-	mainAvailable := inner.W
-	if panel.Direction == Vertical {
-		mainAvailable = inner.H
-	}
-	total := float32(0)
-	for _, child := range panel.children {
-		if child == nil || !child.UIState().Visible() {
-			continue
-		}
-		limits := Constraints{Max: Vec2{X: inner.W, Y: inner.H}}
-		if panel.Direction == Vertical {
-			limits.BoundedX = true
-			limits.Max.Y = 0
-		} else {
-			limits.BoundedY = true
-			limits.Max.X = 0
-		}
-		size := child.Measure(limits)
-		state := child.UIState()
-		if state.basis > 0 {
-			if panel.Direction == Vertical {
-				size.Y = state.basis
-			} else {
-				size.X = state.basis
-			}
-		}
-		children = append(children, child)
-		sizes = append(sizes, size)
-		if panel.Direction == Vertical {
-			total += size.Y + state.margin.Top + state.margin.Bottom
-		} else {
-			total += size.X + state.margin.Left + state.margin.Right
-		}
-	}
-	panel.layoutChildren, panel.layoutSizes = children, sizes
-	if len(children) > 1 {
-		total += panel.Gap * float32(len(children)-1)
-	}
-	delta := mainAvailable - total
-	weights := panel.layoutWeights[:len(children)]
-	active := panel.layoutActive[:len(children)]
-	weight := float32(0)
-	for i, child := range children {
-		state := child.UIState()
-		if delta >= 0 {
-			weights[i] = state.flex
-		} else {
-			shrink := float32(1)
-			if state.shrinkSet {
-				shrink = state.shrink
-			}
-			base := sizes[i].X
-			if panel.Direction == Vertical {
-				base = sizes[i].Y
-			}
-			weights[i] = shrink * base
-		}
-		active[i] = weights[i] > 0
-		weight += weights[i]
-	}
-	remaining := delta
-	for weight > 0 {
-		frozen := false
-		for i, child := range children {
-			if !active[i] {
-				continue
-			}
-			state := child.UIState()
-			base, low, high := sizes[i].X, state.minimum.X, state.maximum.X
-			if panel.Direction == Vertical {
-				base, low, high = sizes[i].Y, state.minimum.Y, state.maximum.Y
-			}
-			proposed := base + remaining*weights[i]/weight
-			bounded := maxFloat32(low, proposed)
-			if high > 0 {
-				bounded = minFloat32(bounded, high)
-			}
-			if bounded != proposed {
-				if panel.Direction == Vertical {
-					sizes[i].Y = bounded
-				} else {
-					sizes[i].X = bounded
-				}
-				remaining -= bounded - base
-				weight -= weights[i]
-				active[i] = false
-				frozen = true
-			}
-		}
-		if frozen {
-			continue
-		}
-		for i := range children {
-			if !active[i] {
-				continue
-			}
-			if panel.Direction == Vertical {
-				sizes[i].Y += remaining * weights[i] / weight
-			} else {
-				sizes[i].X += remaining * weights[i] / weight
-			}
-		}
-		break
-	}
-	baseline := float32(0)
-	if panel.Align == AlignBaseline && panel.Direction == Horizontal {
-		for i, child := range children {
-			height := child.Measure(Constraints{Max: Vec2{X: sizes[i].X, Y: inner.H}, BoundedX: true, BoundedY: true}).Y
-			sizes[i].Y = height
-			value := height * 0.8
-			if b, ok := child.(interface{ Baseline() float32 }); ok {
-				value = b.Baseline()
-			}
-			baseline = maxFloat32(baseline, value+child.UIState().margin.Top)
-		}
-	}
-	cursor := inner.X
-	if panel.Direction == Vertical {
-		cursor = inner.Y
-	}
-	for i, child := range children {
-		state := child.UIState()
-		margin := state.margin
-		size := sizes[i]
-		if panel.Direction == Horizontal {
-			cursor += margin.Left
-			cross := maxFloat32(0, inner.H-margin.Top-margin.Bottom)
-			y, height := alignCross(inner.Y+margin.Top, cross, size.Y, panel.Align)
-			if panel.Align == AlignBaseline {
-				value := size.Y * 0.8
-				if b, ok := child.(interface{ Baseline() float32 }); ok {
-					value = b.Baseline()
-				}
-				y = inner.Y + baseline - value
-				height = size.Y
-			}
-			child.Arrange(Rect{X: cursor, Y: y, W: maxFloat32(0, size.X), H: height})
-			cursor += size.X + margin.Right + panel.Gap
-		} else {
-			cursor += margin.Top
-			cross := maxFloat32(0, inner.W-margin.Left-margin.Right)
-			x, width := alignCross(inner.X+margin.Left, cross, size.X, panel.Align)
-			child.Arrange(Rect{X: x, Y: cursor, W: width, H: maxFloat32(0, size.Y)})
-			cursor += size.Y + margin.Bottom + panel.Gap
-		}
-	}
-}
-
-func (panel *Panel) Paint(canvas *Canvas) {
-	if panel.Background.A > 0 {
-		canvas.Rect(panel.rect, panel.Background)
-	}
-	if panel.BorderWidth > 0 && panel.Border.A > 0 {
-		canvas.Border(panel.rect, panel.BorderWidth, panel.Border)
-	}
-}
-
-func arrangeOverlayChild(child Component, inner Rect) {
-	state := child.UIState()
-	margin := state.margin
-	available := inner.Inset(margin)
-	if state.anchor == AnchorFill {
-		child.Arrange(Rect{
-			X: available.X + state.offset.X,
-			Y: available.Y + state.offset.Y,
-			W: maxFloat32(0, available.W-state.offset.X),
-			H: maxFloat32(0, available.H-state.offset.Y),
-		})
-		return
-	}
-	size := child.Measure(Constraints{Max: Vec2{X: available.W, Y: available.H}})
-	x := available.X
-	y := available.Y
-	switch state.anchor {
-	case AnchorTop, AnchorCenter, AnchorBottom:
-		x += (available.W - size.X) * 0.5
-	case AnchorTopRight, AnchorRight, AnchorBottomRight:
-		x += available.W - size.X
-	}
-	switch state.anchor {
-	case AnchorLeft, AnchorCenter, AnchorRight:
-		y += (available.H - size.Y) * 0.5
-	case AnchorBottomLeft, AnchorBottom, AnchorBottomRight:
-		y += available.H - size.Y
-	}
-	child.Arrange(Rect{X: x + state.offset.X, Y: y + state.offset.Y, W: size.X, H: size.Y})
-}
-
-func alignCross(start, available, requested float32, align Align) (position, size float32) {
-	size = minFloat32(requested, available)
-	switch align {
-	case AlignCenter:
-		position = start + (available-size)*0.5
-	case AlignEnd:
-		position = start + available - size
-	case AlignStretch:
-		position = start
-		size = available
+	switch w := component.(type) {
+	case *TextField:
+		return w.OnChange == nil && w.OnSubmit == nil && w.Validate == nil &&
+			(w.editor == nil || w.editor.version == 0)
+	case *CodeEditor:
+		return w.OnChange == nil && w.OnBreakpointChange == nil &&
+			w.OnGoToDefinition == nil && w.ContextMenuItems == nil &&
+			len(w.breakpoints) == 0 && len(w.diagnostics) == 0 &&
+			(w.Document == nil || w.Document.Version() <= 1)
 	default:
-		position = start
+		return false
 	}
-	return
-}
-
-type Spacer struct{ State }
-
-func NewSpacer(width, height float32) *Spacer {
-	spacer := &Spacer{}
-	spacer.owner = spacer
-	spacer.preferred = Vec2{X: width, Y: height}
-	return spacer
-}
-
-func measureWithState(state *State, desired Vec2, constraints Constraints) Vec2 {
-	if state.preferred.X > 0 {
-		desired.X = state.preferred.X
-	}
-	if state.preferred.Y > 0 {
-		desired.Y = state.preferred.Y
-	}
-	desired.X = maxFloat32(desired.X, state.minimum.X)
-	desired.Y = maxFloat32(desired.Y, state.minimum.Y)
-	if state.maximum.X > 0 {
-		desired.X = minFloat32(desired.X, state.maximum.X)
-	}
-	if state.maximum.Y > 0 {
-		desired.Y = minFloat32(desired.Y, state.maximum.Y)
-	}
-	return constraints.Constrain(desired)
 }

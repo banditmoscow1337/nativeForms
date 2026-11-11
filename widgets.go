@@ -1,8 +1,6 @@
 package nativeforms
 
-import (
-	"fmt"
-)
+import "strings"
 
 func resolveFontSpec(spec FontSpec, fontSize, themeSize float32) FontSpec {
 	if fontSize > 0 {
@@ -15,6 +13,18 @@ func resolveFontSpec(spec FontSpec, fontSize, themeSize float32) FontSpec {
 }
 
 func controlColors(state *State, theme *Theme) (background, border Color) {
+	if state.Frameless() {
+		if !state.Enabled() {
+			return Transparent, Transparent
+		}
+		if state.Pressed() {
+			return theme.ControlPressed, Transparent
+		}
+		if state.Hovered() || state.Focused() {
+			return theme.ControlHover, Transparent
+		}
+		return Transparent, Transparent
+	}
 	background = theme.Control
 	border = theme.Border
 	if !state.Enabled() {
@@ -28,16 +38,72 @@ func controlColors(state *State, theme *Theme) (background, border Color) {
 	return background, border
 }
 
+func paintControlSurface(canvas *Canvas, state *State) {
+	background, border := controlColors(state, canvas.theme)
+	radius := state.effectiveCornerRadius(canvas.theme)
+	if background.A > 0 {
+		canvas.RoundedRect(state.rect, radius, background)
+	}
+	if border.A > 0 {
+		canvas.RoundedBorder(state.rect, radius, 1, border)
+	}
+}
+
+func enabledOpacity(enabled bool) float32 {
+	if enabled {
+		return 1
+	}
+	return 0.5
+}
+
+func handleControlActivation(state *State, event Event, onActivate func()) bool {
+	if !state.Enabled() {
+		return false
+	}
+	switch event.Type {
+	case PointerDown:
+		if event.Button == MouseLeft {
+			return true
+		}
+	case PointerUp:
+		if event.Button == MouseLeft && state.Pressed() && state.rect.Contains(event.X, event.Y) {
+			if onActivate != nil {
+				onActivate()
+			}
+			return true
+		}
+	case KeyDown:
+		if !event.Repeat && (event.Key == KeyEnter || event.Key == KeySpace) {
+			if onActivate != nil {
+				onActivate()
+			}
+			return true
+		}
+	}
+	return state.Handle(event)
+}
+
 type Label struct {
 	State
-	Text     string
-	TextFunc func() string
-	Color    Color
-	FontSize float32
-	Font     FontSpec
-	Align    TextAlign
-	Wrap     bool
-	Ellipsis bool
+	Text       string
+	TextFunc   func() string
+	Color      Color
+	Background Color
+	Border     Color
+	Padding    Insets
+	FontSize   float32
+	Font       FontSpec
+	Align      TextAlign
+	Wrap       bool
+	Ellipsis   bool
+
+	cachedIn     string
+	cachedOut    string
+	cachedSize   Vec2
+	cachedAvailW float32
+	cachedSpec   FontSpec
+	cachedGen    uint64
+	cachedMode   uint8
 }
 
 func NewLabel(text string) *Label {
@@ -50,7 +116,19 @@ func (label *Label) SetText(text string) {
 	if label.Text == text {
 		return
 	}
+	oldText := label.Text
 	label.Text = text
+	if !label.autoSize && !label.Wrap && !label.rect.Empty() &&
+		!strings.Contains(oldText, "\n") && !strings.Contains(text, "\n") {
+		if label.flex > 0 || (label.preferred.X > 0 && label.preferred.Y > 0) {
+			label.InvalidatePaint()
+			return
+		}
+		if panel, ok := label.parent.(*Panel); ok && panel.Direction == Vertical && panel.Align == AlignStretch {
+			label.InvalidatePaint()
+			return
+		}
+	}
 	label.invalidateLayout()
 }
 
@@ -61,16 +139,68 @@ func (label *Label) currentText() string {
 	return label.Text
 }
 
+func (label *Label) shapeTextCached(text string, availW float32, spec FontSpec, mode uint8, needSize bool) (string, Vec2) {
+	eff := label.effectiveFontSpec(spec)
+	gen := label.fontContext().layoutGeneration()
+	if label.cachedMode == mode && label.cachedIn == text && label.cachedAvailW == availW &&
+		label.cachedSpec == eff && label.cachedGen == gen {
+		if needSize && label.cachedSize == (Vec2{}) && label.cachedOut != "" {
+			label.cachedSize = label.measureText(label.cachedOut, spec)
+		}
+		return label.cachedOut, label.cachedSize
+	}
+	out := text
+	switch mode {
+	case 2: // wrap
+		out = label.wrapText(text, availW, spec)
+	case 3: // ellipsis
+		out = label.ellipsizeText(text, availW, spec)
+	}
+	var sz Vec2
+	if needSize {
+		sz = label.measureText(out, spec)
+	}
+	label.cachedMode = mode
+	label.cachedIn = text
+	label.cachedOut = out
+	label.cachedAvailW = availW
+	label.cachedSpec = eff
+	label.cachedGen = gen
+	label.cachedSize = sz
+	return out, sz
+}
+
+func (label *Label) measureTextSize() Vec2 {
+	spec := label.fontSpec()
+	text := label.currentText()
+	mode := uint8(1)
+	availW := float32(0)
+	if label.Wrap && label.maximum.X > 0 {
+		availW = maxFloat32(0, label.maximum.X-label.Padding.Left-label.Padding.Right)
+		mode = 2
+	}
+	_, size := label.shapeTextCached(text, availW, spec, mode, true)
+	size.X += label.Padding.Left + label.Padding.Right
+	size.Y += label.Padding.Top + label.Padding.Bottom
+	return size
+}
+
 func (label *Label) Measure(constraints Constraints) Vec2 {
 	spec := label.fontSpec()
 	text := label.currentText()
+	availW := maxFloat32(0, constraints.Max.X-label.Padding.Left-label.Padding.Right)
+	mode := uint8(1)
 	if label.Wrap && constraints.HasMaxX() {
-		text = label.wrapText(text, maxFloat32(0, constraints.Max.X), spec)
+		mode = 2
+	} else if label.Ellipsis && !label.Wrap && constraints.HasMaxX() && !label.autoSize {
+		mode = 3
+	} else {
+		availW = 0
 	}
-	if label.Ellipsis && !label.Wrap && constraints.HasMaxX() {
-		text = label.ellipsizeText(text, maxFloat32(0, constraints.Max.X), spec)
-	}
-	return measureWithState(&label.State, label.measureText(text, spec), constraints)
+	_, size := label.shapeTextCached(text, availW, spec, mode, true)
+	size.X += label.Padding.Left + label.Padding.Right
+	size.Y += label.Padding.Top + label.Padding.Bottom
+	return measureWithState(&label.State, size, constraints)
 }
 
 func (label *Label) fontSpec() FontSpec {
@@ -79,12 +209,28 @@ func (label *Label) fontSpec() FontSpec {
 
 func (label *Label) Baseline() float32 {
 	if fonts := label.fontContext(); fonts != nil {
-		return fonts.layoutShared("", label.fontSpec()).Ascent
+		return fonts.layoutShared("", label.effectiveFontSpec(label.fontSpec())).Ascent + label.Padding.Top
 	}
-	return label.fontSpec().Size * 0.85
+	return label.fontSpec().Size*0.85 + label.Padding.Top
 }
 
 func (label *Label) Paint(canvas *Canvas) {
+	if label.rect.Empty() {
+		return
+	}
+	if !label.Frameless() {
+		radius := label.effectiveCornerRadius(canvas.theme)
+		if label.Background.A > 0 {
+			canvas.RoundedRect(label.rect, radius, label.Background)
+		}
+		if label.Border.A > 0 {
+			canvas.RoundedBorder(label.rect, radius, 1, label.Border)
+		}
+	}
+	inner := label.rect.Inset(label.Padding)
+	if inner.Empty() {
+		return
+	}
 	spec := label.fontSpec()
 	color := label.Color
 	if color.A <= 0 {
@@ -95,240 +241,9 @@ func (label *Label) Paint(canvas *Canvas) {
 	}
 	text := label.currentText()
 	if label.Wrap {
-		text = label.wrapText(text, label.rect.W, spec)
+		text, _ = label.shapeTextCached(text, inner.W, spec, 2, false)
+	} else if label.Ellipsis {
+		text, _ = label.shapeTextCached(text, inner.W, spec, 3, false)
 	}
-	if label.Ellipsis && !label.Wrap {
-		text = label.ellipsizeText(text, label.rect.W, spec)
-	}
-	canvas.TextStyled(text, label.rect, spec, label.Align, color)
-}
-
-type Button struct {
-	State
-	Text     string
-	Icon     *ImageResource
-	FontSize float32
-	Font     FontSpec
-	OnClick  func()
-}
-
-func NewButton(text string, onClick func()) *Button {
-	button := &Button{Text: text, OnClick: onClick}
-	button.owner = button
-	button.focusable = true
-	button.minimum = Vec2{X: 240}
-	return button
-}
-
-func (button *Button) SetText(text string) {
-	if button.Text == text {
-		return
-	}
-	button.Text = text
-	button.invalidateLayout()
-}
-
-func (button *Button) SetIcon(icon *ImageResource) {
-	if button.Icon == icon {
-		return
-	}
-	button.Icon = icon
-	button.invalidateLayout()
-}
-
-func (button *Button) Measure(constraints Constraints) Vec2 {
-	theme := button.State.Theme()
-	spec := button.fontSpec()
-	text := button.measureText(button.Text, spec)
-	iconSpace := iconWidth(button.Icon)
-	if button.Text == "" && button.Icon != nil {
-		iconSpace -= iconGap
-	}
-	desired := Vec2{X: text.X + 36 + iconSpace, Y: maxFloat32(text.Y+16, theme.ControlHeight)}
-	if button.Icon != nil {
-		desired.Y = maxFloat32(desired.Y, iconSize+12)
-	}
-	return measureWithState(&button.State, desired, constraints)
-}
-
-func (button *Button) fontSpec() FontSpec {
-	return resolveFontSpec(button.Font, button.FontSize, button.Theme().FontSize)
-}
-
-func (button *Button) Paint(canvas *Canvas) {
-	background, border := controlColors(&button.State, canvas.theme)
-	canvas.Rect(button.rect, background)
-	canvas.Border(button.rect, 1, border)
-	spec := button.fontSpec()
-	color := canvas.theme.Text
-	if !button.Enabled() {
-		color = canvas.theme.MutedText
-	}
-	inner := button.rect.Inset(Symmetric(12, 4))
-	if button.Icon == nil {
-		canvas.TextStyled(button.Text, inner, spec, TextCenter, color)
-		return
-	}
-	canvas.PushClip(inner)
-	textWidth := button.measureText(button.Text, spec).X
-	gap := float32(0)
-	if button.Text != "" {
-		gap = iconGap
-	}
-	groupWidth := iconSize + gap + textWidth
-	start := inner.X + maxFloat32(0, (inner.W-groupWidth)*0.5)
-	opacity := float32(1)
-	if !button.Enabled() {
-		opacity = 0.5
-	}
-	paintIcon(canvas, button.Icon, Rect{X: start, Y: inner.Y + (inner.H-iconSize)*0.5, W: iconSize, H: iconSize}, opacity)
-	if button.Text != "" {
-		bounds := Rect{X: start + iconSize + gap, Y: inner.Y, W: maxFloat32(0, inner.X+inner.W-start-iconSize-gap), H: inner.H}
-		canvas.TextStyled(button.Text, bounds, spec, TextLeft, color)
-	}
-	canvas.PopClip()
-}
-
-func (button *Button) Handle(event Event) bool {
-	if !button.Enabled() {
-		return false
-	}
-	switch event.Type {
-	case PointerDown:
-		return event.Button == MouseLeft
-	case PointerUp:
-		if event.Button == MouseLeft && button.Pressed() && button.rect.Contains(event.X, event.Y) {
-			if button.OnClick != nil {
-				button.OnClick()
-			}
-			return true
-		}
-	case KeyDown:
-		if !event.Repeat && (event.Key == KeyEnter || event.Key == KeySpace) {
-			if button.OnClick != nil {
-				button.OnClick()
-			}
-			return true
-		}
-	}
-	return button.State.Handle(event)
-}
-
-type Toggle struct {
-	State
-	Text     string
-	Icon     *ImageResource
-	Value    bool
-	OnChange func(bool)
-}
-
-func NewToggle(text string, value bool, onChange func(bool)) *Toggle {
-	toggle := &Toggle{Text: text, Value: value, OnChange: onChange}
-	toggle.owner = toggle
-	toggle.focusable = true
-	toggle.minimum = Vec2{X: 300}
-	return toggle
-}
-
-func (toggle *Toggle) SetValue(value bool) {
-	if toggle.Value == value {
-		return
-	}
-	toggle.Value = value
-	toggle.invalidatePaint()
-	if toggle.OnChange != nil {
-		toggle.OnChange(value)
-	}
-}
-
-func (toggle *Toggle) SetIcon(icon *ImageResource) {
-	if toggle.Icon != icon {
-		toggle.Icon = icon
-		toggle.invalidateLayout()
-	}
-}
-
-func (toggle *Toggle) Measure(constraints Constraints) Vec2 {
-	theme := toggle.State.Theme()
-	text := toggle.measureText(toggle.Text, FontSpec{Size: theme.FontSize})
-	height := maxFloat32(text.Y+16, theme.ControlHeight)
-	return measureWithState(&toggle.State, Vec2{X: text.X + 110 + iconWidth(toggle.Icon), Y: height}, constraints)
-}
-
-func (toggle *Toggle) Paint(canvas *Canvas) {
-	background, border := controlColors(&toggle.State, canvas.theme)
-	canvas.Rect(toggle.rect, background)
-	canvas.Border(toggle.rect, 1, border)
-	inner := toggle.rect.Inset(Symmetric(14, 4))
-	label := inner
-	label.W = maxFloat32(0, label.W-55)
-	opacity := float32(1)
-	if !toggle.Enabled() {
-		opacity = 0.5
-	}
-	paintIconLabel(canvas, toggle.Icon, toggle.Text, label, toggle.Icon != nil, canvas.theme.Text, opacity)
-	value := "OFF"
-	valueColor := canvas.theme.MutedText
-	if toggle.Value {
-		value = "ON"
-		valueColor = canvas.theme.AccentHover
-	}
-	canvas.Text(value, inner, canvas.theme.FontSize, TextRight, valueColor)
-}
-
-func (toggle *Toggle) Handle(event Event) bool {
-	if !toggle.Enabled() {
-		return false
-	}
-	activate := event.Type == KeyDown && !event.Repeat && (event.Key == KeyEnter || event.Key == KeySpace)
-	activate = activate || (event.Type == PointerUp && event.Button == MouseLeft && toggle.Pressed() && toggle.rect.Contains(event.X, event.Y))
-	if event.Type == PointerDown && event.Button == MouseLeft {
-		return true
-	}
-	if activate {
-		toggle.SetValue(!toggle.Value)
-		return true
-	}
-	return toggle.State.Handle(event)
-}
-
-type ProgressBar struct {
-	State
-	Value     float32
-	Fill      Color
-	Back      Color
-	ShowValue bool
-}
-
-func NewProgressBar(value float32) *ProgressBar {
-	bar := &ProgressBar{Value: value}
-	bar.owner = bar
-	bar.preferred = Vec2{X: 240, Y: 24}
-	return bar
-}
-
-func (bar *ProgressBar) SetValue(value float32) {
-	if bar.Value == value {
-		return
-	}
-	bar.Value = value
-	bar.invalidatePaint()
-}
-
-func (bar *ProgressBar) Paint(canvas *Canvas) {
-	background := bar.Back
-	if background.A <= 0 {
-		background = canvas.theme.Panel
-	}
-	fill := bar.Fill
-	if fill.A <= 0 {
-		fill = canvas.theme.Accent
-	}
-	clamped := clampFloat32(bar.Value, 0, 1)
-	canvas.Rect(bar.rect, background)
-	canvas.Rect(Rect{X: bar.rect.X, Y: bar.rect.Y, W: bar.rect.W * clamped, H: bar.rect.H}, fill)
-	canvas.Border(bar.rect, 1, canvas.theme.Border)
-	if bar.ShowValue {
-		canvas.Text(fmt.Sprintf("%d%%", int(clamped*100+0.5)), bar.rect, canvas.theme.FontSize*0.8, TextCenter, canvas.theme.Text)
-	}
+	canvas.TextStyled(text, inner, spec, label.Align, color)
 }

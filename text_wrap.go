@@ -183,15 +183,19 @@ func ellipsizeTextWith(text string, width float32, measure func(string) float32,
 	if width <= 0 {
 		return ""
 	}
-	text = strings.ReplaceAll(normalizeTextBreaks(text), "\n", " ")
+	text = normalizeTextBreaks(text)
+	if strings.ContainsRune(text, '\n') {
+		text = strings.ReplaceAll(text, "\n", " ")
+	}
 	if measure(text) <= width {
 		return text
 	}
 	if measure(ellipsis) > width {
 		return ""
 	}
-	r := []rune(text)
-	var stackEnds [64]int
+	var runeStack [256]rune
+	r := stringToRunesInto(text, runeStack[:0])
+	var stackEnds [256]int
 	ends := stackEnds[:0]
 	for end := nextGrapheme(r, 0); end <= len(r); end = nextGrapheme(r, end) {
 		ends = append(ends, end)
@@ -231,7 +235,8 @@ func wrapTextWith(text string, width, size float32, measure func(string, float32
 		if paragraphIndex > 0 {
 			output.WriteByte('\n')
 		}
-		r := []rune(paragraph)
+		var runeStack [256]rune
+		r := stringToRunesInto(paragraph, runeStack[:0])
 		for at := 0; at < len(r); {
 			end := wrappedLineEndWith(r, at, len(r), width, size, measure)
 			inkEnd := end

@@ -35,37 +35,88 @@ func collectScanCrossings(segments []segment, py float32, dst []scanCrossing) []
 	return dst
 }
 
-func windingHitsAtX(crossings []scanCrossing, x float32) int {
-	hits := 0
-	for _, subX := range [...]float32{0.25, 0.75} {
-		px := x + subX
-		winding := 0
-		for _, c := range crossings {
-			if c.x > px {
-				winding += c.dir
-			}
+func sortScanCrossings(crossings []scanCrossing) {
+	for i := 1; i < len(crossings); i++ {
+		cur := crossings[i]
+		j := i - 1
+		for j >= 0 && crossings[j].x > cur.x {
+			crossings[j+1] = crossings[j]
+			j--
 		}
-		if winding != 0 {
-			hits++
-		}
+		crossings[j+1] = cur
 	}
-	return hits
 }
 
-func rasterSegments(segments []segment, left, top, right, bottom int, emit func(x, y, hits int)) {
-	var buf0, buf1 [64]scanCrossing
-	c0, c1 := buf0[:0], buf1[:0]
+// rasterSegments computes smooth 8-bit anti-aliased coverage using 8 vertical
+// sub-scanlines per pixel row and exact analytical horizontal span overlap.
+func rasterSegments(segments []segment, left, top, right, bottom int, emit func(x, y int, alpha uint8)) {
+	width := right - left
+	if width <= 0 || bottom <= top {
+		return
+	}
+	var crossingBuf [64]scanCrossing
+	var rowStack [256]float32
+	var rowCov []float32
+	if width <= len(rowStack) {
+		rowCov = rowStack[:width]
+	} else {
+		rowCov = make([]float32, width)
+	}
+	subOffsets := [...]float32{0.0625, 0.1875, 0.3125, 0.4375, 0.5625, 0.6875, 0.8125, 0.9375}
 	for y := top; y < bottom; y++ {
-		c0 = collectScanCrossings(segments, float32(y)+0.25, c0)
-		c1 = collectScanCrossings(segments, float32(y)+0.75, c1)
-		if len(c0) == 0 && len(c1) == 0 {
+		clear(rowCov)
+		hasInk := false
+		fy := float32(y)
+		for _, sy := range subOffsets {
+			c := collectScanCrossings(segments, fy+sy, crossingBuf[:0])
+			if len(c) < 2 {
+				continue
+			}
+			sortScanCrossings(c)
+			winding := 0
+			var spanStart float32
+			for _, cr := range c {
+				prev := winding
+				winding += cr.dir
+				if prev == 0 && winding != 0 {
+					spanStart = cr.x
+				} else if prev != 0 && winding == 0 {
+					spanEnd := cr.x
+					if spanEnd <= spanStart {
+						continue
+					}
+					x0 := max(left, int(math.Floor(float64(spanStart))))
+					x1 := min(right, int(math.Ceil(float64(spanEnd))))
+					for x := x0; x < x1; x++ {
+						fx0 := maxFloat32(spanStart, float32(x))
+						fx1 := minFloat32(spanEnd, float32(x+1))
+						if fx1 > fx0 {
+							rowCov[x-left] += fx1 - fx0
+							hasInk = true
+						}
+					}
+				}
+			}
+		}
+		if !hasInk {
 			continue
 		}
-		for x := left; x < right; x++ {
-			fx := float32(x)
-			hits := windingHitsAtX(c0, fx) + windingHitsAtX(c1, fx)
-			if hits > 0 {
-				emit(x, y, hits)
+		for i, cov := range rowCov {
+			if cov > 0 {
+				norm := cov * (1.0 / 8.0)
+				if norm > 1 {
+					norm = 1
+				}
+				// Stem-darkening contrast curve keeps thin unhinted strokes (such as
+				// monospace code fonts) crisp and legible at UI sizes.
+				norm = norm*0.4 + float32(math.Sqrt(float64(norm)))*0.6
+				a := int(norm*255.0 + 0.5)
+				if a > 255 {
+					a = 255
+				}
+				if a > 0 {
+					emit(left+i, y, uint8(a))
+				}
 			}
 		}
 	}
@@ -94,8 +145,8 @@ func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alph
 		return nil, Vec2{}
 	}
 	mask := image.NewAlpha(image.Rect(0, 0, width, height))
-	rasterSegments(segments, left, top, right, bottom, func(x, y, hits int) {
-		mask.Pix[(y-top)*mask.Stride+(x-left)] = uint8(hits * 255 / 4)
+	rasterSegments(segments, left, top, right, bottom, func(x, y int, alpha uint8) {
+		mask.Pix[(y-top)*mask.Stride+(x-left)] = alpha
 	})
 	if bold > 0 {
 		thick := image.NewAlpha(image.Rect(0, 0, width+bold, height))
@@ -106,9 +157,17 @@ func rasterOutline(o outline, scale float32, italic bool, bold int) (*image.Alph
 				if alpha == 0 {
 					continue
 				}
-				for shift := 0; shift <= bold; shift++ {
-					if dst[x+shift] < alpha {
-						dst[x+shift] = alpha
+				if dst[x] < alpha {
+					dst[x] = alpha
+				}
+				for shift := 1; shift <= bold; shift++ {
+					// Smooth fractional dilation on trailing edge so synthetic bold stays anti-aliased.
+					dilated := alpha
+					if shift == bold && bold > 1 {
+						dilated = uint8((uint32(alpha) * 180) / 255)
+					}
+					if dst[x+shift] < dilated {
+						dst[x+shift] = dilated
 					}
 				}
 			}

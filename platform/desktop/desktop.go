@@ -19,26 +19,44 @@ type Window interface {
 	Close()
 	Show()
 	Hide()
+	Minimize()
+	Maximize()
 	SetSize(width, height int) error
+	SetFrameless(frameless bool)
+	Frameless() bool
+	SetWindowControls(visible bool)
+	WindowControlsVisible() bool
 	Capabilities() platform.Capabilities
 }
 
+// TrayOptions configures the desktop system tray / menu bar status item.
+type TrayOptions struct {
+	Title   string
+	Tooltip string
+	Icon    *ui.ImageResource
+	Menu    []ui.MenuItem
+	OnClick func()
+}
+
 type Options struct {
-	Title          string
-	Width, Height  int // Logical client dimensions; zero uses 800x600.
-	OnReady        func(Window)
-	OnFilesDropped func([]string)
+	Title              string
+	Width, Height      int  // Logical client dimensions; zero uses 800x600.
+	Frameless          bool // Disables standard OS window decorations (titlebar and borders).
+	HideWindowControls bool // Hides standard window control buttons (close/minimize/zoom).
+	OnReady            func(Window)
+	OnFilesDropped     func([]string)
 	// OnCloseRequest runs on the UI goroutine when the user asks to close the
 	// window. A programmatic Close bypasses this policy.
 	OnCloseRequest func(Window) platform.CloseAction
 	Backend        string      // Linux: "", "x11" or "wayland"; empty selects the session.
 	Graphics       render.Kind // "auto", "software", or "hardware" (when installed).
+	Scale          float32     // Initial UI/DPI scale factor (1.0 = 100%, 1.5 = 150%, etc.); zero keeps Manager.DisplayScale().
 	X11Scale       float32     // Linux X11 only; zero uses the Xft.dpi setting.
 }
 
 // App owns the desktop UI loop. Register windows before Run or from a callback
 // posted to the running UI goroutine. An App remains alive with no visible
-// windows until Quit; this lets a later tray integration own the last window.
+// windows until Quit; this lets a tray integration own the last window.
 type App struct{ driver appDriver }
 
 type appDriver interface {
@@ -46,6 +64,8 @@ type appDriver interface {
 	Post(func())
 	Quit()
 	Add(Window) error
+	SetTray(TrayOptions) error
+	RemoveTray()
 }
 
 func NewApp() *App { return &App{driver: newAppDriver()} }
@@ -62,6 +82,21 @@ func (a *App) NewWindow(manager *ui.Manager, options Options) (Window, error) {
 		return nil, err
 	}
 	return w, nil
+}
+
+// SetTray installs or updates the application's system tray / status bar item.
+func (a *App) SetTray(options TrayOptions) error {
+	if a == nil || a.driver == nil {
+		return fmt.Errorf("desktop: nil app")
+	}
+	return a.driver.SetTray(options)
+}
+
+// RemoveTray removes the application's system tray / status bar item.
+func (a *App) RemoveTray() {
+	if a != nil && a.driver != nil {
+		a.driver.RemoveTray()
+	}
 }
 
 // Run must be called from the main UI goroutine (the main OS thread on macOS).

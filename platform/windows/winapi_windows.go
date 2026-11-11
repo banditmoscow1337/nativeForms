@@ -52,19 +52,32 @@ type candidateForm struct {
 	Position     point
 	Area         rect
 }
+type notifyIconData struct {
+	Size             uint32
+	HWND             uintptr
+	ID, Flags        uint32
+	CallbackMessage  uint32
+	Icon             uintptr
+	Tip              [128]uint16
+	State, StateMask uint32
+	Info             [256]uint16
+	Version          uint32
+	InfoTitle        [64]uint16
+	InfoFlags        uint32
+}
 
 type functions struct {
 	user, kernel, gdi, imm, shell                                                                                     uintptr
 	createWindow, registerClass, defProc, getMessage, peekMessage, translateMessage, dispatchMessage, showWindow      uintptr
 	destroyWindow, postQuit, postMessage, postThreadMessage, getCurrentThreadId, beginPaint, endPaint, invalidateRect uintptr
-	getClientRect, screenToClient, getDpi, setDpi, setWindowPos                                                       uintptr
+	getClientRect, screenToClient, getDpi, setDpi, setWindowPos, setWindowLong                                        uintptr
 	adjustWindowRect, adjustWindowRectForDpi                                                                          uintptr
-	setCapture, releaseCapture, loadCursor, setCursor, getKeyState, trackMouse                                        uintptr
+	setCapture, releaseCapture, loadCursor, setCursor, loadIcon, getKeyState, trackMouse                              uintptr
 	setTimer, killTimer, openClipboard, closeClipboard, emptyClipboard                                                uintptr
 	setClipboardData, getClipboardData, globalAlloc, globalLock, globalUnlock, globalFree, globalSize                 uintptr
 	stretchDIBits, getModuleHandle                                                                                    uintptr
 	immGetContext, immReleaseContext, immGetComposition, immSetCandidate                                              uintptr
-	dragAcceptFiles, dragQueryFile, dragFinish                                                                        uintptr
+	dragAcceptFiles, dragQueryFile, dragFinish, shellNotifyIcon                                                       uintptr
 }
 
 var win functions
@@ -128,11 +141,13 @@ func load() error {
 		{win.user, "GetClientRect", &win.getClientRect},
 		{win.user, "ScreenToClient", &win.screenToClient},
 		{win.user, "SetWindowPos", &win.setWindowPos},
+		{win.user, "SetWindowLongPtrW", &win.setWindowLong},
 		{win.user, "AdjustWindowRectEx", &win.adjustWindowRect},
 		{win.user, "SetCapture", &win.setCapture},
 		{win.user, "ReleaseCapture", &win.releaseCapture},
 		{win.user, "LoadCursorW", &win.loadCursor},
 		{win.user, "SetCursor", &win.setCursor},
+		{win.user, "LoadIconW", &win.loadIcon},
 		{win.user, "GetKeyState", &win.getKeyState},
 		{win.user, "TrackMouseEvent", &win.trackMouse},
 		{win.user, "SetTimer", &win.setTimer},
@@ -157,6 +172,7 @@ func load() error {
 		{win.shell, "DragAcceptFiles", &win.dragAcceptFiles},
 		{win.shell, "DragQueryFileW", &win.dragQueryFile},
 		{win.shell, "DragFinish", &win.dragFinish},
+		{win.shell, "Shell_NotifyIconW", &win.shellNotifyIcon},
 	}
 	for _, s := range symbols {
 		if err := get(s.lib, s.name, s.dst); err != nil {
@@ -215,15 +231,25 @@ const (
 	wmCaptureChanged   = 0x0215
 	wmDpiChanged       = 0x02E0
 	wmWake             = 0x8001
-	wsOverlappedWindow = 0x00CF0000
-	cwUseDefault       = 0x80000000
-	swHide             = 0
-	swShow             = 5
 	wmAppWake          = 0x8002
 	wmAppDestroy       = 0x8003
-	swpNoZOrder        = 0x0004
+	wmTrayCallback     = 0x8004
+	wsOverlappedWindow = 0x00CF0000
+	wsPopup            = 0x80000000
+	wsCaption          = 0x00C00000
+	wsThickFrame       = 0x00040000
+	wsSysMenu          = 0x00080000
+	cwUseDefault       = 0x80000000
+	swHide             = 0
+	swMaximize         = 3
+	swShow             = 5
+	swMinimize         = 6
+	swpNoSize          = 0x0001
 	swpNoMove          = 0x0002
+	swpNoZOrder        = 0x0004
 	swpNoActivate      = 0x0010
+	swpFrameChanged    = 0x0020
+	gwlStyle           = ^uintptr(15) // -16
 	biRGB              = 0
 	dibRGBColors       = 0
 	srccopy            = 0x00CC0020
@@ -232,4 +258,11 @@ const (
 	gcsCompStr         = 0x0008
 	gcsResultStr       = 0x0800
 	cfsExclude         = 0x0080
+	nimAdd             = 0x00000000
+	nimModify          = 0x00000001
+	nimDelete          = 0x00000002
+	nifMessage         = 0x00000001
+	nifIcon            = 0x00000002
+	nifTip             = 0x00000004
+	idiApplication     = 32512
 )

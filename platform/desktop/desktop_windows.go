@@ -20,6 +20,15 @@ func (a windowsDriver) Add(w Window) error {
 	}
 	return a.App.Add(native)
 }
+func (a windowsDriver) SetTray(options TrayOptions) error {
+	return a.App.SetTray(windows.TrayOptions{
+		Title:   options.Title,
+		Tooltip: options.Tooltip,
+		Icon:    options.Icon,
+		Menu:    options.Menu,
+		OnClick: options.OnClick,
+	})
+}
 
 func newWindow(manager *ui.Manager, options Options) (Window, error) {
 	if manager == nil {
@@ -29,7 +38,8 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 		return nil, fmt.Errorf("desktop: backend %q is only available on Linux", options.Backend)
 	}
 	return windows.New(manager, windows.Options{
-		Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
+		Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.Scale, Graphics: options.Graphics,
+		Frameless: options.Frameless, HideWindowControls: options.HideWindowControls,
 		OnReady: func(w *windows.Window) {
 			if options.OnReady != nil {
 				options.OnReady(w)

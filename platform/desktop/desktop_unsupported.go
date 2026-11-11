@@ -22,5 +22,9 @@ func (unsupportedApp) Run() error {
 func (unsupportedApp) Add(Window) error {
 	return fmt.Errorf("desktop: unsupported target %s/%s", runtime.GOOS, runtime.GOARCH)
 }
+func (unsupportedApp) SetTray(TrayOptions) error {
+	return fmt.Errorf("desktop: unsupported target %s/%s", runtime.GOOS, runtime.GOARCH)
+}
+func (unsupportedApp) RemoveTray() {}
 func (unsupportedApp) Post(func()) {}
 func (unsupportedApp) Quit()       {}

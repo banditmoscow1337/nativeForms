@@ -53,6 +53,9 @@ func (canvas *Canvas) Theme() *Theme { return canvas.theme }
 
 func (canvas *Canvas) MeasureText(text string, spec FontSpec) Vec2 {
 	if canvas.fonts != nil {
+		if spec.Scale <= 0 && canvas.displayScale > 0 {
+			spec.Scale = canvas.displayScale
+		}
 		return canvas.fonts.Measure(text, spec)
 	}
 	return MeasureText(text, spec.Size)
@@ -66,19 +69,27 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	if bounds.Empty() || tint.A <= 0 {
 		return
 	}
+	explicitScale := spec.Scale > 0
 	spec = normalFontSpec(spec)
-	if canvas.displayScale > 0 {
-		spec.Scale = min(spec.Scale*canvas.displayScale, 8)
+	if !explicitScale && canvas.displayScale > 0 {
+		spec.Scale = min(canvas.displayScale, 8)
 	}
 	text = normalizeTextBreaks(text)
 	if canvas.trace != nil {
 		canvas.trace.sample.TextRunes += utf8.RuneCountInString(text)
 	}
-	if !strings.Contains(text, "\n") {
+	canvas.PushClip(bounds)
+
+	if strings.IndexByte(text, '\n') < 0 {
 		start := canvas.trace.Start()
 		line := canvas.fonts.layoutShared(text, spec)
 		canvas.trace.Record(PhaseTextLayout, start)
-		canvas.paintTextLine(line, bounds, align, tint, bounds.Y+(bounds.H-line.Height())*0.5)
+		y := bounds.Y + (bounds.H-line.Height())*0.5
+		if line.Height() > bounds.H {
+			y = bounds.Y
+		}
+		canvas.paintTextLine(line, bounds, align, tint, y)
+		canvas.PopClip()
 		return
 	}
 	var stackLines [16]TextLayout
@@ -103,27 +114,74 @@ func (canvas *Canvas) TextStyled(text string, bounds Rect, spec FontSpec, align 
 	}
 	canvas.trace.Record(PhaseTextLayout, textStart)
 	y := bounds.Y + (bounds.H-height)*0.5
+	if height > bounds.H {
+		y = bounds.Y
+	}
 	for _, line := range lines {
 		canvas.paintTextLine(line, bounds, align, tint, y)
 		y += line.Height()
 	}
+	canvas.PopClip()
+}
+
+func alignLineX(bounds Rect, lineWidth float32, align TextAlign) float32 {
+	switch align {
+	case TextCenter:
+		if lineWidth <= bounds.W {
+			return bounds.X + (bounds.W-lineWidth)*0.5
+		}
+	case TextRight:
+		return bounds.X + bounds.W - lineWidth
+	}
+	return bounds.X
 }
 
 func (canvas *Canvas) paintTextLine(line TextLayout, bounds Rect, align TextAlign, tint Color, y float32) {
 	if canvas.trace != nil {
 		canvas.trace.sample.Glyphs += len(line.Glyphs)
 	}
-	x := bounds.X
-	switch align {
-	case TextCenter:
-		x += (bounds.W - line.Advance) * 0.5
-	case TextRight:
-		x += bounds.W - line.Advance
+	if len(line.Glyphs) == 0 || len(canvas.clips) == 0 {
+		return
 	}
-	for _, glyph := range line.Glyphs {
+	clip := canvas.clips[len(canvas.clips)-1]
+	if clip.Empty() {
+		return
+	}
+	x := alignLineX(bounds, line.Advance, align)
+	scale := canvas.displayScale
+	if !(scale > 0 && scale <= 8) {
+		scale = 1
+	}
+	x = float32(math.Round(float64(x*scale))) / scale
+	y = float32(math.Round(float64(y*scale))) / scale
+	cx1, cy1 := clip.X+clip.W, clip.Y+clip.H
+	cmds := *canvas.commands
+	for i := range line.Glyphs {
+		glyph := line.Glyphs[i]
 		mask := glyph.Mask
-		canvas.mask(mask, Rect{X: x + glyph.X, Y: y + glyph.Y, W: float32(mask.Bounds().Dx()) / glyph.Scale, H: float32(mask.Bounds().Dy()) / glyph.Scale}, tint)
+		if mask == nil {
+			continue
+		}
+		gw, gh := glyph.W, glyph.H
+		if gw <= 0 || gh <= 0 {
+			b := mask.Bounds()
+			if b.Empty() {
+				continue
+			}
+			gw = float32(b.Dx()) / glyph.Scale
+			gh = float32(b.Dy()) / glyph.Scale
+		}
+		gx, gy := x+glyph.X, y+glyph.Y
+		if gx+gw <= clip.X || gy+gh <= clip.Y || gx >= cx1 || gy >= cy1 {
+			continue
+		}
+		cmds = append(cmds, DrawCommand{
+			Kind: CommandMask, Mask: mask,
+			Rect: Rect{X: gx, Y: gy, W: gw, H: gh},
+			Clip: clip, Tint: tint,
+		})
 	}
+	*canvas.commands = cmds
 }
 
 func (canvas *Canvas) PushClip(rect Rect) {
@@ -159,6 +217,29 @@ func (canvas *Canvas) RoundedRect(rect Rect, radius float32, tint Color) {
 	radius = minFloat32(radius, minFloat32(rect.W, rect.H)*0.5)
 	*canvas.commands = append(*canvas.commands, DrawCommand{
 		Kind: CommandRoundedRect, Rect: rect, Clip: clip, Radius: radius, Tint: tint,
+	})
+}
+
+func (canvas *Canvas) RoundedBorder(rect Rect, radius, width float32, tint Color) {
+	if width <= 0 || rect.Empty() || tint.A <= 0 {
+		return
+	}
+	if radius <= 0 {
+		canvas.Border(rect, width, tint)
+		return
+	}
+	if len(canvas.clips) == 0 {
+		return
+	}
+	clip := canvas.clips[len(canvas.clips)-1]
+	if intersect(rect, clip).Empty() {
+		return
+	}
+	halfMin := minFloat32(rect.W, rect.H) * 0.5
+	radius = minFloat32(radius, halfMin)
+	width = minFloat32(width, halfMin)
+	*canvas.commands = append(*canvas.commands, DrawCommand{
+		Kind: CommandRoundedRect, Rect: rect, Clip: clip, Radius: radius, Width: width, Tint: tint,
 	})
 }
 
@@ -258,369 +339,4 @@ func clipLine(from, to Vec2, bounds Rect) (Vec2, Vec2, bool) {
 	}
 	return Vec2{X: from.X + dx*t0, Y: from.Y + dy*t0},
 		Vec2{X: from.X + dx*t1, Y: from.Y + dy*t1}, true
-}
-
-func (canvas *Canvas) Text(text string, bounds Rect, size float32, align TextAlign, tint Color) {
-	if size <= 0 || bounds.Empty() || tint.A <= 0 {
-		return
-	}
-	if canvas.fonts != nil {
-		canvas.TextStyled(text, bounds, FontSpec{Size: size}, align, tint)
-		return
-	}
-	text = normalizeTextBreaks(text)
-	if canvas.trace != nil {
-		canvas.trace.sample.TextRunes += utf8.RuneCountInString(text)
-	}
-	lineCount := strings.Count(text, "\n") + 1
-	lineHeight := size * 1.2
-	y := bounds.Y + (bounds.H-lineHeight*float32(lineCount))*0.5
-	for lineStart := 0; ; {
-		lineEnd := len(text)
-		lastLine := true
-		if offset := strings.IndexByte(text[lineStart:], '\n'); offset >= 0 {
-			lineEnd = lineStart + offset
-			lastLine = false
-		}
-		line := text[lineStart:lineEnd]
-		x := bounds.X
-		if align != TextLeft {
-			textStart := canvas.trace.Start()
-			lineWidth := measureTextLine(line, size)
-			canvas.trace.Record(PhaseTextLayout, textStart)
-			switch align {
-			case TextCenter:
-				x += (bounds.W - lineWidth) * 0.5
-			case TextRight:
-				x += bounds.W - lineWidth
-			}
-		}
-		if hasTextShaper() {
-			pixelScale := canvas.displayScale
-			if !(pixelScale > 0 && pixelScale <= 8) {
-				pixelScale = 1
-			}
-			shapeStart := canvas.trace.Start()
-			shaped, maskScale, ok := shapeTextRaster(line, size, pixelScale)
-			canvas.trace.Record(PhaseTextLayout, shapeStart)
-			if ok {
-				if mask := shaped.Mask; mask != nil {
-					if canvas.trace != nil {
-						canvas.trace.sample.Glyphs++
-					}
-					canvas.mask(mask, Rect{X: x + shaped.Offset.X, Y: y + shaped.Offset.Y, W: float32(mask.Bounds().Dx()) / maskScale, H: float32(mask.Bounds().Dy()) / maskScale}, tint)
-				}
-			} else {
-				canvas.emitAtlasLine(line, x, y, size, tint)
-			}
-		} else {
-			canvas.emitAtlasLine(line, x, y, size, tint)
-		}
-		if lastLine {
-			break
-		}
-		lineStart = lineEnd + 1
-		y += lineHeight
-	}
-}
-
-func (canvas *Canvas) emitAtlasGlyph(glyph glyphInfo, x, quadY, quadSize float32, tint Color) {
-	if !glyph.visible {
-		return
-	}
-	if canvas.trace != nil {
-		canvas.trace.sample.Glyphs++
-	}
-	const cell = float32(fontCellSize) / fontAtlasSize
-	cellX := float32(glyph.cellX*fontCellSize) / fontAtlasSize
-	cellY := float32(glyph.cellY*fontCellSize) / fontAtlasSize
-	canvas.quad(
-		Rect{X: x, Y: quadY, W: quadSize, H: quadSize},
-		Rect{X: cellX, Y: cellY, W: cell, H: cell}, tint,
-	)
-}
-
-func (canvas *Canvas) emitAtlasLine(line string, x, y, size float32, tint Color) {
-	var previous glyphInfo
-	offset := float32(0)
-	quadSize := size * float32(fontCellSize) / fontReferenceSize
-	quadY := y - size*0.12
-	for i := 0; i < len(line); {
-		character, width, _ := decodeComposedTextRune(line, i)
-		glyph, gx, nextX := stepAtlasGlyph(previous, character, size, offset)
-		canvas.emitAtlasGlyph(glyph, x+gx, quadY, quadSize, tint)
-		previous, offset = glyph, nextX
-		i += width
-	}
-}
-
-func (canvas *Canvas) textSingleLineRunes(runes []rune, bounds Rect, size float32, tint Color) {
-	if size <= 0 || bounds.Empty() || tint.A <= 0 || len(runes) == 0 {
-		return
-	}
-	if canvas.trace != nil {
-		canvas.trace.sample.TextRunes += len(runes)
-	}
-	lineHeight := size * 1.2
-	y := bounds.Y + (bounds.H-lineHeight)*0.5
-	x := bounds.X
-	var previous glyphInfo
-	offset := float32(0)
-	quadSize := size * float32(fontCellSize) / fontReferenceSize
-	quadY := y - size*0.12
-	for i := 0; i < len(runes); {
-		character, count := decodeComposedSliceRune(runes, i)
-		glyph, gx, nextX := stepAtlasGlyph(previous, character, size, offset)
-		canvas.emitAtlasGlyph(glyph, x+gx, quadY, quadSize, tint)
-		previous, offset = glyph, nextX
-		i += count
-	}
-}
-
-func (canvas *Canvas) quad(rect, uv Rect, tint Color) {
-	if rect.Empty() || tint.A <= 0 || len(canvas.clips) == 0 {
-		return
-	}
-	clip := canvas.clips[len(canvas.clips)-1]
-	if !intersect(rect, clip).Empty() {
-		*canvas.commands = append(*canvas.commands, DrawCommand{
-			Kind: CommandQuad, Rect: rect, UV: uv, Clip: clip, Tint: tint,
-		})
-	}
-}
-
-type Vertex struct {
-	X, Y       float32
-	U, V       float32
-	R, G, B, A float32
-}
-
-func Tessellate(commands []DrawCommand, dst []Vertex) []Vertex {
-	dst = dst[:0]
-	for _, c := range commands {
-		switch c.Kind {
-		case CommandMask:
-			dst = tessellateMask(c, dst)
-		case CommandRoundedRect:
-			dst = tessellateRoundedRect(c, dst)
-		case CommandQuad:
-			r := intersect(c.Rect, c.Clip)
-			if r.Empty() {
-				continue
-			}
-			u0, v0 := c.UV.X, c.UV.Y
-			u1, v1 := c.UV.X+c.UV.W, c.UV.Y+c.UV.H
-			if c.UV.W != 0 {
-				u0 += c.UV.W * (r.X - c.Rect.X) / c.Rect.W
-				u1 -= c.UV.W * (c.Rect.X + c.Rect.W - r.X - r.W) / c.Rect.W
-			}
-			if c.UV.H != 0 {
-				v0 += c.UV.H * (r.Y - c.Rect.Y) / c.Rect.H
-				v1 -= c.UV.H * (c.Rect.Y + c.Rect.H - r.Y - r.H) / c.Rect.H
-			}
-			v := func(x, y, u, vv float32) Vertex {
-				return Vertex{X: x, Y: y, U: u, V: vv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
-			}
-			x0, y0, x1, y1 := r.X, r.Y, r.X+r.W, r.Y+r.H
-			dst = append(dst, v(x0, y0, u0, v0), v(x1, y0, u1, v0), v(x0, y1, u0, v1),
-				v(x0, y1, u0, v1), v(x1, y0, u1, v0), v(x1, y1, u1, v1))
-		case CommandLine:
-			dx, dy := c.To.X-c.From.X, c.To.Y-c.From.Y
-			length := float32(math.Sqrt(float64(dx*dx + dy*dy)))
-			uv := float32(0.5 / fontAtlasSize)
-			v := func(x, y float32) Vertex {
-				return Vertex{X: x, Y: y, U: uv, V: uv, R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
-			}
-			if length < 0.001 {
-				r := intersect(Rect{X: c.From.X - c.Width*0.5, Y: c.From.Y - c.Width*0.5, W: c.Width, H: c.Width}, c.Clip)
-				if !r.Empty() {
-					dst = append(dst, v(r.X, r.Y), v(r.X+r.W, r.Y), v(r.X, r.Y+r.H),
-						v(r.X, r.Y+r.H), v(r.X+r.W, r.Y), v(r.X+r.W, r.Y+r.H))
-				}
-				continue
-			}
-			nx, ny := -dy/length*c.Width*0.5, dx/length*c.Width*0.5
-			p0 := Vec2{X: c.From.X + nx, Y: c.From.Y + ny}
-			p1 := Vec2{X: c.To.X + nx, Y: c.To.Y + ny}
-			p2 := Vec2{X: c.To.X - nx, Y: c.To.Y - ny}
-			p3 := Vec2{X: c.From.X - nx, Y: c.From.Y - ny}
-			dst = emitClippedN(4, [4]Vec2{p0, p1, p2, p3}, c.Clip, uv, c.Tint, dst)
-		}
-	}
-	return dst
-}
-
-// tessellateRoundedRect uses the atlas's opaque texel, just like solid quads.
-// The corner fans are clipped before emitting vertices, so a rounded shape can
-// share a batch with the other UI geometry without a separate shader.
-func tessellateRoundedRect(c DrawCommand, dst []Vertex) []Vertex {
-	if c.Rect.Empty() || c.Clip.Empty() || c.Tint.A <= 0 {
-		return dst
-	}
-	r := c.Rect
-	if intersect(r, c.Clip).Empty() {
-		return dst
-	}
-	radius := minFloat32(maxFloat32(0, c.Radius), minFloat32(r.W, r.H)*0.5)
-	uv := float32(0.5 / fontAtlasSize)
-	unclipped := r.X >= c.Clip.X && r.Y >= c.Clip.Y && r.X+r.W <= c.Clip.X+c.Clip.W && r.Y+r.H <= c.Clip.Y+c.Clip.H
-	vertex := func(p Vec2) Vertex {
-		return Vertex{X: p.X, Y: p.Y, U: uv, V: uv,
-			R: c.Tint.R, G: c.Tint.G, B: c.Tint.B, A: c.Tint.A}
-	}
-	appendRect := func(x, y, w, h float32) {
-		if w <= 0 || h <= 0 {
-			return
-		}
-		rc := intersect(Rect{X: x, Y: y, W: w, H: h}, c.Clip)
-		if rc.Empty() {
-			return
-		}
-		p0 := Vec2{X: rc.X, Y: rc.Y}
-		p1 := Vec2{X: rc.X + rc.W, Y: rc.Y}
-		p2 := Vec2{X: rc.X + rc.W, Y: rc.Y + rc.H}
-		p3 := Vec2{X: rc.X, Y: rc.Y + rc.H}
-		dst = append(dst, vertex(p0), vertex(p1), vertex(p2), vertex(p0), vertex(p2), vertex(p3))
-	}
-	if radius == 0 {
-		appendRect(r.X, r.Y, r.W, r.H)
-		return dst
-	}
-	appendRect(r.X+radius, r.Y, r.W-2*radius, r.H)
-	appendRect(r.X, r.Y+radius, radius, r.H-2*radius)
-	appendRect(r.X+r.W-radius, r.Y+radius, radius, r.H-2*radius)
-	// Approximately one segment per logical pixel along the arc, with a
-	// minimum of eight for small buttons and a bound for large radii.
-	segments := max(8, min(32, int(math.Ceil(float64(radius)*math.Pi/2))))
-	corner := func(cx, cy, start float32) {
-		center := Vec2{X: cx, Y: cy}
-		point := func(angle float32) Vec2 {
-			return Vec2{X: cx + radius*float32(math.Cos(float64(angle))),
-				Y: cy + radius*float32(math.Sin(float64(angle)))}
-		}
-		prev := point(start)
-		for i := 0; i < segments; i++ {
-			b := start + float32(i+1)*float32(math.Pi/2)/float32(segments)
-			next := point(b)
-			if unclipped {
-				dst = append(dst, vertex(center), vertex(prev), vertex(next))
-			} else {
-				dst = emitClippedN(3, [4]Vec2{center, prev, next}, c.Clip, uv, c.Tint, dst)
-			}
-			prev = next
-		}
-	}
-	corner(r.X+radius, r.Y+radius, math.Pi)
-	corner(r.X+r.W-radius, r.Y+radius, 3*math.Pi/2)
-	corner(r.X+r.W-radius, r.Y+r.H-radius, 0)
-	corner(r.X+radius, r.Y+r.H-radius, math.Pi/2)
-	return dst
-}
-
-// emitClippedN clips a 3- or 4-vertex convex polygon against r using purely
-// stack-local arrays (no pointer/slice parameters that could escape) and appends
-// the resulting triangle fan directly to dst.
-func emitClippedN(n int, poly [4]Vec2, r Rect, uv float32, tint Color, dst []Vertex) []Vertex {
-	if r.Empty() || n < 3 {
-		return dst
-	}
-	var bufA, bufB [16]Vec2
-	right := r.X + r.W
-	bottom := r.Y + r.H
-
-	// Edge 1: p.X >= r.X
-	na := 0
-	prev := poly[n-1]
-	wasIn := prev.X >= r.X
-	for i := 0; i < n; i++ {
-		cur := poly[i]
-		isIn := cur.X >= r.X
-		if isIn != wasIn {
-			t := (r.X - prev.X) / (cur.X - prev.X)
-			bufA[na] = Vec2{X: r.X, Y: prev.Y + t*(cur.Y-prev.Y)}
-			na++
-		}
-		if isIn {
-			bufA[na] = cur
-			na++
-		}
-		prev, wasIn = cur, isIn
-	}
-	if na < 3 {
-		return dst
-	}
-
-	// Edge 2: p.X <= right
-	nb := 0
-	prev = bufA[na-1]
-	wasIn = prev.X <= right
-	for i := 0; i < na; i++ {
-		cur := bufA[i]
-		isIn := cur.X <= right
-		if isIn != wasIn {
-			t := (right - prev.X) / (cur.X - prev.X)
-			bufB[nb] = Vec2{X: right, Y: prev.Y + t*(cur.Y-prev.Y)}
-			nb++
-		}
-		if isIn {
-			bufB[nb] = cur
-			nb++
-		}
-		prev, wasIn = cur, isIn
-	}
-	if nb < 3 {
-		return dst
-	}
-
-	// Edge 3: p.Y >= r.Y
-	na = 0
-	prev = bufB[nb-1]
-	wasIn = prev.Y >= r.Y
-	for i := 0; i < nb; i++ {
-		cur := bufB[i]
-		isIn := cur.Y >= r.Y
-		if isIn != wasIn {
-			t := (r.Y - prev.Y) / (cur.Y - prev.Y)
-			bufA[na] = Vec2{X: prev.X + t*(cur.X-prev.X), Y: r.Y}
-			na++
-		}
-		if isIn {
-			bufA[na] = cur
-			na++
-		}
-		prev, wasIn = cur, isIn
-	}
-	if na < 3 {
-		return dst
-	}
-
-	// Edge 4: p.Y <= bottom
-	nb = 0
-	prev = bufA[na-1]
-	wasIn = prev.Y <= bottom
-	for i := 0; i < na; i++ {
-		cur := bufA[i]
-		isIn := cur.Y <= bottom
-		if isIn != wasIn {
-			t := (bottom - prev.Y) / (cur.Y - prev.Y)
-			bufB[nb] = Vec2{X: prev.X + t*(cur.X-prev.X), Y: bottom}
-			nb++
-		}
-		if isIn {
-			bufB[nb] = cur
-			nb++
-		}
-		prev, wasIn = cur, isIn
-	}
-	if nb < 3 {
-		return dst
-	}
-
-	v0 := Vertex{X: bufB[0].X, Y: bufB[0].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
-	for i := 1; i+1 < nb; i++ {
-		v1 := Vertex{X: bufB[i].X, Y: bufB[i].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
-		v2 := Vertex{X: bufB[i+1].X, Y: bufB[i+1].Y, U: uv, V: uv, R: tint.R, G: tint.G, B: tint.B, A: tint.A}
-		dst = append(dst, v0, v1, v2)
-	}
-	return dst
 }

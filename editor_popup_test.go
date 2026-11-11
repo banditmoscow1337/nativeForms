@@ -2,6 +2,7 @@ package nativeforms
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -145,5 +146,113 @@ func TestScopedShortcutPriority(t *testing.T) {
 	manager.HandleEvent(Event{Type: KeyDown, Key: KeySpace, Mods: ModControl})
 	if calls[len(calls)-1] != "completion" {
 		t.Fatal("editor command did not receive its scoped shortcut")
+	}
+}
+
+func TestCodeEditorContextMenuAndGoToDefinition(t *testing.T) {
+	src := "package main\n\nfunc helper(x int) int {\n\treturn x + 1\n}\n\nfunc main() {\n\t_ = helper(42)\n}\n"
+	ed := NewCodeEditor(codeTestDocument(t, src))
+	mgr := New()
+	mgr.SetInteractive(true)
+	var clip string
+	mgr.SetClipboardHandlers(
+		func() (string, error) { return clip, nil },
+		func(s string) error { clip = s; return nil },
+	)
+	mgr.SetRoot(ed)
+	mgr.BeginFrame(600, 320, 0)
+
+	callPos := strings.Index(src, "helper(42)")
+	if !ed.SetSelection(callPos, callPos+len("helper")) {
+		t.Fatal("failed to select identifier")
+	}
+	caret := ed.CaretRect()
+	if !mgr.HandleEvent(Event{Type: PointerDown, Button: MouseRight, X: caret.X, Y: caret.Y + 4}) {
+		t.Fatal("right-click did not open CodeEditor context menu")
+	}
+	mgr.BeginFrame(600, 320, 0)
+	if len(mgr.popups) != 1 {
+		t.Fatalf("expected 1 context menu popup, got %d", len(mgr.popups))
+	}
+	menu, ok := mgr.popups[0].content.(*Menu)
+	if !ok {
+		t.Fatal("popup content is not *Menu")
+	}
+	// Activate "Copy" from context menu
+	foundCopy := false
+	for i, item := range menu.Items {
+		if item.ID == "copy" && !item.Disabled {
+			menu.active = i
+			foundCopy = menu.activate()
+			break
+		}
+	}
+	if !foundCopy || clip != "helper" {
+		t.Fatalf("Copy action failed: found=%v clip=%q", foundCopy, clip)
+	}
+
+	// Re-open context menu and trigger Go to Definition
+	ed.SetSelection(callPos+2, callPos+2)
+	if ed.OpenContextMenu(caret.X, caret.Y+4) == 0 {
+		t.Fatal("OpenContextMenu failed")
+	}
+	menu = mgr.popups[0].content.(*Menu)
+	if menu.Items[0].ID != "goto_definition" || menu.Items[0].Disabled {
+		t.Fatalf("expected enabled goto_definition item, got %+v", menu.Items[0])
+	}
+	menu.active = 0
+	menu.activate()
+	defPos := strings.Index(src, "helper(x int)")
+	if ed.Anchor != defPos || ed.Caret != defPos+len("helper") {
+		t.Fatalf("GoToDefinition did not select declaration: anchor=%d caret=%d want=%d..%d",
+			ed.Anchor, ed.Caret, defPos, defPos+len("helper"))
+	}
+}
+
+func TestTextFieldAndComponentContextMenu(t *testing.T) {
+	mgr := New()
+	mgr.SetInteractive(true)
+	var clip string
+	mgr.SetClipboardHandlers(
+		func() (string, error) { return clip, nil },
+		func(s string) error { clip = s; return nil },
+	)
+	field := NewTextField("hello world", nil)
+	btn := NewButton("Action", nil)
+	customTriggered := false
+	btn.SetContextMenu([]MenuItem{
+		{ID: "custom", Label: "Custom Action", Action: func() { customTriggered = true }},
+	})
+	stack := NewStack(Vertical, 8)
+	stack.Add(field, btn)
+	mgr.SetRoot(stack)
+	mgr.BeginFrame(400, 200, 0)
+
+	field.SelectTextRange(0, 5)
+	fb := field.Bounds()
+	if !mgr.HandleEvent(Event{Type: PointerDown, Button: MouseRight, X: fb.X + 8, Y: fb.Y + 8}) || len(mgr.popups) != 1 {
+		t.Fatal("right-click on TextField did not open context menu")
+	}
+	menu := mgr.popups[0].content.(*Menu)
+	for i, item := range menu.Items {
+		if item.ID == "copy" {
+			menu.active = i
+			menu.activate()
+			break
+		}
+	}
+	if clip != "hello" {
+		t.Fatalf("TextField context menu Copy failed: clip=%q", clip)
+	}
+
+	bb := btn.Bounds()
+	if !mgr.HandleEvent(Event{Type: PointerDown, Button: MouseRight, X: bb.X + 10, Y: bb.Y + 10}) || len(mgr.popups) != 1 {
+		t.Fatal("right-click on Button with SetContextMenu did not open menu")
+	}
+	menu = mgr.popups[0].content.(*Menu)
+	menu.active = 0
+	menu.activate()
+	if !customTriggered {
+		t.Fatal("custom context menu item did not fire")
 	}
 }

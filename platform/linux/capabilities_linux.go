@@ -10,11 +10,19 @@ import (
 )
 
 func X11Capabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true, DragDrop: true}
+	return platform.Capabilities{
+		SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true,
+		Clipboard: true, MultipleWindows: true, DragDrop: true,
+		Tray: true, Frameless: true,
+	}
 }
 
 func WaylandCapabilities() platform.Capabilities {
-	return platform.Capabilities{SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true, Clipboard: true, MultipleWindows: true, DragDrop: true, Wayland: true}
+	return platform.Capabilities{
+		SoftwareFrame: true, Pointer: true, Keyboard: true, TextInput: true,
+		Clipboard: true, MultipleWindows: true, DragDrop: true, Wayland: true,
+		Tray: true, Frameless: true,
+	}
 }
 
 func BackendName() (string, error) {

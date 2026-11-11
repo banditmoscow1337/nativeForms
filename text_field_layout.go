@@ -2,6 +2,7 @@ package nativeforms
 
 import (
 	"sort"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -18,7 +19,24 @@ type textFieldLayout struct {
 	fontGeneration    uint64
 	version           uint64
 	multiline, masked bool
+	shared            bool
 }
+
+type cachedInitialFieldLayout struct {
+	text           string
+	width          float32
+	spec           FontSpec
+	fonts          *FontContext
+	fontGeneration uint64
+	multiline      bool
+	runes          []rune
+	lines          []textLine
+}
+
+var (
+	initialFieldLayoutMu    sync.Mutex
+	initialFieldLayoutCache cachedInitialFieldLayout
+)
 
 func (c *textFieldLayout) lineText(index int, r []rune, line textLine) string {
 	if line.start >= line.end {
@@ -51,22 +69,55 @@ func (f *TextField) layoutFor(width float32, spec FontSpec) *textFieldLayout {
 		width: width, spec: spec, fonts: fonts, fontGeneration: version,
 		version: f.editor.version, multiline: f.Multiline, masked: f.Password,
 	}
-	n := utf8.RuneCountInString(f.editor.Text)
-	if n <= len(f.shortRunes) {
+	text := f.editor.Text
+	if len(text) > 4096 && f.editor.version == 0 && !f.Password {
+		initialFieldLayoutMu.Lock()
+		if initialFieldLayoutCache.text == text &&
+			initialFieldLayoutCache.width == width &&
+			initialFieldLayoutCache.spec == spec &&
+			initialFieldLayoutCache.fonts == fonts &&
+			initialFieldLayoutCache.fontGeneration == version &&
+			initialFieldLayoutCache.multiline == f.Multiline {
+			c.runes = initialFieldLayoutCache.runes
+			c.lines = initialFieldLayoutCache.lines
+			c.shared = true
+			initialFieldLayoutMu.Unlock()
+			f.singleLineText = ""
+			f.layoutCache = c
+			return c
+		}
+		initialFieldLayoutMu.Unlock()
+	}
+	if len(text) <= len(f.shortRunes)*utf8.UTFMax && utf8.RuneCountInString(text) <= len(f.shortRunes) {
 		buf := f.shortRunes[:0]
-		for _, r := range f.editor.Text {
+		for _, r := range text {
 			buf = append(buf, r)
 		}
 		c.runes = buf
 	} else {
-		c.runes = []rune(f.editor.Text)
+		c.runes = []rune(text)
 	}
 	if f.Password {
 		maskPasswordRunes(c.runes, fonts != nil)
 	}
 	c.lines = f.lines(c.runes, width, spec)
+	if len(text) > 4096 && f.editor.version == 0 && !f.Password {
+		c.shared = true
+		initialFieldLayoutMu.Lock()
+		initialFieldLayoutCache = cachedInitialFieldLayout{
+			text:           text,
+			width:          width,
+			spec:           spec,
+			fonts:          fonts,
+			fontGeneration: version,
+			multiline:      f.Multiline,
+			runes:          c.runes,
+			lines:          c.lines,
+		}
+		initialFieldLayoutMu.Unlock()
+	}
 	if !f.Multiline && !f.Password && len(c.lines) == 1 && c.lines[0].start == 0 && c.lines[0].end == len(c.runes) {
-		f.singleLineText = f.editor.Text
+		f.singleLineText = text
 	} else {
 		f.singleLineText = ""
 	}
@@ -76,8 +127,7 @@ func (f *TextField) layoutFor(width float32, spec FontSpec) *textFieldLayout {
 
 func (c *textFieldLayout) applyEdit(f *TextField, edit textEdit) bool {
 	if c == nil || !c.multiline || edit.version == 0 || c.version != edit.base || edit.version != f.editor.version ||
-		c.multiline != f.Multiline || c.masked || c.fonts != f.fontContext() ||
-		c.fontGeneration != c.fonts.layoutGeneration() {
+		c.multiline != f.Multiline || c.masked || c.fonts != f.fontContext() {
 		return false
 	}
 	old := c.runes
@@ -91,6 +141,12 @@ func (c *textFieldLayout) applyEdit(f *TextField, edit textEdit) bool {
 }
 
 func (c *textFieldLayout) replaceRange(f *TextField, a, b int, insert []rune) {
+	if c.shared {
+		c.runes = append([]rune(nil), c.runes...)
+		c.lines = append([]textLine(nil), c.lines...)
+		c.lineStrings = nil
+		c.shared = false
+	}
 	old := c.runes
 	// Include the neighboring paragraph to handle edits at a hard break,
 	// including a split or merge of CRLF.

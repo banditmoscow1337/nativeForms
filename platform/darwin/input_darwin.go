@@ -19,7 +19,12 @@ type nsRange struct {
 
 const nsNotFound = uint64(0x7fffffffffffffff)
 
-var nativeViewClass objc.Class
+var (
+	nativeViewClass   objc.Class
+	nativeWindowClass objc.Class
+	trayTargetClass   objc.Class
+	trayTargetID      objc.ID
+)
 
 func registerView() error {
 	protocol := objc.GetProtocol("NSTextInputClient")
@@ -33,7 +38,19 @@ func registerView() error {
 		}
 		return 0
 	}
+	invalidateGeom := func(self objc.ID, _ objc.SEL, _ objc.ID) {
+		if w := viewWindows[self]; w != nil {
+			w.geomValid = false
+			w.manager.InvalidateLayout()
+		}
+	}
 	methods := []objc.MethodDef{
+		{Cmd: selector("windowDidResize:"), Fn: invalidateGeom},
+		{Cmd: selector("windowDidChangeBackingProperties:"), Fn: invalidateGeom},
+		{Cmd: selector("windowDidBecomeKey:"), Fn: invalidateGeom},
+		{Cmd: selector("windowDidResignKey:"), Fn: invalidateGeom},
+		{Cmd: selector("windowDidMiniaturize:"), Fn: invalidateGeom},
+		{Cmd: selector("windowDidDeminiaturize:"), Fn: invalidateGeom},
 		{Cmd: selector("windowShouldClose:"), Fn: func(self objc.ID, _ objc.SEL, _ objc.ID) bool {
 			w := viewWindows[self]
 			if w != nil {
@@ -49,12 +66,17 @@ func registerView() error {
 			return false // the App destroys the window after the callback returns
 		}},
 		{Cmd: selector("isFlipped"), Fn: func(objc.ID, objc.SEL) bool { return true }},
+		{Cmd: selector("wantsUpdateLayer"), Fn: func(self objc.ID, _ objc.SEL) bool {
+			w := viewWindows[self]
+			return w != nil && w.representation == 0
+		}},
+		{Cmd: selector("updateLayer"), Fn: func(objc.ID, objc.SEL) {}},
 		{Cmd: selector("drawRect:"), Fn: func(self objc.ID, _ objc.SEL, _ rect) {
 			w := viewWindows[self]
 			if w == nil || w.representation == 0 {
 				return
 			}
-			bounds := objc.Send[rect](self, selector("bounds"))
+			bounds := msgSendRect0(self, selBounds)
 			objc.Send[bool](w.representation, selector("drawInRect:fromRect:operation:fraction:respectFlipped:hints:"),
 				bounds, rect{}, uint64(1), float64(1), true, objc.ID(0))
 		}},
@@ -166,7 +188,8 @@ func registerView() error {
 			if !ok {
 				return rect{}
 			}
-			local := rect{Origin: point{X: float64(r.X), Y: float64(r.Y)}, Size: size{W: float64(max(float32(1), r.W)), H: float64(r.H)}}
+			uiScale := float64(w.uiScale())
+			local := rect{Origin: point{X: float64(r.X) * uiScale, Y: float64(r.Y) * uiScale}, Size: size{W: float64(max(float32(1), r.W)) * uiScale, H: float64(r.H) * uiScale}}
 			inWindow := objc.Send[rect](self, selector("convertRect:toView:"), local, objc.ID(0))
 			return objc.Send[rect](w.window, selector("convertRectToScreen:"), inWindow)
 		}},
@@ -265,8 +288,37 @@ func registerView() error {
 	}
 	var err error
 	nativeViewClass, err = objc.RegisterClass("NativeFormsInputView", objc.GetClass("NSView"), []*objc.Protocol{protocol}, nil, methods)
-	return err
+	if err != nil {
+		return err
+	}
+	// Borderless NSWindow instances return false from canBecomeKeyWindow and
+	// canBecomeMainWindow by default; subclass NSWindow so frameless windows
+	// continue to receive keyboard focus and IME events.
+	winMethods := []objc.MethodDef{
+		{Cmd: selector("canBecomeKeyWindow"), Fn: func(objc.ID, objc.SEL) bool { return true }},
+		{Cmd: selector("canBecomeMainWindow"), Fn: func(objc.ID, objc.SEL) bool { return true }},
+	}
+	nativeWindowClass, err = objc.RegisterClass("NativeFormsWindow", objc.GetClass("NSWindow"), nil, nil, winMethods)
+	if err != nil {
+		return err
+	}
+	trayMethods := []objc.MethodDef{
+		{Cmd: selector("trayItemClicked:"), Fn: func(_ objc.ID, _ objc.SEL, sender objc.ID) {
+			if activeApplication == nil || activeApplication.owner == nil {
+				return
+			}
+			tag := int(objc.Send[int64](sender, selector("tag")))
+			activeApplication.owner.invokeTrayAction(tag)
+		}},
+	}
+	trayTargetClass, err = objc.RegisterClass("NativeFormsTrayTarget", objc.GetClass("NSObject"), nil, nil, trayMethods)
+	if err != nil {
+		return err
+	}
+	trayTargetID = objc.ID(trayTargetClass).Send(selector("new"))
+	return nil
 }
+
 func plainString(value objc.ID) string {
 	if value == 0 {
 		return ""
@@ -276,12 +328,14 @@ func plainString(value objc.ID) string {
 	}
 	return stringValue(value)
 }
+
 func utf16RuneUnits(r rune) uint64 {
 	if r > 0xffff {
 		return 2
 	}
 	return 1
 }
+
 func utf16Length(value string) uint64 {
 	n := uint64(0)
 	for _, r := range value {
@@ -289,6 +343,7 @@ func utf16Length(value string) uint64 {
 	}
 	return n
 }
+
 func utf16RangeBytes(value string, r nsRange) (int, int, bool) {
 	if r.Location == nsNotFound || r.Length > ^uint64(0)-r.Location {
 		return 0, 0, false
@@ -316,6 +371,7 @@ func utf16RangeBytes(value string, r nsRange) (int, int, bool) {
 	}
 	return a, b, a >= 0 && b >= a
 }
+
 func (w *Window) committedSelection() nsRange {
 	s, ok := w.manager.TextInputState()
 	if !ok {
@@ -324,6 +380,7 @@ func (w *Window) committedSelection() nsRange {
 	a, b := min(s.Cursor, s.Anchor), max(s.Cursor, s.Anchor)
 	return nsRange{Location: uint64(s.UTF16Base) + utf16Length(s.Text[:a]), Length: utf16Length(s.Text[a:b])}
 }
+
 func (w *Window) nativeReplacement(r nsRange) {
 	if r.Location == nsNotFound {
 		return
@@ -344,18 +401,20 @@ func (w *Window) nativeReplacement(r nsRange) {
 		}
 	}
 }
+
 func (w *Window) cancelMarked() {
 	if w.marked != "" {
 		w.marked = ""
 		w.manager.HandleEvent(ui.Event{Type: ui.CompositionEnd})
 	}
 	if w.view != 0 {
-		context := w.view.Send(selector("inputContext"))
+		context := msgSend0(w.view, selInputContext)
 		if context != 0 {
-			context.Send(selector("discardMarkedText"))
+			msgSend0(context, selector("discardMarkedText"))
 		}
 	}
 }
+
 func (w *Window) syncInputFocus() {
 	if !w.manager.TextInputFocused() && w.inputIdentity == nil {
 		return
@@ -365,14 +424,22 @@ func (w *Window) syncInputFocus() {
 	if ok {
 		id = s.Identity
 	}
-	if id != w.inputIdentity {
+	identityChanged := id != w.inputIdentity
+	if identityChanged {
 		w.cancelMarked()
 		w.inputIdentity = id
 	}
 	if w.view != 0 && ok {
-		context := msgSend0(w.view, selector("inputContext"))
-		if context != 0 {
-			msgSend0(context, selector("invalidateCharacterCoordinates"))
+		if identityChanged || w.marked != "" || s.Caret != w.lastInputCaret ||
+			s.Cursor != w.lastInputCursor || s.Anchor != w.lastInputAnchor || s.Base != w.lastInputBase {
+			w.lastInputCaret = s.Caret
+			w.lastInputCursor = s.Cursor
+			w.lastInputAnchor = s.Anchor
+			w.lastInputBase = s.Base
+			context := msgSend0(w.view, selInputContext)
+			if context != 0 {
+				msgSend0(context, selInvalidateCoords)
+			}
 		}
 	}
 }

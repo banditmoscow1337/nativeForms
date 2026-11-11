@@ -18,12 +18,15 @@ const (
 	FeatureDragDrop        Feature = "drag-drop"
 	FeatureFileDialog      Feature = "file-dialog"
 	FeatureWayland         Feature = "wayland"
+	FeatureTray            Feature = "tray"
+	FeatureFrameless       Feature = "frameless"
 )
 
 type Capabilities struct {
 	SoftwareFrame, Pointer, Keyboard, TextInput bool
 	Clipboard, IME, MultipleWindows             bool
 	DragDrop, FileDialog, Wayland               bool
+	Tray, Frameless                             bool
 }
 
 type FileDialogs interface {
@@ -74,6 +77,10 @@ func (c Capabilities) Supports(feature Feature) bool {
 		return c.FileDialog
 	case FeatureWayland:
 		return c.Wayland
+	case FeatureTray:
+		return c.Tray
+	case FeatureFrameless:
+		return c.Frameless
 	}
 	return false
 }

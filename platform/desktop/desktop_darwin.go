@@ -21,6 +21,15 @@ func (a darwinDriver) Add(w Window) error {
 	}
 	return a.App.Add(native)
 }
+func (a darwinDriver) SetTray(options TrayOptions) error {
+	return a.App.SetTray(darwin.TrayOptions{
+		Title:   options.Title,
+		Tooltip: options.Tooltip,
+		Icon:    options.Icon,
+		Menu:    options.Menu,
+		OnClick: options.OnClick,
+	})
+}
 
 // AppKit needs main to remain on its startup OS thread. Package initialization
 // runs on that thread before main, so applications need no platform-specific init.
@@ -34,7 +43,8 @@ func newWindow(manager *ui.Manager, options Options) (Window, error) {
 		return nil, fmt.Errorf("desktop: backend %q is only available on Linux", options.Backend)
 	}
 	return darwin.New(manager, darwin.Options{
-		Title: options.Title, Width: options.Width, Height: options.Height, Graphics: options.Graphics,
+		Title: options.Title, Width: options.Width, Height: options.Height, Scale: options.Scale, Graphics: options.Graphics,
+		Frameless: options.Frameless, HideWindowControls: options.HideWindowControls,
 		OnReady: func(w *darwin.Window) {
 			if options.OnReady != nil {
 				options.OnReady(w)

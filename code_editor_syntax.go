@@ -1,259 +1,10 @@
 package nativeforms
 
 import (
-	"errors"
-	"go/token"
 	"sort"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/banditmoscow1337/nativeForms/editor"
 )
-
-// CodeStyle names the foreground style of a source range. CodePlain uses the
-// current theme's text color; CodeEditor.Palette can override any style.
-type CodeStyle uint8
-
-const (
-	CodePlain CodeStyle = iota
-	CodeKeyword
-	CodeComment
-	CodeString
-	CodeNumber
-	CodeType
-	CodeFunction
-	CodeVariable
-)
-
-// StyledRange uses absolute UTF-8 byte offsets in the editor's Document.
-type StyledRange struct {
-	Start, End int
-	Style      CodeStyle
-}
-
-var ErrStaleCodeStyle = errors.New("nativeforms: styles refer to an older document version")
-var ErrInvalidCodeStyle = errors.New("nativeforms: invalid style or semantic token range")
-
-type goLexState uint8
-
-const (
-	goNormal goLexState = iota
-	goBlockComment
-	goRawString
-)
-
-// lexGoLine returns local byte ranges and the state carried to the next line.
-// Keeping the state per line lets the widget tokenize only newly visible lines.
-func lexGoLine(line string, state goLexState) ([]StyledRange, goLexState) {
-	return scanGoLine(line, state, true)
-}
-
-func scanGoLine(line string, state goLexState, styles bool) ([]StyledRange, goLexState) {
-	var spans []StyledRange
-	if styles {
-		spans = make([]StyledRange, 0, 8)
-	}
-	return scanGoLineInto(line, state, styles, spans)
-}
-
-// advanceGoLexState computes the next line's carry state without allocating
-// spans, decoding UTF-8 runes, or looking up Go keywords.
-func advanceGoLexState(line string, state goLexState) goLexState {
-	if state == goNormal {
-		hasSpecial := false
-		for i := 0; i < len(line); i++ {
-			b := line[i]
-			if b == '`' || (b == '/' && i+1 < len(line) && line[i+1] == '*') {
-				hasSpecial = true
-				break
-			}
-		}
-		if !hasSpecial {
-			return goNormal
-		}
-	}
-	for at := 0; at < len(line); {
-		switch state {
-		case goBlockComment:
-			for at < len(line) && (at+1 >= len(line) || line[at] != '*' || line[at+1] != '/') {
-				at++
-			}
-			if at+1 < len(line) {
-				at += 2
-				state = goNormal
-			}
-			continue
-		case goRawString:
-			for at < len(line) && line[at] != '`' {
-				at++
-			}
-			if at < len(line) {
-				at++
-				state = goNormal
-			}
-			continue
-		}
-		b := line[at]
-		if b == '/' && at+1 < len(line) {
-			if line[at+1] == '/' {
-				break
-			}
-			if line[at+1] == '*' {
-				at += 2
-				state = goBlockComment
-				continue
-			}
-		}
-		if b == '`' {
-			at++
-			for at < len(line) && line[at] != '`' {
-				at++
-			}
-			if at < len(line) {
-				at++
-			} else {
-				state = goRawString
-			}
-			continue
-		}
-		if b == '"' || b == '\'' {
-			quote := b
-			at++
-			for at < len(line) {
-				if line[at] == '\\' {
-					at = min(len(line), at+2)
-					continue
-				}
-				at++
-				if line[at-1] == quote {
-					break
-				}
-			}
-			continue
-		}
-		at++
-	}
-	return state
-}
-
-func scanGoLineInto(line string, state goLexState, styles bool, spans []StyledRange) ([]StyledRange, goLexState) {
-	spans = spans[:0]
-	if !styles {
-		return spans, advanceGoLexState(line, state)
-	}
-	appendStyle := func(start, end int, style CodeStyle) {
-		if start < end {
-			spans = append(spans, StyledRange{Start: start, End: end, Style: style})
-		}
-	}
-	for at := 0; at < len(line); {
-		start := at
-		switch state {
-		case goBlockComment:
-			for at < len(line) && (at+1 >= len(line) || line[at] != '*' || line[at+1] != '/') {
-				at++
-			}
-			if at+1 < len(line) {
-				at += 2
-				state = goNormal
-			}
-			appendStyle(start, at, CodeComment)
-			continue
-		case goRawString:
-			for at < len(line) && line[at] != '`' {
-				at++
-			}
-			if at < len(line) {
-				at++
-				state = goNormal
-			}
-			appendStyle(start, at, CodeString)
-			continue
-		}
-		if at+1 < len(line) && line[at] == '/' && line[at+1] == '/' {
-			appendStyle(at, len(line), CodeComment)
-			break
-		}
-		if at+1 < len(line) && line[at] == '/' && line[at+1] == '*' {
-			state = goBlockComment
-			continue
-		}
-		if line[at] == '`' {
-			at++
-			for at < len(line) && line[at] != '`' {
-				at++
-			}
-			if at < len(line) {
-				at++
-			} else {
-				state = goRawString
-			}
-			appendStyle(start, at, CodeString)
-			continue
-		}
-		if line[at] == '"' || line[at] == '\'' {
-			quote := line[at]
-			at++
-			for at < len(line) {
-				if line[at] == '\\' {
-					at = min(len(line), at+2)
-					continue
-				}
-				at++
-				if line[at-1] == quote {
-					break
-				}
-			}
-			appendStyle(start, at, CodeString)
-			continue
-		}
-		r, size := utf8.DecodeRuneInString(line[at:])
-		if unicode.IsLetter(r) || r == '_' {
-			at += size
-			for at < len(line) {
-				r, size = utf8.DecodeRuneInString(line[at:])
-				if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
-					break
-				}
-				at += size
-			}
-			word := line[start:at]
-			switch {
-			case token.Lookup(word).IsKeyword():
-				appendStyle(start, at, CodeKeyword)
-			case word == "true" || word == "false" || word == "nil" || word == "iota":
-				appendStyle(start, at, CodeNumber)
-			case goBuiltinType(word):
-				appendStyle(start, at, CodeType)
-			}
-			continue
-		}
-		if unicode.IsDigit(r) {
-			at += size
-			for at < len(line) {
-				r, size = utf8.DecodeRuneInString(line[at:])
-				if !unicode.IsDigit(r) && !unicode.IsLetter(r) && r != '_' && r != '.' {
-					break
-				}
-				at += size
-			}
-			appendStyle(start, at, CodeNumber)
-			continue
-		}
-		at += size
-	}
-	return spans, state
-}
-
-func goBuiltinType(word string) bool {
-	switch word {
-	case "any", "bool", "byte", "complex64", "complex128", "error", "float32", "float64",
-		"int", "int8", "int16", "int32", "int64", "rune", "string", "uint", "uint8",
-		"uint16", "uint32", "uint64", "uintptr", "comparable":
-		return true
-	}
-	return false
-}
 
 func (e *CodeEditor) SetStyleRanges(version uint64, ranges []StyledRange) error {
 	e.syncDocument()
@@ -262,7 +13,7 @@ func (e *CodeEditor) SetStyleRanges(version uint64, ranges []StyledRange) error 
 		return err
 	}
 	e.styles = validated
-	e.invalidatePaint()
+	e.InvalidatePaint()
 	return nil
 }
 
@@ -306,7 +57,7 @@ func (e *CodeEditor) SetSemanticTokens(version uint64, legend []string, data []u
 		return err
 	}
 	e.semantic = validated
-	e.invalidatePaint()
+	e.InvalidatePaint()
 	return nil
 }
 
@@ -348,19 +99,41 @@ func (e *CodeEditor) validateRanges(version uint64, ranges []StyledRange) ([]Sty
 }
 
 func codeStyleColor(style CodeStyle, theme Theme) Color {
+	if theme.IsLight() {
+		switch style {
+		case CodeKeyword:
+			return RGBA(175, 0, 219, 255)
+		case CodeComment:
+			return RGBA(0, 128, 0, 255)
+		case CodeString:
+			return RGBA(163, 21, 21, 255)
+		case CodeNumber:
+			return RGBA(9, 134, 88, 255)
+		case CodeType:
+			return RGBA(38, 127, 153, 255)
+		case CodeFunction:
+			return RGBA(121, 94, 38, 255)
+		case CodeVariable:
+			return RGBA(0, 16, 128, 255)
+		default:
+			return theme.Text
+		}
+	}
 	switch style {
 	case CodeKeyword:
-		return theme.Accent
+		return RGBA(197, 134, 192, 255)
 	case CodeComment:
-		return theme.MutedText
+		return RGBA(106, 153, 85, 255)
 	case CodeString:
-		return RGBA(153, 207, 157, 255)
+		return RGBA(206, 145, 120, 255)
 	case CodeNumber:
-		return RGBA(202, 170, 224, 255)
+		return RGBA(181, 206, 168, 255)
 	case CodeType:
-		return RGBA(131, 196, 217, 255)
+		return RGBA(78, 201, 176, 255)
 	case CodeFunction:
-		return RGBA(235, 205, 138, 255)
+		return RGBA(220, 220, 170, 255)
+	case CodeVariable:
+		return RGBA(156, 220, 254, 255)
 	default:
 		return theme.Text
 	}
