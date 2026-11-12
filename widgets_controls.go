@@ -7,11 +7,17 @@ import (
 
 type Button struct {
 	State
-	Text     string
-	Icon     *ImageResource
-	FontSize float32
-	Font     FontSpec
-	OnClick  func()
+	Text       string
+	Icon       *ImageResource
+	FontSize   float32
+	Font       FontSpec
+	Active     bool
+	Primary    bool
+	Danger     bool
+	Background Color
+	Border     Color
+	TextColor  Color
+	OnClick    func()
 }
 
 func NewButton(text string, onClick func()) *Button {
@@ -63,6 +69,54 @@ func (button *Button) SetFontSize(size float32) {
 	button.invalidateLayout()
 }
 
+func (button *Button) SetActive(active bool) {
+	if button.Active == active {
+		return
+	}
+	button.Active = active
+	button.InvalidatePaint()
+}
+
+func (button *Button) SetPrimary(primary bool) {
+	if button.Primary == primary {
+		return
+	}
+	button.Primary = primary
+	button.InvalidatePaint()
+}
+
+func (button *Button) SetDanger(danger bool) {
+	if button.Danger == danger {
+		return
+	}
+	button.Danger = danger
+	button.InvalidatePaint()
+}
+
+func (button *Button) SetBackground(color Color) {
+	if button.Background == color {
+		return
+	}
+	button.Background = color
+	button.InvalidatePaint()
+}
+
+func (button *Button) SetBorder(color Color) {
+	if button.Border == color {
+		return
+	}
+	button.Border = color
+	button.InvalidatePaint()
+}
+
+func (button *Button) SetTextColor(color Color) {
+	if button.TextColor == color {
+		return
+	}
+	button.TextColor = color
+	button.InvalidatePaint()
+}
+
 func (button *Button) SetOnClick(onClick func()) {
 	button.OnClick = onClick
 }
@@ -87,17 +141,62 @@ func (button *Button) Measure(constraints Constraints) Vec2 {
 }
 
 func (button *Button) fontSpec() FontSpec {
-	return resolveFontSpec(button.Font, button.FontSize, button.Theme().FontSize)
+	spec := resolveFontSpec(button.Font, button.FontSize, button.Theme().FontSize)
+	if button.Primary && spec.Weight == 0 {
+		spec.Weight = 650
+	}
+	return spec
 }
 
 func (button *Button) Paint(canvas *Canvas) {
-	paintControlSurface(canvas, &button.State)
+	if button.rect.Empty() {
+		return
+	}
+	radius := button.effectiveCornerRadius(canvas.theme)
+	bg, bd := controlColors(&button.State, canvas.theme)
+	if button.Background.A > 0 {
+		bg = button.Background
+	}
+	if button.Border.A > 0 {
+		bd = button.Border
+	}
+	if button.Primary && button.Enabled() {
+		bg = canvas.theme.Accent
+		bd = canvas.theme.Accent
+		if button.Hovered() || button.Focused() {
+			bg = canvas.theme.AccentHover
+			bd = canvas.theme.AccentHover
+		}
+	} else if button.Active && button.Enabled() {
+		bg = canvas.theme.Accent.WithAlpha(0.14)
+		bd = canvas.theme.Accent
+	}
+	if bg.A > 0 {
+		canvas.RoundedRect(button.rect, radius, bg)
+	}
+	if bd.A > 0 {
+		canvas.RoundedBorder(button.rect, radius, 1, bd)
+	}
+
 	spec := button.fontSpec()
 	color := canvas.theme.Text
+	if button.TextColor.A > 0 {
+		color = button.TextColor
+	} else if button.Primary && button.Enabled() {
+		if canvas.theme.IsLight() {
+			color = RGBA(255, 255, 255, 255)
+		} else {
+			color = RGBA(24, 38, 18, 255)
+		}
+	} else if button.Active && button.Enabled() {
+		color = canvas.theme.Accent
+	} else if button.Danger && button.Enabled() {
+		color = canvas.theme.Danger
+	}
 	if !button.Enabled() {
 		color = canvas.theme.MutedText
 	}
-	inner := button.rect.Inset(Symmetric(12, 4))
+	inner := button.rect.Inset(Symmetric(8, 4))
 	if inner.Empty() {
 		return
 	}

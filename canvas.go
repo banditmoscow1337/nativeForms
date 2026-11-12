@@ -286,6 +286,63 @@ func (canvas *Canvas) Border(rect Rect, width float32, tint Color) {
 	canvas.Rect(Rect{X: rect.X + rect.W - width, Y: rect.Y + width, W: width, H: rect.H - width*2}, tint)
 }
 
+// DashedRect draws a rectangular marquee border with alternating dash and gap segments.
+func (canvas *Canvas) DashedRect(rect Rect, dashLen, gapLen, width float32, tint Color) {
+	if rect.Empty() || width <= 0 || tint.A <= 0 {
+		return
+	}
+	if dashLen <= 0 {
+		dashLen = 5
+	}
+	if gapLen <= 0 {
+		gapLen = 4
+	}
+	step := dashLen + gapLen
+	for x := rect.X; x < rect.X+rect.W; x += step {
+		w := minFloat32(dashLen, rect.X+rect.W-x)
+		canvas.Rect(Rect{X: x, Y: rect.Y, W: w, H: width}, tint)
+		canvas.Rect(Rect{X: x, Y: rect.Y + rect.H - width, W: w, H: width}, tint)
+	}
+	for y := rect.Y; y < rect.Y+rect.H; y += step {
+		h := minFloat32(dashLen, rect.Y+rect.H-y)
+		canvas.Rect(Rect{X: rect.X, Y: y, W: width, H: h}, tint)
+		canvas.Rect(Rect{X: rect.X + rect.W - width, Y: y, W: width, H: h}, tint)
+	}
+}
+
+// Checkerboard fills rect with an alternating two-color grid pattern.
+func (canvas *Canvas) Checkerboard(rect Rect, cellSize float32, c1, c2 Color) {
+	if rect.Empty() {
+		return
+	}
+	if cellSize < 2 {
+		cellSize = 8
+	}
+	canvas.Rect(rect, c1)
+	if c2.A <= 0 {
+		return
+	}
+	canvas.PushClip(rect)
+	defer canvas.PopClip()
+	cols := int(math.Ceil(float64(rect.W / cellSize)))
+	rows := int(math.Ceil(float64(rect.H / cellSize)))
+	if cols*rows > 4096 {
+		if chk := SharedCheckerboardResource(); chk != nil {
+			canvas.Image(chk, rect, Rect{}, RGBA(255, 255, 255, 255), FilterNearest)
+		}
+		return
+	}
+	for ry := 0; ry < rows; ry++ {
+		y := rect.Y + float32(ry)*cellSize
+		h := minFloat32(cellSize, rect.Y+rect.H-y)
+		for rx := ry & 1; rx < cols; rx += 2 {
+			x := rect.X + float32(rx)*cellSize
+			w := minFloat32(cellSize, rect.X+rect.W-x)
+			canvas.Rect(Rect{X: x, Y: y, W: w, H: h}, c2)
+		}
+	}
+}
+
 func (canvas *Canvas) Line(from, to Vec2, width float32, tint Color) {
 	if width <= 0 || tint.A <= 0 || len(canvas.clips) == 0 {
 		return

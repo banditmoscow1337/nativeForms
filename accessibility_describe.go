@@ -28,6 +28,9 @@ func describeAccessible(c Component) AccessibilityNode {
 		n.Actions |= AccessibilityActivate
 	case *Button:
 		n.Role, n.Name = RoleButton, w.Text
+		if w.Active {
+			n.State |= AccessibleChecked
+		}
 		n.Actions |= AccessibilityActivate
 	case *Checkbox:
 		n.Role, n.Name = RoleCheckbox, w.Text
@@ -69,6 +72,24 @@ func describeAccessible(c Component) AccessibilityNode {
 	case *ColorPicker:
 		n.Role, n.Name, n.Value = RoleColorPicker, w.Text, w.Hex()
 		n.Actions |= AccessibilityActivate | AccessibilityIncrement | AccessibilityDecrement | AccessibilitySetValue
+	case *InteractiveCanvas:
+		n.Role = RoleCanvas
+		n.Value = w.OverlayBadge
+	case *SwatchGrid:
+		n.Role, n.Value = RoleColorPicker, w.Selected.Hex()
+		n.Actions |= AccessibilityActivate | AccessibilityIncrement | AccessibilityDecrement | AccessibilitySetValue
+	case *LayerList:
+		n.Role = RoleList
+		if w.SelectedIndex >= 0 && w.SelectedIndex < len(w.Items) {
+			n.Value = w.Items[w.SelectedIndex].Name
+		}
+		n.Actions |= AccessibilityIncrement | AccessibilityDecrement
+	case *FrameStrip:
+		n.Role = RoleTabList
+		if w.SelectedIndex >= 0 && w.SelectedIndex < len(w.Items) {
+			n.Value = w.Items[w.SelectedIndex].Title
+		}
+		n.Actions |= AccessibilityIncrement | AccessibilityDecrement
 	case *ProgressBar:
 		value := clampFloat32(w.Value, 0, 1)
 		n.Role, n.Value = RoleProgressBar, w.percentString()
@@ -241,6 +262,69 @@ func (m *Manager) PerformAccessibilityAction(id AccessibleID, action Accessibili
 			}
 			if len(w.Presets) > 0 {
 				w.SetValue(w.Presets[0])
+				return true
+			}
+		}
+	case *SwatchGrid:
+		if len(w.Colors) == 0 {
+			return false
+		}
+		switch action {
+		case AccessibilitySetValue:
+			col, ok := ParseHexColor(value)
+			if !ok {
+				return false
+			}
+			w.SetSelected(col)
+			return true
+		case AccessibilityActivate, AccessibilityIncrement:
+			cur := max(0, w.SelectedIndex())
+			return w.selectIndex((cur + 1) % len(w.Colors))
+		case AccessibilityDecrement:
+			cur := max(0, w.SelectedIndex())
+			return w.selectIndex((cur - 1 + len(w.Colors)) % len(w.Colors))
+		}
+	case *LayerList:
+		if len(w.Items) == 0 {
+			return false
+		}
+		switch action {
+		case AccessibilityIncrement:
+			if w.SelectedIndex+1 < len(w.Items) {
+				w.SelectedIndex++
+				if w.OnSelect != nil {
+					w.OnSelect(w.SelectedIndex)
+				}
+				return true
+			}
+		case AccessibilityDecrement:
+			if w.SelectedIndex > 0 {
+				w.SelectedIndex--
+				if w.OnSelect != nil {
+					w.OnSelect(w.SelectedIndex)
+				}
+				return true
+			}
+		}
+	case *FrameStrip:
+		if len(w.Items) == 0 {
+			return false
+		}
+		switch action {
+		case AccessibilityIncrement:
+			if w.SelectedIndex+1 < len(w.Items) {
+				w.SelectedIndex++
+				if w.OnSelect != nil {
+					w.OnSelect(w.SelectedIndex)
+				}
+				return true
+			}
+		case AccessibilityDecrement:
+			if w.SelectedIndex > 0 {
+				w.SelectedIndex--
+				if w.OnSelect != nil {
+					w.OnSelect(w.SelectedIndex)
+				}
 				return true
 			}
 		}

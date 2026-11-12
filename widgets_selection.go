@@ -149,6 +149,11 @@ func NewRadioGroup(options []RadioOption, selected string, onChange func(string)
 	return r
 }
 
+func (r *RadioGroup) SetOptions(options []RadioOption) {
+	r.Options = append(r.Options[:0], options...)
+	r.invalidateLayout()
+}
+
 func (r *RadioGroup) SetSelected(id string) {
 	if selectRadioOption(r.Options, &r.SelectedID, id) {
 		r.InvalidatePaint()
@@ -239,6 +244,23 @@ func NewComboBox(options []RadioOption, selected string, onChange func(string)) 
 	c := &ComboBox{Options: append([]RadioOption(nil), options...), SelectedID: selected, OnChange: onChange}
 	c.owner, c.focusable, c.clip = c, true, true
 	return c
+}
+
+func (c *ComboBox) SetOptions(options []RadioOption) {
+	c.Options = append(c.Options[:0], options...)
+	if len(c.Options) > 0 {
+		found := false
+		for _, opt := range c.Options {
+			if opt.ID == c.SelectedID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.SelectedID = c.Options[0].ID
+		}
+	}
+	c.invalidateLayout()
 }
 
 func (c *ComboBox) SetSelected(id string) {
