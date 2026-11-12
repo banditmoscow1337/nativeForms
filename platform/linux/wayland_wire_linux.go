@@ -166,7 +166,6 @@ type wlOutput struct {
 	entered bool
 }
 
-
 func (w *WaylandWindow) createBuffer() (*wlBuffer, error) {
 	pw, ph := w.framebuffer.Bounds().Dx(), w.framebuffer.Bounds().Dy()
 	count := int64(pw) * int64(ph) * 4
@@ -233,7 +232,6 @@ func (w *WaylandWindow) destroyBuffer(buffer *wlBuffer) {
 	_ = syscall.Munmap(buffer.pixels)
 	delete(w.buffers, buffer.id)
 }
-
 
 func (w *WaylandWindow) setup() error {
 	// wl_display.get_registry(2), wl_display.sync(3).
@@ -388,5 +386,3 @@ func (w *WaylandWindow) setup() error {
 	}
 	return w.wire.send(w.surface, 6, nil) // Empty initial commit; wait for configure.
 }
-
-

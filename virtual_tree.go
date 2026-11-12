@@ -263,11 +263,12 @@ func (v *VirtualTree) Handle(e Event) bool {
 			v.SetExpanded(v.SelectedID, false)
 			return true
 		}
-		if e.Key == KeyDownArrow {
+		switch e.Key {
+		case KeyDownArrow:
 			index++
-		} else if e.Key == KeyUpArrow {
+		case KeyUpArrow:
 			index--
-		} else {
+		default:
 			break
 		}
 		if len(v.rows) == 0 {

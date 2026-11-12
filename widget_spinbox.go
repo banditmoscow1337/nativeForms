@@ -285,9 +285,10 @@ func (sb *SpinBox) Handle(event Event) bool {
 			sb.pressZone = 0
 			sb.InvalidatePaint()
 			if z != 0 && z == pressed {
-				if z == 1 {
+				switch z {
+				case 1:
 					sb.Decrement()
-				} else if z == 2 {
+				case 2:
 					sb.Increment()
 				}
 				return true

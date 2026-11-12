@@ -43,7 +43,6 @@ func (w *Window) SetClipboardText(value string) error {
 	return nil
 }
 
-
 func (w *Window) openModalPanel(chooseFiles, chooseDirs bool, label string) (string, error) {
 	if w == nil || w.window == 0 {
 		return "", fmt.Errorf("darwin: %s dialog needs a running window", label)
@@ -86,4 +85,3 @@ func (w *Window) SaveFile(defaultName string) (string, error) {
 	}
 	return stringValue(panel.Send(selector("URL")).Send(selector("path"))), nil
 }
-

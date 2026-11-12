@@ -238,7 +238,7 @@ func (d *Document) makeInitialPieces(text string) *piece {
 	for i := 0; i < count; i++ {
 		size := nextPieceChunkSize(text)
 		cur := &slab[i]
-		priority := (uint64(bits.TrailingZeros64(uint64(i+1))) + 1) << 56 | d.nextPriority()
+		priority := (uint64(bits.TrailingZeros64(uint64(i+1)))+1)<<56 | d.nextPriority()
 		initPiece(cur, text[:size], priority, 0)
 		text = text[size:]
 

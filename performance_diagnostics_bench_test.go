@@ -72,8 +72,8 @@ func BenchmarkFocusedTextInputState100k(b *testing.B) {
 	manager.BeginFrame(1024, 768, 0)
 	manager.focused = field
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		state, ok := manager.TextInputState()
 		if !ok || state.Identity != field.UIState() {
 			b.Fatal("missing focused input")
@@ -88,8 +88,8 @@ func BenchmarkCodeEditorColdJump100k(b *testing.B) {
 	}
 	manager := New()
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		b.StopTimer()
 		widget := NewCodeEditor(document)
 		manager.SetRoot(widget)
@@ -115,8 +115,8 @@ func BenchmarkCodeEditorWarmJump100k(b *testing.B) {
 	widget.ScrollToLine(90000)
 	manager.BeginFrame(1024, 768, 0)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		widget.ScrollToLine(90001 + i%10)
 		manager.BeginFrame(1024, 768, 0)
 	}

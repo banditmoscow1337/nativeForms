@@ -163,9 +163,9 @@ func ColorToHSV(c Color) (h, s, v float32) {
 			h += 360
 		}
 	case g:
-		h = 60*(((b-r)/delta)+2)
+		h = 60 * (((b - r) / delta) + 2)
 	default:
-		h = 60*(((r-g)/delta)+4)
+		h = 60 * (((r - g) / delta) + 4)
 	}
 	return h, s, v
 }

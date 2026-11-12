@@ -80,17 +80,38 @@ func (renderer *Renderer) renderScaled(frame ui.Frame, dst *image.RGBA, sx, sy f
 	return err
 }
 
+const whiteAtlasUV = float32(0.5 / 2048) // fontAtlasSize in the UI package
+
+func isFullOpaqueFill(c ui.DrawCommand, w, h int) bool {
+	if c.Tint.A < 1 {
+		return false
+	}
+	vis := intersection(c.Rect, c.Clip)
+	if vis.X > 0 || vis.Y > 0 || vis.X+vis.W < float32(w) || vis.Y+vis.H < float32(h) {
+		return false
+	}
+	if c.Kind == ui.CommandQuad && c.UV == (ui.Rect{X: whiteAtlasUV, Y: whiteAtlasUV}) {
+		return true
+	}
+	if c.Kind == ui.CommandRoundedRect && c.Width <= 0 && c.Radius <= 0 {
+		return true
+	}
+	return false
+}
+
 func (renderer *Renderer) Render(frame ui.Frame, dst *image.RGBA) error {
 	if dst == nil || dst.Bounds().Min != (image.Point{}) || frame.Width <= 0 || frame.Height <= 0 ||
 		dst.Bounds().Dx() != frame.Width || dst.Bounds().Dy() != frame.Height {
 		return fmt.Errorf("software target dimensions do not match the UI frame")
 	}
-	if dst.Stride == 4*frame.Width {
-		clear(dst.Pix[:frame.Height*dst.Stride])
-	} else {
-		for y := 0; y < frame.Height; y++ {
-			offset := dst.PixOffset(0, y)
-			clear(dst.Pix[offset : offset+4*frame.Width])
+	if len(frame.Commands) == 0 || !isFullOpaqueFill(frame.Commands[0], frame.Width, frame.Height) {
+		if dst.Stride == 4*frame.Width {
+			clear(dst.Pix[:frame.Height*dst.Stride])
+		} else {
+			for y := 0; y < frame.Height; y++ {
+				offset := dst.PixOffset(0, y)
+				clear(dst.Pix[offset : offset+4*frame.Width])
+			}
 		}
 	}
 	for _, command := range frame.Commands {
@@ -122,8 +143,7 @@ func (renderer *Renderer) quad(dst *image.RGBA, c ui.DrawCommand) {
 	}
 	// Canvas.Fill samples the white center of the atlas's first texel. It is
 	// exactly opaque, so software rendering can fill directly without an atlas.
-	const whiteUV = float32(0.5 / 2048) // fontAtlasSize in the UI package
-	if c.UV == (ui.Rect{X: whiteUV, Y: whiteUV}) {
+	if c.UV == (ui.Rect{X: whiteAtlasUV, Y: whiteAtlasUV}) {
 		renderer.solid(dst, visible, c.Tint, 1)
 		return
 	}
@@ -243,11 +263,37 @@ func (renderer *Renderer) roundedRect(dst *image.RGBA, c ui.DrawCommand) {
 	opaque := c.Tint.A >= 1
 	tr, tg, tb := byte255(clamp(c.Tint.R, 0, 1)*255), byte255(clamp(c.Tint.G, 0, 1)*255), byte255(clamp(c.Tint.B, 0, 1)*255)
 
+	visSpanL := max(left, int(math.Ceil(float64(visible.X))))
+	visSpanR := min(right, int(math.Floor(float64(visRight))))
+	midSpanL := max(visSpanL, int(math.Ceil(float64(innerLeft))))
+	midSpanR := min(visSpanR, int(math.Floor(float64(innerRight))))
+
 	for y := top; y < bottom; y++ {
 		fy0, fy1 := float32(y), float32(y+1)
 		inVertBand := fy0 >= innerTop && fy1 <= innerBottom
 		inVisY := fy0 >= visible.Y && fy1 <= visBottom
+
+		spanL, spanR := 0, -1
+		if inVisY {
+			if inVertBand {
+				spanL, spanR = visSpanL, visSpanR
+			} else {
+				spanL, spanR = midSpanL, midSpanR
+			}
+			if spanL < spanR && opaque {
+				fillOpaqueSpan(dst.Pix, dst.PixOffset(spanL, y), spanR-spanL, tr, tg, tb)
+			}
+		}
+
 		for x := left; x < right; x++ {
+			if x >= spanL && x < spanR {
+				if opaque {
+					x = spanR - 1
+					continue
+				}
+				blend(dst, x, y, c.Tint, 1)
+				continue
+			}
 			fx0, fx1 := float32(x), float32(x+1)
 			if inVisY && fx0 >= visible.X && fx1 <= visRight &&
 				(inVertBand || (fx0 >= innerLeft && fx1 <= innerRight)) {
@@ -302,18 +348,49 @@ func (renderer *Renderer) roundedBorder(dst *image.RGBA, c ui.DrawCommand, visib
 	inArcLeft, inArcRight := inRectX0+inRadius, inRectX1-inRadius
 	inArcTop, inArcBottom := inRectY0+inRadius, inRectY1-inRadius
 
+	hollowRectL := int(math.Ceil(float64(inRectX0)))
+	hollowRectR := int(math.Floor(float64(inRectX1)))
+	hollowArcL := int(math.Ceil(float64(inArcLeft)))
+	hollowArcR := int(math.Floor(float64(inArcRight)))
+
+	rectRight, rectBottom := c.Rect.X+c.Rect.W, c.Rect.Y+c.Rect.H
 	visRight, visBottom := visible.X+visible.W, visible.Y+visible.H
+
 	for y := top; y < bottom; y++ {
 		fy0, fy1 := float32(y), float32(y+1)
 		inHollowBandY := fy0 >= inArcTop && fy1 <= inArcBottom
+		inInnerRectY := fy0 >= inRectY0 && fy1 <= inRectY1
+		inVertStraight := fy0 >= innerTop && fy1 <= innerBottom
+		inTopStroke := fy0 >= c.Rect.Y && fy1 <= inRectY0
+		inBotStroke := fy0 >= inRectY1 && fy1 <= rectBottom
+		inVisY := fy0 >= visible.Y && fy1 <= visBottom
+
 		for x := left; x < right; x++ {
+			if inHollowBandY && x >= hollowRectL && x < hollowRectR {
+				x = hollowRectR - 1
+				continue
+			}
+			if inInnerRectY && x >= hollowArcL && x < hollowArcR {
+				x = hollowArcR - 1
+				continue
+			}
 			fx0, fx1 := float32(x), float32(x+1)
 			// Fast skip for hollow interior of the rounded border.
 			if inHollowBandY && fx0 >= inRectX0 && fx1 <= inRectX1 {
 				continue
 			}
-			if fy0 >= inRectY0 && fy1 <= inRectY1 && fx0 >= inArcLeft && fx1 <= inArcRight {
+			if inInnerRectY && fx0 >= inArcLeft && fx1 <= inArcRight {
 				continue
+			}
+			if inVisY && fx0 >= visible.X && fx1 <= visRight {
+				if (inTopStroke || inBotStroke) && fx0 >= innerLeft && fx1 <= innerRight {
+					blend(dst, x, y, c.Tint, 1)
+					continue
+				}
+				if inVertStraight && ((fx0 >= c.Rect.X && fx1 <= inRectX0) || (fx0 >= inRectX1 && fx1 <= rectRight)) {
+					blend(dst, x, y, c.Tint, 1)
+					continue
+				}
 			}
 			coverage := float32(0)
 			for subY := 0; subY < 4; subY++ {

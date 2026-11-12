@@ -36,11 +36,22 @@ type browseInfo struct {
 	Image                           int32
 }
 
+func (w *Window) prepareModalDialog() {
+	if w.hasCapture {
+		w.hasCapture = false
+		call(win.releaseCapture)
+	}
+	if w.manager != nil {
+		w.manager.ClearInteraction()
+	}
+}
+
 // OpenFolder selects a filesystem directory for a project.
 func (w *Window) OpenFolder() (string, error) {
 	if w == nil || w.hwnd.Load() == 0 {
 		return "", fmt.Errorf("windows: folder dialog needs a running window")
 	}
+	w.prepareModalDialog()
 	shell, err := syscall.LoadLibrary("shell32.dll")
 	if err != nil {
 		return "", err
@@ -63,14 +74,22 @@ func (w *Window) OpenFolder() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if coInit, err := syscall.GetProcAddress(ole, "CoInitializeEx"); err == nil {
+		call(uintptr(coInit), 0, 2) // COINIT_APARTMENTTHREADED
+	}
 	display := make([]uint16, 260)
 	title := utf16.Encode([]rune("Select project folder\x00"))
-	info := browseInfo{Owner: w.hwnd.Load(), DisplayName: ptr16(display),
-		Title: ptr16(title), Flags: 0x0001} // BIF_RETURNONLYFSDIRS.
-	id := call(uintptr(browse), pointer(&info))
+	info := new(browseInfo)
+	*info = browseInfo{
+		Owner:       w.hwnd.Load(),
+		DisplayName: ptr16(display),
+		Title:       ptr16(title),
+		Flags:       0x0001 | 0x0040, // BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE
+	}
+	id := call(uintptr(browse), pointer(info))
 	runtime.KeepAlive(display)
 	runtime.KeepAlive(title)
-	runtime.KeepAlive(&info)
+	runtime.KeepAlive(info)
 	if id == 0 {
 		return "", nil
 	}
@@ -98,6 +117,7 @@ func (w *Window) fileDialog(save bool, defaultName string) (string, error) {
 	if w == nil || w.hwnd.Load() == 0 {
 		return "", fmt.Errorf("windows: file dialog needs a running window")
 	}
+	w.prepareModalDialog()
 	lib, err := syscall.LoadLibrary("comdlg32.dll")
 	if err != nil {
 		return "", err
@@ -122,18 +142,27 @@ func (w *Window) fileDialog(save bool, defaultName string) (string, error) {
 	}
 	copy(file, initial)
 	filter := utf16.Encode([]rune("All files\x00*.*\x00\x00"))
-	flags := uint32(0x00080000 | 0x00000800) // OFN_EXPLORER | OFN_PATHMUSTEXIST.
+	// OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR
+	flags := uint32(0x00080000 | 0x00000800 | 0x00000008)
 	if save {
-		flags |= 0x00000002
+		flags |= 0x00000002 // OFN_OVERWRITEPROMPT
 	} else {
-		flags |= 0x00001000
+		flags |= 0x00001000 // OFN_FILEMUSTEXIST
 	}
-	data := openFilename{Size: uint32(unsafe.Sizeof(openFilename{})), Owner: w.hwnd.Load(),
-		Filter: ptr16(filter), FilterIndex: 1, File: ptr16(file), MaxFile: uint32(len(file)), Flags: flags}
-	ok := call(uintptr(fn), pointer(&data))
+	data := new(openFilename)
+	*data = openFilename{
+		Size:        uint32(unsafe.Sizeof(openFilename{})),
+		Owner:       w.hwnd.Load(),
+		Filter:      ptr16(filter),
+		FilterIndex: 1,
+		File:        ptr16(file),
+		MaxFile:     uint32(len(file)),
+		Flags:       flags,
+	}
+	ok := call(uintptr(fn), pointer(data))
 	runtime.KeepAlive(file)
 	runtime.KeepAlive(filter)
-	runtime.KeepAlive(&data)
+	runtime.KeepAlive(data)
 	if ok == 0 {
 		if code := call(uintptr(extendedError)); code != 0 {
 			return "", fmt.Errorf("windows: %s failed (CommDlgExtendedError %#x)", name, code)

@@ -72,8 +72,8 @@ func BenchmarkVirtualFormScroll10k(b *testing.B) {
 	manager.SetRoot(scroll)
 	manager.BeginFrame(1024, 768, 0)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		scroll.Scroll(float32(32 + i%3*8))
 		manager.BeginFrame(1024, 768, 0)
 	}
@@ -86,8 +86,8 @@ func BenchmarkTextAreaScroll100k(b *testing.B) {
 	manager.BeginFrame(1024, 768, 0)
 	h := field.lineHeight(field.fontSpec())
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		field.scrollY = float32(90000+i%20) * h
 		field.InvalidatePaint()
 		manager.BeginFrame(1024, 768, 0)
@@ -109,8 +109,8 @@ func BenchmarkFrameBuildTextArea(b *testing.B) {
 func BenchmarkTextAreaInitial100k(b *testing.B) {
 	text := strings.Repeat("alpha beta gamma\n", 100000)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		manager := New()
 		manager.SetRoot(NewTextArea(text, nil))
 		manager.BeginFrame(1024, 768, 0)
@@ -120,8 +120,8 @@ func BenchmarkTextAreaInitial100k(b *testing.B) {
 func BenchmarkCodeEditorInitial100k(b *testing.B) {
 	text := strings.Repeat("const x = 12345; // source line\n", 100000)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		document, err := editor.NewDocument(text)
 		if err != nil {
 			b.Fatal(err)
@@ -154,8 +154,8 @@ func BenchmarkFrameResizeHiDPI(b *testing.B) {
 	manager.SetRoot(benchRows(1000))
 	manager.SetDisplayScale(2)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		if i%2 == 0 {
 			manager.BeginFrame(1024, 768, 0)
 		} else {

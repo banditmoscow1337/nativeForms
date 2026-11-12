@@ -5,7 +5,6 @@ package windows
 import (
 	"runtime"
 	"unicode/utf16"
-	"unsafe"
 
 	ui "github.com/banditmoscow1337/nativeForms"
 )
@@ -28,6 +27,9 @@ func (w *Window) composition(hwnd, flags uintptr) {
 			return ""
 		}
 		return string(utf16.Decode(units[:min(int(copied)/2, len(units))]))
+	}
+	if flags == 0 {
+		w.manager.HandleEvent(ui.Event{Type: ui.CompositionUpdate, Text: ""})
 	}
 	if flags&gcsResultStr != 0 {
 		w.manager.HandleEvent(ui.Event{Type: ui.CompositionEnd, Text: read(gcsResultStr)})
@@ -52,11 +54,14 @@ func (w *Window) placeCandidateWithContext(context uintptr) {
 	if !ok {
 		return
 	}
-	scale := float32(w.dpi) / 96
+	scale := w.scale()
 	x, y := int32(caret.X*scale), int32(caret.Y*scale)
-	form := candidateForm{Style: cfsExclude,
-		Position: point{X: x, Y: y + int32(caret.H*scale)},
-		Area:     rect{Left: x, Top: y, Right: x + 2, Bottom: y + int32(caret.H*scale)}}
-	call(win.immSetCandidate, context, uintptr(unsafe.Pointer(&form)))
-	runtime.KeepAlive(&form)
+	h := max(int32(1), int32(caret.H*scale))
+	w.candForm = candidateForm{
+		Style:    cfsExclude,
+		Position: point{X: x, Y: y + h},
+		Area:     rect{Left: x, Top: y, Right: x + 2, Bottom: y + h},
+	}
+	call(win.immSetCandidate, context, pointer(&w.candForm))
+	keep(w)
 }

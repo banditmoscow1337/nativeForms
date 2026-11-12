@@ -262,7 +262,6 @@ func (b *dbConn) match(rule string) error {
 	return err
 }
 
-
 func dbDict(values map[string]dbValue) dbValue {
 	entries := make([]any, 0, len(values))
 	for k, v := range values {

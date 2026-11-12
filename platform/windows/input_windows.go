@@ -12,15 +12,21 @@ import (
 	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
-func windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) (result uintptr) {
+func windowProc(hwnd, msg, wp, lp uintptr) (result uintptr) {
 	windowsMu.RLock()
 	w := windowsByHandle[hwnd]
 	windowsMu.RUnlock()
 	if w == nil {
-		w = creatingWindow.Load()
+		if candidate := creatingWindow.Load(); candidate != nil && candidate.hwnd.CompareAndSwap(0, hwnd) {
+			creatingWindow.Store(nil)
+			windowsMu.Lock()
+			windowsByHandle[hwnd] = candidate
+			windowsMu.Unlock()
+			w = candidate
+		}
 	}
 	if w == nil || (w.hwnd.Load() != 0 && w.hwnd.Load() != hwnd) {
-		return call(win.defProc, hwnd, uintptr(msg), wp, lp)
+		return call(win.defProc, hwnd, msg, wp, lp)
 	}
 	defer func() {
 		if value := recover(); value != nil {
@@ -29,25 +35,70 @@ func windowProc(hwnd uintptr, msg uint32, wp, lp uintptr) (result uintptr) {
 			result = 0
 		}
 	}()
-	return w.handle(hwnd, msg, wp, lp)
+	return w.handle(hwnd, uint32(msg), wp, lp)
+}
+
+func (w *Window) finishInput(hwnd uintptr) {
+	if w.app != nil && !w.painting && !w.inEvent {
+		if w.app.queue.Drain() {
+			call(win.postQuit, 0)
+			return
+		}
+	}
+	w.manager.ProcessPending()
+	if w.manager.NeedsFrame() {
+		w.invalidate()
+	}
 }
 
 func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	switch msg {
+	case wmNcCalcSize:
+		if w.options.Frameless {
+			if wp != 0 && lp != 0 && win.isZoomed != 0 && call(win.isZoomed, hwnd) != 0 {
+				if work, ok := w.monitorWorkRect(hwnd); ok {
+					*(*rect)(unsafe.Add(nil, lp)) = work
+				}
+			}
+			return 0
+		}
 	case wmPaint:
-		var ps paintStruct
-		dc := call(win.beginPaint, hwnd, pointer(&ps))
+		dc := call(win.beginPaint, hwnd, pointer(&w.ps))
 		if dc != 0 {
-			if err := w.paint(hwnd, dc); err != nil {
+			err := w.paint(hwnd, dc)
+			call(win.endPaint, hwnd, pointer(&w.ps))
+			keep(w)
+			if err != nil {
 				w.err = err
 				call(win.postMessage, hwnd, wmAppDestroy, 0, 0)
+				return 0
 			}
-			call(win.endPaint, hwnd, pointer(&ps))
+			w.syncCandidateIfNeeded(hwnd)
+			if w.app != nil && w.app.queue.HasPending() {
+				if w.app.queue.Drain() {
+					call(win.postQuit, 0)
+					return 0
+				}
+			}
+			w.manager.ProcessPending()
+			if w.manager.NeedsFrame() {
+				w.invalidate()
+			}
 		}
 		return 0
 	case wmEraseBackground:
 		return 1 // the complete DIB is presented by WM_PAINT
 	case wmSize:
+		if wp == sizeMinimized {
+			call(win.killTimer, hwnd, 1)
+			return 0
+		}
+		w.dibValid = false
+		w.manager.InvalidateLayout()
+		w.invalidate()
+		return 0
+	case wmDisplayChange:
+		w.dibValid = false
 		w.manager.InvalidateLayout()
 		w.invalidate()
 		return 0
@@ -57,27 +108,44 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 			w.dpi = 96
 		}
 		w.manager.SetBackingScale(w.dpiScale())
-		r := (*rect)(unsafe.Pointer(lp))
-		if r != nil {
+		if lp != 0 {
+			r := (*rect)(unsafe.Add(nil, lp))
 			call(win.setWindowPos, hwnd, 0, uintptr(r.Left), uintptr(r.Top),
-				uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoZOrder|swpNoActivate)
+				uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top), swpNoZOrder|swpNoOwnerZOrder|swpNoActivate)
 		}
+		w.dibValid = false
 		w.manager.InvalidateLayout()
 		w.invalidate()
 		return 0
 	case wmWake:
-		w.manager.ProcessPending()
-		if w.manager.NeedsFrame() {
-			w.invalidate()
+		w.wakePending.Store(false)
+		w.finishInput(hwnd)
+		return 0
+	case wmAppWake:
+		if w.app != nil {
+			w.app.wakePending.Store(false)
 		}
+		w.finishInput(hwnd)
 		return 0
 	case wmTrayCallback:
-		if (uint32(lp) == wmLeftUp || uint32(lp) == wmRightUp) && w.app != nil {
-			w.app.invokeTrayClick()
+		if w.app != nil {
+			switch uint32(lp) {
+			case wmLeftUp:
+				w.inEvent = true
+				w.app.invokeTrayClick()
+				w.inEvent = false
+				w.finishInput(hwnd)
+			case wmRightUp:
+				w.inEvent = true
+				w.app.showTrayMenu(hwnd)
+				w.inEvent = false
+				w.finishInput(hwnd)
+			}
 		}
 		return 0
 	case wmTimer:
 		call(win.killTimer, hwnd, 1)
+		w.manager.ProcessPending()
 		if w.manager.NeedsFrame() {
 			w.invalidate()
 		} else {
@@ -85,17 +153,29 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		}
 		return 0
 	case wmMouseMove, wmLeftDown, wmLeftUp, wmRightDown, wmRightUp, wmMiddleDown, wmMiddleUp, wmMouseWheel, wmMouseHWheel:
+		w.inEvent = true
 		w.mouse(hwnd, msg, wp, lp)
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmMouseLeave:
+		w.inEvent = true
 		w.manager.HandleEvent(ui.Event{Type: ui.PointerMove, X: -1e6, Y: -1e6})
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmCaptureChanged:
 		w.hasCapture = false
+		w.inEvent = true
 		w.manager.CancelPointerCapture()
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmDropFiles:
+		w.inEvent = true
 		w.filesDropped(wp)
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmKeyDown, wmKeyUp, wmSysKeyDown, wmSysKeyUp:
 		key := translateKey(uint32(wp))
@@ -104,8 +184,11 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 		if down {
 			kind = ui.KeyDown
 		}
+		w.inEvent = true
 		handled := w.manager.HandleEvent(ui.Event{Type: kind, Key: key,
 			Repeat: down && (lp&(1<<30)) != 0, Mods: w.mods()})
+		w.inEvent = false
+		w.finishInput(hwnd)
 		if msg == wmSysKeyDown {
 			w.suppressSysChar = handled
 		}
@@ -119,49 +202,72 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 			return 0
 		}
 	case wmChar:
+		w.inEvent = true
 		w.character(uint16(wp))
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmIMEStart:
 		if !w.manager.TextInputFocused() {
 			break
 		}
+		w.inEvent = true
 		w.manager.HandleEvent(ui.Event{Type: ui.CompositionStart})
+		w.inEvent = false
 		w.placeCandidate(hwnd)
+		w.finishInput(hwnd)
 		return 0
 	case wmIMEComposition:
 		if !w.manager.TextInputFocused() {
 			break
 		}
+		w.inEvent = true
 		w.composition(hwnd, lp)
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmIMEEnd:
 		if !w.manager.TextInputFocused() {
 			break
 		}
+		w.inEvent = true
 		w.manager.HandleEvent(ui.Event{Type: ui.CompositionEnd})
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmKillFocus:
 		w.highSurrogate = 0
+		w.inEvent = true
 		w.manager.ClearInteraction()
+		w.inEvent = false
+		w.finishInput(hwnd)
 		return 0
 	case wmSetCursor:
 		if lp&0xffff == 1 { // HTCLIENT
-			id := uintptr(32512) // IDC_ARROW
+			id := uintptr(idcArrow)
 			if w.manager.HoveredTextInput() {
-				id = 32513
-			} // IDC_IBEAM
+				id = idcIBeam
+			}
 			call(win.setCursor, call(win.loadCursor, 0, id))
 			return 1
 		}
 	case wmClose:
-		switch w.closeAction() {
+		w.inEvent = true
+		action := w.closeAction()
+		w.inEvent = false
+		switch action {
 		case platform.CancelClose:
+			w.finishInput(hwnd)
 			return 0
 		case platform.HideWindow:
 			w.Hide()
+			w.finishInput(hwnd)
 			return 0
 		case platform.QuitApp:
-			w.app.Quit()
+			if w.app != nil {
+				w.app.Quit()
+			}
+			call(win.postQuit, 0)
 			return 0
 		}
 		fallthrough
@@ -184,18 +290,18 @@ func (w *Window) handle(hwnd uintptr, msg uint32, wp, lp uintptr) uintptr {
 	return call(win.defProc, hwnd, uintptr(msg), wp, lp)
 }
 
-
 func (w *Window) mouse(hwnd uintptr, msg uint32, wp, lp uintptr) {
 	if msg == wmMouseMove {
-		tracking := trackMouseEvent{Size: uint32(unsafe.Sizeof(trackMouseEvent{})), Flags: 2, HWND: hwnd}
-		call(win.trackMouse, pointer(&tracking))
+		w.trackEvent = trackMouseEvent{Size: uint32(unsafe.Sizeof(trackMouseEvent{})), Flags: 2, HWND: hwnd}
+		call(win.trackMouse, pointer(&w.trackEvent))
 	}
-	p := point{X: int32(int16(lp & 0xffff)), Y: int32(int16((lp >> 16) & 0xffff))}
+	w.scratchPoint = point{X: int32(int16(lp & 0xffff)), Y: int32(int16((lp >> 16) & 0xffff))}
 	if msg == wmMouseWheel || msg == wmMouseHWheel {
-		call(win.screenToClient, hwnd, pointer(&p))
+		call(win.screenToClient, hwnd, pointer(&w.scratchPoint))
 	}
+	keep(w)
 	scale := 1 / w.scale()
-	event := ui.Event{X: float32(p.X) * scale, Y: float32(p.Y) * scale, Mods: w.mods()}
+	event := ui.Event{X: float32(w.scratchPoint.X) * scale, Y: float32(w.scratchPoint.Y) * scale, Mods: w.mods()}
 	switch msg {
 	case wmMouseMove:
 		event.Type = ui.PointerMove
@@ -220,12 +326,14 @@ func (w *Window) mouse(hwnd uintptr, msg uint32, wp, lp uintptr) {
 	case wmLeftUp, wmRightUp, wmMiddleUp:
 		event.Type = ui.PointerUp
 		event.Button = button(msg)
+		// Release capture before HandleEvent so OnClick handlers (such as modal
+		// file dialogs, Maximize, Minimize, or SetFrameless) never run with capture held.
+		if w.hasCapture && event.Button == w.captureButton {
+			w.hasCapture = false
+			call(win.releaseCapture)
+		}
 	}
 	w.manager.HandleEvent(event)
-	if event.Type == ui.PointerUp && w.hasCapture && event.Button == w.captureButton {
-		w.hasCapture = false
-		call(win.releaseCapture)
-	}
 }
 
 func button(msg uint32) ui.MouseButton {
@@ -256,13 +364,15 @@ func (w *Window) mods() int {
 	return mods
 }
 
-
 func translateKey(key uint32) ui.Key {
 	if key >= 0x70 && key <= 0x7B {
 		return ui.FunctionKey(int(key-0x70) + 1)
 	}
 	if key >= '0' && key <= '9' {
 		return ui.KeyDigit0 + ui.Key(key-'0')
+	}
+	if key >= 0x60 && key <= 0x69 {
+		return ui.KeyDigit0 + ui.Key(key-0x60)
 	}
 	if key >= 'A' && key <= 'Z' {
 		return ui.LetterKey(rune(key))
@@ -284,7 +394,7 @@ func translateKey(key uint32) ui.Key {
 		return ui.KeyLeftArrow
 	case 0x27:
 		return ui.KeyRightArrow
-	case 0x11:
+	case 0x11, 0xA2, 0xA3:
 		return ui.KeyControl
 	case 0x08:
 		return ui.KeyBackspace
@@ -300,9 +410,9 @@ func translateKey(key uint32) ui.Key {
 		return ui.KeyPageDown
 	case 0x2D:
 		return ui.KeyInsert
-	case 0xBD:
+	case 0xBD, 0x6D:
 		return ui.KeyMinus
-	case 0xBB:
+	case 0xBB, 0x6B:
 		return ui.KeyEqual
 	case 0xDB:
 		return ui.KeyLeftBracket
@@ -318,9 +428,9 @@ func translateKey(key uint32) ui.Key {
 		return ui.KeyBackquote
 	case 0xBC:
 		return ui.KeyComma
-	case 0xBE:
+	case 0xBE, 0x6E:
 		return ui.KeyPeriod
-	case 0xBF:
+	case 0xBF, 0x6F:
 		return ui.KeySlash
 	default:
 		return ui.KeyUnknown
@@ -339,7 +449,11 @@ func (w *Window) character(code uint16) {
 		r = rune(code)
 	}
 	w.highSurrogate = 0
+	mods := w.mods()
+	if mods&ui.ModControl != 0 && mods&ui.ModAlt == 0 {
+		return
+	}
 	if r >= 32 && r != 0x7f && r != unicode.ReplacementChar {
-		w.manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: r, Mods: w.mods()})
+		w.manager.HandleEvent(ui.Event{Type: ui.TextInput, Rune: r, Mods: mods})
 	}
 }

@@ -26,26 +26,26 @@ type shapeKey struct {
 }
 type coreTextShaper struct {
 	sync.Mutex
-	cache           map[shapeKey]ui.ShapedText
-	bytes           int
-	fontKey         uintptr
-	font            func(uint32, float64, uintptr) uintptr
-	line            func(uintptr) uintptr
-	bounds          func(uintptr, *float64, *float64, *float64) float64
-	ink             func(uintptr, uintptr) rect
-	offset          func(uintptr, int64, *float64) float64
-	draw            func(uintptr, uintptr)
-	release         func(uintptr)
-	bitmap          func(unsafe.Pointer, uintptr, uintptr, uintptr, uintptr, uintptr, uint32) uintptr
-	translate       func(uintptr, float64, float64)
-	scale           func(uintptr, float64, float64)
-	textPosition    func(uintptr, float64, float64)
-	fill            func(uintptr, float64, float64, float64, float64)
-	antialias       func(uintptr, bool)
-	smoothFonts     func(uintptr, bool)
-	subpixelPos     func(uintptr, bool)
-	quantizeSubpix  func(uintptr, bool)
-	contextRelease  func(uintptr)
+	cache          map[shapeKey]ui.ShapedText
+	bytes          int
+	fontKey        uintptr
+	font           func(uint32, float64, uintptr) uintptr
+	line           func(uintptr) uintptr
+	bounds         func(uintptr, *float64, *float64, *float64) float64
+	ink            func(uintptr, uintptr) rect
+	offset         func(uintptr, int64, *float64) float64
+	draw           func(uintptr, uintptr)
+	release        func(uintptr)
+	bitmap         func(unsafe.Pointer, uintptr, uintptr, uintptr, uintptr, uintptr, uint32) uintptr
+	translate      func(uintptr, float64, float64)
+	scale          func(uintptr, float64, float64)
+	textPosition   func(uintptr, float64, float64)
+	fill           func(uintptr, float64, float64, float64, float64)
+	antialias      func(uintptr, bool)
+	smoothFonts    func(uintptr, bool)
+	subpixelPos    func(uintptr, bool)
+	quantizeSubpix func(uintptr, bool)
+	contextRelease func(uintptr)
 }
 
 func EnableCoreText() error {

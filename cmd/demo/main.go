@@ -283,7 +283,7 @@ func parseFlags() demoFlags {
 }
 
 func main() {
-	debug.SetMemoryLimit(32 << 20)
+	debug.SetMemoryLimit(256 << 20)
 	flags := parseFlags()
 	demo := newDemoApp(flags)
 

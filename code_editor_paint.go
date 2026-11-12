@@ -197,7 +197,7 @@ func (e *CodeEditor) Paint(c *Canvas) {
 			c.Rect(Rect{X: view.X, Y: y, W: 3, H: h}, dCol)
 		}
 
-		e.paintCodeLineWithStyles(c, layout, styles, text, line, start, end, view.X-e.scrollX, y, h)
+		e.paintCodeLineWithStyles(c, layout, styles, text, start, end, view.X-e.scrollX, y, h)
 
 		// 4. Per-line squiggly underline and inline Error Lens message
 		if hasDiag {
@@ -353,12 +353,7 @@ func (e *CodeEditor) paintScrollbar(c *Canvas, view Rect, maxX float32) {
 	}
 }
 
-func (e *CodeEditor) paintCodeLine(c *Canvas, layout codeLineLayout, text string, line, start, end int, x, y, h float32) {
-	styles := e.rowStyles(text, layout, line, start)
-	e.paintCodeLineWithStyles(c, layout, styles, text, line, start, end, x, y, h)
-}
-
-func (e *CodeEditor) paintCodeLineWithStyles(c *Canvas, layout codeLineLayout, styles []CodeStyle, text string, line, start, end int, x, y, h float32) {
+func (e *CodeEditor) paintCodeLineWithStyles(c *Canvas, layout codeLineLayout, styles []CodeStyle, text string, start, end int, x, y, h float32) {
 	a, b := min(e.Caret, e.Anchor), max(e.Caret, e.Anchor)
 	from, to := max(start, a), min(end, b)
 	if from < to || b > end && a <= end {

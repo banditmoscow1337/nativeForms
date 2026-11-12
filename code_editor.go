@@ -228,7 +228,7 @@ func NewCodeEditor(document *editor.Document) *CodeEditor {
 	var lexStates []goLexState
 	lexShared := false
 	if !document.MayContainMultilineTokens() && lineCount+1 <= len(sharedNormalLexStates) {
-		lexStates = sharedNormalLexStates[:lineCount+1 : lineCount+1]
+		lexStates = sharedNormalLexStates[: lineCount+1 : lineCount+1]
 		lexShared = true
 	} else {
 		lexStates = make([]goLexState, lineCount+1, max(16, lineCount+1))

@@ -285,6 +285,21 @@ func (d *demoApp) runSelfTests() {
 	reusedEd.Close()
 	reusedTf.Close()
 
+	// 17. Window.SetFrameless & Window.SetWindowControls state test (when running with a native window)
+	if d.window != nil {
+		origFrameless := d.window.Frameless()
+		origControls := d.window.WindowControlsVisible()
+		d.window.SetFrameless(true)
+		check("Window.SetFrameless(true) updates Frameless() and WindowControlsVisible()", d.window.Frameless() && !d.window.WindowControlsVisible())
+		d.window.SetFrameless(false)
+		d.window.SetWindowControls(false)
+		check("Window.SetWindowControls(false) hides controls while keeping frame", !d.window.Frameless() && !d.window.WindowControlsVisible())
+		d.window.SetWindowControls(true)
+		check("Window.SetWindowControls(true) restores controls", !d.window.Frameless() && d.window.WindowControlsVisible())
+		d.window.SetFrameless(origFrameless)
+		d.window.SetWindowControls(origControls)
+	}
+
 	msg := fmt.Sprintf("Самопроверка завершена: %d PASS, %d FAIL", passed, failed)
 	d.manager.Notify(msg)
 	d.logf("%s", msg)

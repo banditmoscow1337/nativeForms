@@ -63,7 +63,7 @@ func (e *CodeEditor) rebuildLexStates(fromLine int) {
 	fastNormal := e.usesFastNormalState()
 	if fastNormal && count+1 <= len(sharedNormalLexStates) {
 		if e.lexStatesShared || fromLine <= 0 || e.lexStates[min(fromLine, len(e.lexStates)-1)] == goNormal {
-			e.lexStates = sharedNormalLexStates[:count+1 : count+1]
+			e.lexStates = sharedNormalLexStates[: count+1 : count+1]
 			e.lexStatesShared = true
 			return
 		}
@@ -98,7 +98,7 @@ func (e *CodeEditor) updateLexStatesFrom(fromLine, removedLines, insertedLines i
 	fastNormal := e.usesFastNormalState()
 	if fastNormal && count+1 <= len(sharedNormalLexStates) &&
 		(e.lexStatesShared || (fromLine >= 0 && fromLine < len(e.lexStates) && e.lexStates[fromLine] == goNormal)) {
-		e.lexStates = sharedNormalLexStates[:count+1 : count+1]
+		e.lexStates = sharedNormalLexStates[: count+1 : count+1]
 		e.lexStatesShared = true
 		return
 	}

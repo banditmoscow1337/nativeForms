@@ -27,6 +27,7 @@ type App struct {
 	windows     []*Window // UI goroutine only after Run begins
 	running     atomic.Bool
 	started     atomic.Bool
+	wakePending atomic.Bool
 	threadID    atomic.Uint32
 	autoQuit    bool // legacy Window.Run
 	runErr      error
@@ -34,6 +35,15 @@ type App struct {
 	tray        *TrayOptions
 	trayAdded   bool
 	trayHWND    uintptr
+	trayIcon    uintptr
+
+	// Heap-allocated Win32 message & tray structs so stack moves never
+	// invalidate pointers passed to Win32 syscalls.
+	msg        message
+	nid        notifyIconData
+	trayCursor point
+	iconInfo   iconInfo
+	iconBMI    bitmapInfo
 }
 
 var appMu sync.Mutex
@@ -90,6 +100,10 @@ func (a *App) closed(w *Window) {
 	a.trayMu.Lock()
 	hasTray := a.tray != nil
 	a.trayMu.Unlock()
+	if hasTray && a.trayAdded && len(a.windows) > 0 {
+		// Rebind the tray icon to a remaining window if the previous owner closed.
+		a.syncTray()
+	}
 	if a.autoQuit && len(a.windows) == 0 && !hasTray {
 		a.Quit()
 	}
@@ -97,6 +111,26 @@ func (a *App) closed(w *Window) {
 
 func (a *App) Post(fn func()) { a.queue.Post(fn) }
 func (a *App) Quit()          { a.queue.Quit() }
+
+func (a *App) runOnUI(fn func()) {
+	if a == nil || fn == nil || !a.running.Load() {
+		return
+	}
+	if uint32(call(win.getCurrentThreadId)) == a.threadID.Load() {
+		busy := false
+		for _, w := range a.windows {
+			if w.painting || w.inEvent {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			fn()
+			return
+		}
+	}
+	a.Post(fn)
+}
 
 func (a *App) SetTray(options TrayOptions) error {
 	if a == nil {
@@ -107,9 +141,7 @@ func (a *App) SetTray(options TrayOptions) error {
 	a.trayMu.Lock()
 	a.tray = &copied
 	a.trayMu.Unlock()
-	if a.running.Load() {
-		a.Post(a.syncTray)
-	}
+	a.runOnUI(a.syncTray)
 	return nil
 }
 
@@ -120,9 +152,7 @@ func (a *App) RemoveTray() {
 	a.trayMu.Lock()
 	a.tray = nil
 	a.trayMu.Unlock()
-	if a.running.Load() {
-		a.Post(a.syncTray)
-	}
+	a.runOnUI(a.syncTray)
 }
 
 func (a *App) invokeTrayClick() {
@@ -141,6 +171,125 @@ func (a *App) invokeTrayClick() {
 	}
 }
 
+func (a *App) showTrayMenu(hwnd uintptr) {
+	a.trayMu.Lock()
+	var items []ui.MenuItem
+	if a.tray != nil && len(a.tray.Menu) > 0 {
+		items = append([]ui.MenuItem(nil), a.tray.Menu...)
+	}
+	a.trayMu.Unlock()
+	if len(items) == 0 {
+		a.invokeTrayClick()
+		return
+	}
+	if win.createPopupMenu == 0 || win.appendMenu == 0 || win.trackPopupMenu == 0 || win.destroyMenu == 0 {
+		a.invokeTrayClick()
+		return
+	}
+	menu := call(win.createPopupMenu)
+	if menu == 0 {
+		return
+	}
+	defer call(win.destroyMenu, menu)
+
+	for i, item := range items {
+		if item.Separator || item.Label == "-" {
+			call(win.appendMenu, menu, mfSeparator, 0, 0)
+			continue
+		}
+		label := item.Label
+		if item.Shortcut != "" {
+			label = label + "\t" + item.Shortcut
+		}
+		wLabel, err := wide(label)
+		if err != nil {
+			continue
+		}
+		flags := uintptr(mfString)
+		if item.Disabled {
+			flags |= mfDisabled | mfGrayed
+		}
+		if item.Checked {
+			flags |= mfChecked
+		}
+		call(win.appendMenu, menu, flags, uintptr(i+1), ptr16(wLabel))
+		keep(wLabel)
+	}
+	if win.getCursorPos != 0 {
+		call(win.getCursorPos, pointer(&a.trayCursor))
+	}
+	if win.setForegroundWindow != 0 {
+		call(win.setForegroundWindow, hwnd)
+	}
+	cmd := int(call(win.trackPopupMenu, menu, tpmRightButton|tpmBottomAlign|tpmNonotify|tpmReturnCmd,
+		uintptr(a.trayCursor.X), uintptr(a.trayCursor.Y), 0, hwnd, 0))
+	keep(a)
+	if cmd > 0 && cmd <= len(items) {
+		selected := items[cmd-1]
+		if !selected.Disabled && selected.Action != nil {
+			selected.Action()
+		}
+	}
+}
+
+func (a *App) makeTrayIcon(res *ui.ImageResource) uintptr {
+	if res == nil || win.createDIBSection == 0 || win.createBitmap == 0 || win.createIconIndirect == 0 || win.deleteObject == 0 {
+		return 0
+	}
+	b := res.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= 0 || h <= 0 || w > 256 || h > 256 {
+		return 0
+	}
+	a.iconBMI = bitmapInfo{
+		Size:        bitmapInfoHeaderSize,
+		Width:       int32(w),
+		Height:      -int32(h),
+		Planes:      1,
+		BitCount:    32,
+		Compression: biRGB,
+	}
+	var bits uintptr
+	colorBmp := call(win.createDIBSection, 0, pointer(&a.iconBMI), dibRGBColors, pointer(&bits), 0, 0)
+	if colorBmp == 0 || bits == 0 {
+		if colorBmp != 0 {
+			call(win.deleteObject, colorBmp)
+		}
+		return 0
+	}
+	defer call(win.deleteObject, colorBmp)
+
+	dst := unsafe.Slice((*byte)(unsafe.Add(nil, bits)), w*h*4)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := res.RGBAAt(b.Min.X+x, b.Min.Y+y)
+			i := (y*w + x) * 4
+			dst[i], dst[i+1], dst[i+2], dst[i+3] = c.B, c.G, c.R, c.A
+		}
+	}
+	maskBmp := call(win.createBitmap, uintptr(w), uintptr(h), 1, 1, 0)
+	if maskBmp == 0 {
+		return 0
+	}
+	defer call(win.deleteObject, maskBmp)
+
+	a.iconInfo = iconInfo{
+		Icon:       1,
+		MaskBitmap: maskBmp,
+		ColorBmp:   colorBmp,
+	}
+	hicon := call(win.createIconIndirect, pointer(&a.iconInfo))
+	keep(a)
+	return hicon
+}
+
+func (a *App) destroyCustomTrayIcon() {
+	if a.trayIcon != 0 && win.destroyIcon != 0 {
+		call(win.destroyIcon, a.trayIcon)
+		a.trayIcon = 0
+	}
+}
+
 func (a *App) syncTray() {
 	if win.shellNotifyIcon == 0 {
 		return
@@ -150,23 +299,38 @@ func (a *App) syncTray() {
 	a.trayMu.Unlock()
 	if opts == nil {
 		if a.trayAdded && a.trayHWND != 0 {
-			nid := notifyIconData{
+			a.nid = notifyIconData{
 				Size: uint32(unsafe.Sizeof(notifyIconData{})),
 				HWND: a.trayHWND,
 				ID:   1,
 			}
-			call(win.shellNotifyIcon, nimDelete, pointer(&nid))
+			call(win.shellNotifyIcon, nimDelete, pointer(&a.nid))
+			keep(a)
 			a.trayAdded = false
 			a.trayHWND = 0
 		}
+		a.destroyCustomTrayIcon()
 		return
 	}
-	if len(a.windows) == 0 {
-		return
+	var hwnd uintptr
+	for _, w := range a.windows {
+		if h := w.hwnd.Load(); h != 0 {
+			hwnd = h
+			break
+		}
 	}
-	hwnd := a.windows[0].hwnd.Load()
 	if hwnd == 0 {
 		return
+	}
+	if a.trayAdded && a.trayHWND != 0 && a.trayHWND != hwnd {
+		a.nid = notifyIconData{
+			Size: uint32(unsafe.Sizeof(notifyIconData{})),
+			HWND: a.trayHWND,
+			ID:   1,
+		}
+		call(win.shellNotifyIcon, nimDelete, pointer(&a.nid))
+		a.trayAdded = false
+		a.trayHWND = 0
 	}
 	tip := opts.Tooltip
 	if tip == "" {
@@ -175,24 +339,48 @@ func (a *App) syncTray() {
 	if tip == "" {
 		tip = "nativeForms"
 	}
-	nid := notifyIconData{
+	a.destroyCustomTrayIcon()
+	icon := a.makeTrayIcon(opts.Icon)
+	if icon != 0 {
+		a.trayIcon = icon
+	} else {
+		icon = call(win.loadIcon, 0, idiApplication)
+	}
+	a.nid = notifyIconData{
 		Size:            uint32(unsafe.Sizeof(notifyIconData{})),
 		HWND:            hwnd,
 		ID:              1,
 		Flags:           nifMessage | nifIcon | nifTip,
 		CallbackMessage: wmTrayCallback,
-		Icon:            call(win.loadIcon, 0, idiApplication),
+		Icon:            icon,
 	}
 	if wTip, err := wide(tip); err == nil {
-		copy(nid.Tip[:], wTip)
+		copy(a.nid.Tip[:], wTip)
 	}
 	action := uintptr(nimAdd)
 	if a.trayAdded && a.trayHWND == hwnd {
 		action = nimModify
 	}
-	call(win.shellNotifyIcon, action, pointer(&nid))
+	call(win.shellNotifyIcon, action, pointer(&a.nid))
+	keep(a)
 	a.trayAdded = true
 	a.trayHWND = hwnd
+}
+
+func (a *App) wake() {
+	if !a.wakePending.CompareAndSwap(false, true) {
+		return
+	}
+	for _, w := range a.windows {
+		if h := w.hwnd.Load(); h != 0 {
+			if call(win.postMessage, h, wmAppWake, 0, 0) != 0 {
+				return
+			}
+		}
+	}
+	if tid := a.threadID.Load(); tid != 0 {
+		call(win.postThreadMessage, uintptr(tid), wmAppWake, 0, 0)
+	}
 }
 
 func (a *App) Run() error {
@@ -217,11 +405,10 @@ func (a *App) Run() error {
 		return classError
 	}
 	// PeekMessage creates a queue even if the app starts without a window.
-	var msg message
-	call(win.peekMessage, pointer(&msg), 0, 0, 0, 0)
+	call(win.peekMessage, pointer(&a.msg), 0, 0, 0, 0)
 	a.threadID.Store(uint32(call(win.getCurrentThreadId)))
 	a.running.Store(true)
-	a.queue.SetWake(func() { call(win.postThreadMessage, uintptr(a.threadID.Load()), wmAppWake, 0, 0) })
+	a.queue.SetWake(a.wake)
 	defer func() {
 		a.RemoveTray()
 		a.syncTray()
@@ -237,6 +424,7 @@ func (a *App) Run() error {
 		}
 		a.running.Store(false)
 		a.threadID.Store(0)
+		a.wakePending.Store(false)
 	}()
 	for _, w := range append([]*Window(nil), a.windows...) {
 		if err := w.open(); err != nil {
@@ -245,16 +433,49 @@ func (a *App) Run() error {
 	}
 	a.syncTray()
 	for !a.queue.Drain() {
-		result := call(win.getMessage, pointer(&msg), 0, 0, 0)
+		for _, w := range a.windows {
+			w.manager.ProcessPending()
+			if w.manager.NeedsFrame() {
+				w.invalidate()
+			}
+		}
+		if a.queue.Drain() {
+			break
+		}
+		result := call(win.getMessage, pointer(&a.msg), 0, 0, 0)
+		keep(a)
 		if int32(result) == -1 {
 			return fmt.Errorf("windows: GetMessageW failed")
 		}
 		if result == 0 {
 			break
 		}
-		if msg.HWND != 0 {
-			call(win.translateMessage, pointer(&msg))
-			call(win.dispatchMessage, pointer(&msg))
+		if a.msg.Message == wmAppWake {
+			a.wakePending.Store(false)
+		}
+		if a.msg.HWND != 0 {
+			call(win.translateMessage, pointer(&a.msg))
+			call(win.dispatchMessage, pointer(&a.msg))
+			keep(a)
+		}
+		// Coalesce queued input/wake bursts before the next frame paint.
+		for i := 0; i < 64 && !a.queue.Quitting(); i++ {
+			if call(win.peekMessage, pointer(&a.msg), 0, 0, 0, pmRemove) == 0 {
+				break
+			}
+			keep(a)
+			if a.msg.Message == 0x0012 { // WM_QUIT
+				a.Quit()
+				break
+			}
+			if a.msg.Message == wmAppWake {
+				a.wakePending.Store(false)
+			}
+			if a.msg.HWND != 0 {
+				call(win.translateMessage, pointer(&a.msg))
+				call(win.dispatchMessage, pointer(&a.msg))
+				keep(a)
+			}
 		}
 	}
 	return a.runErr

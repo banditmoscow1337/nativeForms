@@ -25,7 +25,6 @@ func x11Mods(state uint16) int {
 	return mods
 }
 
-
 func letterKey(r rune) ui.Key {
 	return ui.LetterKey(unicode.ToLower(r))
 }

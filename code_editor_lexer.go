@@ -702,13 +702,14 @@ func scanGoLineInto(line string, state goLexState, styles bool, spans []StyledRa
 			continue
 		}
 		if r != ' ' && r != '\t' && r != '*' && r != '[' && r != ']' && r != '.' {
-			if r == ',' {
+			switch r {
+			case ',':
 				// In `a, b MyType`, keep identifier context across commas on signature/field lines
-			} else if r == ')' {
+			case ')':
 				// After closing parameter list `func foo(a int) MyReturnType`, next ident is a return type
 				prevWasIdent = true
 				prevKeyword = ""
-			} else {
+			default:
 				prevWasIdent = false
 				prevKeyword = ""
 			}

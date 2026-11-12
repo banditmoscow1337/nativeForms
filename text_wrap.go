@@ -96,10 +96,6 @@ func trimWrappingSpacesEnd(r []rune, start, end int) int {
 	return end
 }
 
-func fittedTextWidth(r []rune, start, end int, size float32) float32 {
-	return fittedTextWidthWith(r, start, end, size, measureTextLine)
-}
-
 func fittedTextWidthWith(r []rune, start, end int, size float32, measure func(string, float32) float32) float32 {
 	end = trimWrappingSpacesEnd(r, start, end)
 	return measure(string(r[start:end]), size)
@@ -124,10 +120,6 @@ func binarySearchLineEnd(r []rune, start, end int, width, size float32, fittedWi
 		}
 	}
 	return finishWrappedLineEnd(r, start, end, lo)
-}
-
-func wrappedLineEnd(r []rune, start, end int, width, size float32) int {
-	return wrappedLineEndWith(r, start, end, width, size, measureTextLine)
 }
 
 func wrappedLineEndAtlas(r []rune, start, end int, width, size float32) int {

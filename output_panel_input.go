@@ -2,7 +2,6 @@ package nativeforms
 
 import (
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -451,7 +450,3 @@ func (p *OutputPanel) CaretRect() Rect {
 func (p *OutputPanel) TextInputComposing() bool { return p.composing }
 func (p *OutputPanel) ResetCaretBlink()         { p.caretVisible = true; p.InvalidatePaint() }
 func (p *OutputPanel) BlinkCaret()              { p.caretVisible = !p.caretVisible; p.InvalidatePaint() }
-
-func isWordRune(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '.' || r == '/' || r == '-'
-}

@@ -28,19 +28,19 @@ type rect struct {
 func makeRect(w, h float64) rect { return rect{Size: size{W: w, H: h}} }
 
 var (
-	appMu              sync.Mutex
-	selectorMu         sync.RWMutex
-	selectorCache      = make(map[string]objc.SEL, 128)
-	classMu            sync.RWMutex
-	classCache         = make(map[string]objc.ID, 32)
-	objcOnce           sync.Once
-	objcMsgSend        uintptr
-	objcMsgSendFloat0  func(objc.ID, objc.SEL) float64
-	objcMsgSendFloat1  func(objc.ID, objc.SEL, float64) objc.ID
-	objcMsgSendRect0   func(objc.ID, objc.SEL) rect
-	objcMsgSendRect1   func(objc.ID, objc.SEL, rect) rect
-	objcMsgSendPoint0  func(objc.ID, objc.SEL) point
-	objcMsgSendRegion  func(objc.ID, objc.SEL, metalRegion, uint64, unsafe.Pointer, uint64)
+	appMu             sync.Mutex
+	selectorMu        sync.RWMutex
+	selectorCache     = make(map[string]objc.SEL, 128)
+	classMu           sync.RWMutex
+	classCache        = make(map[string]objc.ID, 32)
+	objcOnce          sync.Once
+	objcMsgSend       uintptr
+	objcMsgSendFloat0 func(objc.ID, objc.SEL) float64
+	objcMsgSendFloat1 func(objc.ID, objc.SEL, float64) objc.ID
+	objcMsgSendRect0  func(objc.ID, objc.SEL) rect
+	objcMsgSendRect1  func(objc.ID, objc.SEL, rect) rect
+	objcMsgSendPoint0 func(objc.ID, objc.SEL) point
+	objcMsgSendRegion func(objc.ID, objc.SEL, metalRegion, uint64, unsafe.Pointer, uint64)
 
 	// Pre-cached selectors and classes for zero-lock per-frame execution.
 	clsNSAutoreleasePool objc.ID

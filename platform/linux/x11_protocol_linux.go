@@ -392,7 +392,6 @@ func (w *X11Window) readKeyboardMapping() error {
 	return nil
 }
 
-
 func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
 	_ = w.conn.SetReadDeadline(deadline)
 	for w.have < len(w.incoming) {
@@ -409,7 +408,6 @@ func (w *X11Window) readEvent(deadline time.Time) ([]byte, error) {
 	w.have = 0
 	return packet, nil
 }
-
 
 func (w *X11Window) refreshOrigin() error {
 	w.originDirty = false

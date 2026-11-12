@@ -152,11 +152,12 @@ func (resource *ImageResource) UpdateNRGBA(width, height int, nrgba []byte) erro
 	src := nrgba[:needed]
 	for i := 0; i < needed; i += 4 {
 		a := uint32(src[i+3])
-		if a == 255 {
+		switch a {
+		case 255:
 			dst[i], dst[i+1], dst[i+2], dst[i+3] = src[i], src[i+1], src[i+2], 255
-		} else if a == 0 {
+		case 0:
 			dst[i], dst[i+1], dst[i+2], dst[i+3] = 0, 0, 0, 0
-		} else {
+		default:
 			dst[i] = byte((uint32(src[i])*a + 127) / 255)
 			dst[i+1] = byte((uint32(src[i+1])*a + 127) / 255)
 			dst[i+2] = byte((uint32(src[i+2])*a + 127) / 255)
@@ -221,11 +222,12 @@ func copyPixelsFromImage(pixels []byte, width, height int, source image.Image) {
 			dst := pixels[do : do+width*4]
 			for i := 0; i < len(row); i += 4 {
 				a := uint32(row[i+3])
-				if a == 255 {
+				switch a {
+				case 255:
 					dst[i], dst[i+1], dst[i+2], dst[i+3] = row[i], row[i+1], row[i+2], 255
-				} else if a == 0 {
+				case 0:
 					dst[i], dst[i+1], dst[i+2], dst[i+3] = 0, 0, 0, 0
-				} else {
+				default:
 					dst[i] = byte((uint32(row[i])*a + 127) / 255)
 					dst[i+1] = byte((uint32(row[i+1])*a + 127) / 255)
 					dst[i+2] = byte((uint32(row[i+2])*a + 127) / 255)

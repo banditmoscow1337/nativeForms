@@ -147,7 +147,6 @@ func (w *WaylandWindow) handle(object uint32, opcode uint16, payload []byte) err
 	return nil
 }
 
-
 func (w *WaylandWindow) pointerEvent(opcode uint16, p []byte) error {
 	u := func(offset int) uint32 {
 		if offset+4 > len(p) {
@@ -284,7 +283,6 @@ func (w *WaylandWindow) keyboardEvent(opcode uint16, p []byte) error {
 	}
 	return nil
 }
-
 
 func evdevUS(code uint32, shift bool) (ui.Key, rune) {
 	if code >= 59 && code <= 68 {

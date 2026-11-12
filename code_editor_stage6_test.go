@@ -93,8 +93,8 @@ func BenchmarkCodeEditor100kEditUndo(b *testing.B) {
 	view.Arrange(Rect{W: 900, H: 560})
 	start, _, _ := document.LineRange(50000)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for b.Loop() {
 		if !view.ReplaceTextRange(start, start, "x") {
 			b.Fatal("edit")
 		}
@@ -114,8 +114,8 @@ func BenchmarkCodeEditor100kScrollPaint(b *testing.B) {
 	manager.SetRoot(view)
 	manager.BeginFrame(900, 560, 0)
 	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+
+	for i := 0; b.Loop(); i++ {
 		view.ScrollToLine((i * 997) % 100000)
 		manager.BeginFrame(900, 560, 0)
 	}
