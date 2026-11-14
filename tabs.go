@@ -2,6 +2,7 @@ package nativeforms
 
 type Tab struct {
 	ID, Title string
+	TitleKey  string
 	Icon      *ImageResource
 	Content   Component
 	Dirty     bool
@@ -114,6 +115,9 @@ func (t *Tabs) Open(tab Tab) bool {
 		if existing.ID == tab.ID {
 			return false
 		}
+	}
+	if tab.TitleKey != "" && t.manager != nil && t.manager.lang != nil {
+		tab.Title = t.manager.lang.Tr(tab.TitleKey)
 	}
 	t.Tabs = append(t.Tabs, tab)
 	if tab.Content != nil {

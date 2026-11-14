@@ -6,42 +6,42 @@ func (d *demoApp) buildControlsRightPane() *ui.ScrollPanel {
 	rightStack := ui.NewStack(ui.Vertical, 8)
 	rightStack.Padding = ui.All(8)
 
-	formTitle := newSectionHeader("Виджет ColorPicker (HSV/Alpha/Presets + Popup), Формы и Графика")
+	formTitle := newSectionHeaderKey("ctrl.sec_right")
 
-	d.colorPicker = ui.NewColorPicker("Акцентный цвет (ColorPicker HSV + Alpha):", d.darkTheme.Accent, func(c ui.Color) {
+	d.colorPicker = ui.NewColorPicker("", d.darkTheme.Accent, func(c ui.Color) {
 		d.applyPickedAccentColor(c)
 	})
+	d.colorPicker.SetTextKey("ctrl.colorpicker")
 	d.colorPicker.SetCornerRadius(8)
-	d.colorPicker.UIState().SetTooltip("Интерактивный ColorPicker: квадрат Saturation/Value, полосы Hue и Alpha, пресеты и копирование Hex (Ctrl+C / Ctrl+V)")
+	d.colorPicker.SetTooltipKey("ctrl.tip_colorpicker")
 
-	form := ui.NewForm(155)
-	form.ColumnGap = 8
-	form.RowGap = 6
+	// Use NewLocalizedForm so column 0 automatically sizes to the widest
+	// registered translation across EN and RU via LocaleSizeMaxEnvelope.
+	form := ui.NewLocalizedForm()
 
-	lblCompactColor := ui.NewLabel("Цвет (Popup):")
-	d.compactPicker = ui.NewCompactColorPicker("Выбрать цвет", ui.RGBA(52, 120, 226, 255), func(c ui.Color) {
+	d.compactPicker = ui.NewCompactColorPicker("", ui.RGBA(52, 120, 226, 255), func(c ui.Color) {
 		if d.autoSizeLabel != nil {
 			d.autoSizeLabel.Background = c.WithAlpha(0.45)
 			d.manager.InvalidatePaint()
 		}
-		d.logf("Compact ColorPicker выбрал цвет: %s", c.HexAlpha())
+		d.logf("Compact ColorPicker selected color: %s", c.HexAlpha())
 	})
+	d.compactPicker.SetTextKey("form.btn_popup_color")
 	d.compactPicker.SetCornerRadius(6)
-	d.compactPicker.UIState().SetTooltip("Компактный ColorPicker: открывает всплывающий HSV-пикер по клику или Enter/Space")
+	d.compactPicker.SetTooltipKey("form.tip_popup_color")
 
-	lblAutoField := ui.NewLabel("Авто-поле ввода:")
-	d.autoSizeField = ui.NewTextField("Наберите текст — поле растет!", func(s string) {
-		d.logf("AutoSize TextField (%d симв.): %q", len(s), s)
+	d.autoSizeField = ui.NewTextField("", func(s string) {
+		d.logf("AutoSize TextField (%d chars): %q", len(s), s)
 	})
-	d.autoSizeField.Placeholder = "Авторазмер..."
+	d.autoSizeField.SetTextKey("form.val_autofield")
+	d.autoSizeField.SetPlaceholderKey("form.ph_autofield")
 	d.autoSizeField.SetAutoSize(true)
 	d.autoSizeField.SetCornerRadius(6)
 
-	lblDigits := ui.NewLabel("Только цифры:")
 	d.validField = ui.NewTextField("12345", func(s string) {
-		d.logf("Цифровое поле: %q", s)
+		d.logf("Digits field: %q", s)
 	})
-	d.validField.Placeholder = "Введите число..."
+	d.validField.SetPlaceholderKey("form.ph_digits")
 	d.validField.Validate = func(next string) bool {
 		for _, r := range next {
 			if r < '0' || r > '9' {
@@ -51,32 +51,33 @@ func (d *demoApp) buildControlsRightPane() *ui.ScrollPanel {
 		return true
 	}
 	d.validField.OnSubmit = func(s string) {
-		d.manager.Notifyf("Отправлено значение: %s", s)
+		d.manager.Notifyf("Submitted value: %s", s)
 	}
+
+	d.passwordField = ui.NewTextField("secret2026", nil)
+	d.passwordField.Password = true
+	d.passwordField.SetPlaceholderKey("form.ph_password")
+
+	d.readOnlyField = ui.NewTextField("", nil)
+	d.readOnlyField.ReadOnly = true
+	d.readOnlyField.SetTextKey("form.val_readonly")
+
+	form.AddLocalizedRow("form.lbl_popup_color", d.compactPicker)
+	form.AddLocalizedRow("form.lbl_autofield", d.autoSizeField)
+	lblDigits := form.AddLocalizedRow("form.lbl_digits", d.validField)
+	form.AddLocalizedRow("form.lbl_password", d.passwordField)
+	form.AddLocalizedRow("form.lbl_readonly", d.readOnlyField)
+
 	d.validField.UIState().SetAccessibility(ui.AccessibilityInfo{
 		Role:        ui.RoleTextField,
 		LabelledBy:  lblDigits,
-		Description: "Принимает только цифры 0-9",
+		Description: d.tr("form.a11y_digits"),
 	})
 
-	lblPass := ui.NewLabel("Пароль (Password):")
-	d.passwordField = ui.NewTextField("secret2026", nil)
-	d.passwordField.Password = true
-	d.passwordField.Placeholder = "Пароль..."
-
-	lblRO := ui.NewLabel("Только чтение:")
-	d.readOnlyField = ui.NewTextField("ReadOnly TextField (нельзя изменить)", nil)
-	d.readOnlyField.ReadOnly = true
-
-	form.AddRow(lblCompactColor, d.compactPicker)
-	form.AddRow(lblAutoField, d.autoSizeField)
-	form.AddRow(lblDigits, d.validField)
-	form.AddRow(lblPass, d.passwordField)
-	form.AddRow(lblRO, d.readOnlyField)
-
-	d.notesArea = ui.NewTextArea("Многострочное поле TextArea (Undo/Redo, выделение слов, автоперенос).\nВторая строка с кириллицей и UTF-8 символами: № € ₽ — «тест».", func(s string) {
+	d.notesArea = ui.NewTextArea("", func(s string) {
 		d.tabs.SetDirty("controls", true)
 	})
+	d.notesArea.SetTextKey("form.val_notes")
 	d.notesArea.Editor().Limit = 64
 	d.notesArea.Editor().UndoByteLimit = 2 << 20
 	d.notesArea.UIState().SetPreferredSize(ui.Vec2{X: 360, Y: 90})
@@ -108,7 +109,7 @@ func (d *demoApp) buildControlsRightPane() *ui.ScrollPanel {
 	overlayContainer.Add(d.imageWidget, d.overlayBadge)
 
 	imgActions := ui.NewStack(ui.Vertical, 4)
-	btnSwapImg := ui.NewButton("ImageResource.Replace / SetFilter", func() {
+	btnSwapImg := ui.NewButton("", func() {
 		d.usingAltImg = !d.usingAltImg
 		if d.usingAltImg {
 			if replaced, err := d.bannerImg.Replace(d.altBanner); err == nil {
@@ -121,11 +122,14 @@ func (d *demoApp) buildControlsRightPane() *ui.ScrollPanel {
 			d.imageWidget.SetFilter(ui.FilterBilinear)
 			d.imageWidget.SetTint(ui.RGBA(255, 255, 255, 255))
 		}
-		d.logf("Обновлён ресурс изображения (Version=%d)", d.bannerImg.Version())
+		d.logf("ImageResource updated (Version=%d)", d.bannerImg.Version())
 	})
-	btnScrollTop := ui.NewButton("ScrollIntoView (к счётчику)", func() {
+	btnSwapImg.SetTextKey("ctrl.btn_swap_img")
+
+	btnScrollTop := ui.NewButton("", func() {
 		d.scrollForm.ScrollIntoView(d.btnCounter)
 	})
+	btnScrollTop.SetTextKey("ctrl.btn_scroll_top")
 	imgActions.Add(btnSwapImg, btnScrollTop)
 
 	d.dynamicGrid.AddAt(overlayContainer, 0, 0, 1, 1)

@@ -16,60 +16,60 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 	root := ui.NewStack(ui.Vertical, 10)
 	root.Padding = ui.All(8)
 
-	title := ui.NewLabel("Профилирование CPU и Памяти (FrameObserver, runtime/metrics, pprof, FontContext Cache)")
+	title := ui.NewLabelKey("prof.title")
 	title.Font = ui.FontSpec{Size: 16, Weight: 700}
 
 	toggles := ui.NewStack(ui.Horizontal, 10)
-	d.trackAllocsToggle = ui.NewToggle("Отслеживать аллокации на каждый кадр (FrameObserverOptions.TrackAllocations)", d.flags.trackAllocs, func(v bool) {
+	d.trackAllocsToggle = ui.NewToggleKey("prof.tgl_allocs", d.flags.trackAllocs, func(v bool) {
 		d.flags.trackAllocs = v
 		d.setupObserver(v)
 		d.logf("TrackAllocations = %v", v)
 	})
 	d.trackAllocsToggle.UIState().SetFlex(1)
 
-	d.stressToggle = ui.NewToggle("Автоматический стресс-генератор нагрузки (Stress Monkey)", d.flags.stress, func(v bool) {
+	d.stressToggle = ui.NewToggleKey("prof.tgl_stress", d.flags.stress, func(v bool) {
 		d.setStressMode(v)
 	})
 	d.stressToggle.UIState().SetFlex(1)
 	toggles.Add(d.trackAllocsToggle, d.stressToggle)
 
 	actions := ui.NewStack(ui.Horizontal, 8)
-	btnGC := newFlexButton("Принудительный GC + FreeOSMemory", func() {
+	btnGC := newFlexButtonKey("prof.btn_gc", func() {
 		before := readHeapAlloc()
 		runtime.GC()
 		debug.FreeOSMemory()
 		after := readHeapAlloc()
-		d.logf("GC выполнен: HeapAlloc %s -> %s", formatBytes(before), formatBytes(after))
+		d.logf("GC complete: HeapAlloc %s -> %s", formatBytes(before), formatBytes(after))
 	})
 
-	btnHeap := newFlexButton("Сохранить Heap Profile (heap.pprof)", func() {
+	btnHeap := newFlexButtonKey("prof.btn_heap", func() {
 		path := nonEmpty(d.flags.memProfile, "heap.pprof")
 		if err := writeHeapProfile(path); err != nil {
-			d.logf("Ошибка сохранения Heap-профиля: %v", err)
+			d.logf("Error saving heap profile: %v", err)
 		} else {
-			d.manager.Notifyf("Heap-профиль сохранён в %s", path)
-			d.logf("Heap-профиль сохранён в %s (go tool pprof -http=:8080 %s)", path, path)
+			d.manager.Notifyf("Heap profile saved to %s", path)
+			d.logf("Heap profile saved to %s (go tool pprof -http=:8080 %s)", path, path)
 		}
 	})
 
-	btnAllocs := newFlexButton("Сохранить Allocs/Goroutine Profile", func() {
+	btnAllocs := newFlexButtonKey("prof.btn_allocs", func() {
 		if err := writeNamedProfile("allocs", "allocs.pprof"); err != nil {
-			d.logf("Ошибка allocs.pprof: %v", err)
+			d.logf("Error saving allocs.pprof: %v", err)
 			return
 		}
 		_ = writeNamedProfile("goroutine", "goroutine.pprof")
-		d.manager.Notify("Сохранены allocs.pprof и goroutine.pprof")
-		d.logf("Сохранены профили allocs.pprof и goroutine.pprof")
+		d.manager.Notify("Saved allocs.pprof and goroutine.pprof")
+		d.logf("Saved profiles allocs.pprof and goroutine.pprof")
 	})
 
-	btnResetStats := newFlexButton("Сбросить пиковые метрики кадра", func() {
+	btnResetStats := newFlexButtonKey("prof.btn_reset", func() {
 		d.mu.Lock()
 		d.framesTotal = 0
 		d.maxBuild, d.maxPaint, d.maxLayout = 0, 0, 0
 		d.sumBuildNS, d.allocBytesSum, d.allocObjSum = 0, 0, 0
 		d.card1Cache, d.card2Cache, d.card3Cache = throttledText{}, throttledText{}, throttledText{}
 		d.mu.Unlock()
-		d.logf("Пиковые метрики кадров сброшены")
+		d.logf("Peak frame metrics reset")
 	})
 	actions.Add(btnGC, btnHeap, btnAllocs, btnResetStats)
 
@@ -81,7 +81,7 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 	cards.ColumnGap = 10
 	cards.RowGap = 10
 
-	cardFrame := d.makeMetricCard("Тайминги кадра и рендерера (FrameSample)", func() string {
+	cardFrame := d.makeMetricCardKey("prof.card1_title", func() string {
 		return d.formatThrottled(&d.card1Cache, func() string {
 			d.mu.Lock()
 			s := d.lastSample
@@ -93,17 +93,8 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 			if total > 0 {
 				avgB = time.Duration(sumB / total)
 			}
-			return fmt.Sprintf(
-				"Кадров: %d | Backend: %s\n"+
-					"Размер: %dx%d (Damage: %d px)\n"+
-					"Build: %v (avg %v, max %v)\n"+
-					"Layout: %v (max %v)\n"+
-					"Paint: %v (max %v)\n"+
-					"TextLayout: %v | Raster: %v\n"+
-					"Upload: %v | Present: %v\n"+
-					"Commands: %d | Masks: %d | Images: %d\n"+
-					"Glyphs: %d | TextRunes: %d\n"+
-					"Batches: %d | Vertices: %d | Uploads: %d (%s)",
+			return d.trf(
+				"prof.card1_fmt",
 				total, nonEmpty(s.Backend, "n/a"),
 				s.Width, s.Height, s.DamagePixels,
 				s.Build.Round(time.Microsecond), avgB.Round(time.Microsecond), maxB.Round(time.Microsecond),
@@ -118,24 +109,15 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 		})
 	})
 
-	cardMem := d.makeMetricCard("Память и GC (runtime/metrics — 0 STW)", func() string {
+	cardMem := d.makeMetricCardKey("prof.card2_title", func() string {
 		return d.formatThrottled(&d.card2Cache, func() string {
 			d.mu.Lock()
 			lastAllocB, lastAllocO := d.lastSample.AllocBytes, d.lastSample.AllocObjects
 			sumAllocB, sumAllocO := d.allocBytesSum, d.allocObjSum
 			d.mu.Unlock()
 			m := readRuntimeMemSnapshot()
-			return fmt.Sprintf(
-				"HeapAlloc (живая куча): %s\n"+
-					"HeapInuse: %s | HeapIdle: %s\n"+
-					"HeapSys: %s | TotalSys: %s\n"+
-					"HeapObjects: %d\n"+
-					"TotalAlloc (за всё время): %s\n"+
-					"Mallocs: %d | Frees: %d\n"+
-					"Циклов GC (NumGC): %d\n"+
-					"Горутин: %d | GOMAXPROCS: %d\n"+
-					"Аллокации кадра: %s (%d obj)\n"+
-					"Сумма аллокаций кадров: %s (%d obj)",
+			return d.trf(
+				"prof.card2_fmt",
 				formatBytes(m.heapAlloc),
 				formatBytes(m.heapInuse), formatBytes(m.heapIdle),
 				formatBytes(m.heapSys), formatBytes(m.totalSys),
@@ -150,7 +132,7 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 		})
 	})
 
-	cardCache := d.makeMetricCard("Кэш шрифтов и Стресс-тест (FontContext)", func() string {
+	cardCache := d.makeMetricCardKey("prof.card3_title", func() string {
 		return d.formatThrottled(&d.card3Cache, func() string {
 			d.mu.Lock()
 			fHits, fMisses := d.lastSample.TextCacheHits, d.lastSample.TextCacheMisses
@@ -161,18 +143,8 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 			if hits+misses > 0 {
 				hitRate = float64(hits) * 100.0 / float64(hits+misses)
 			}
-			return fmt.Sprintf(
-				"Glyph Mask Cache: %s (%d глифов)\n"+
-					"Text Layout Cache: %s (%d строк)\n"+
-					"Layout Hits: %d | Misses: %d (%.1f%%)\n"+
-					"За последний кадр: +%d hits / +%d misses\n"+
-					"Стресс-режим активен: %v\n"+
-					"Шагов стресс-теста: %d\n"+
-					"Масштаб (DisplayScale): %.2fx\n"+
-					"Совет по профилированию:\n"+
-					"  go tool pprof -http=:8080 cpu.pprof\n"+
-					"  go tool pprof -http=:8080 mem.pprof\n"+
-					"  python3 tools/summarize_perftrace.py frames.jsonl",
+			return d.trf(
+				"prof.card3_fmt",
 				formatBytes(uint64(glyphBytes)), glyphEntries,
 				formatBytes(uint64(layoutBytes)), layoutEntries,
 				hits, misses, hitRate,
@@ -180,6 +152,7 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 				d.stressRunning.Load(),
 				d.stressStep.Load(),
 				d.manager.DisplayScale(),
+				d.manager.Locale(),
 			)
 		})
 	})
@@ -192,14 +165,14 @@ func (d *demoApp) buildProfilerTab() ui.Component {
 	return root
 }
 
-func (d *demoApp) makeMetricCard(heading string, textFn func() string) ui.Component {
+func (d *demoApp) makeMetricCardKey(headingKey string, textFn func() string) ui.Component {
 	card := ui.NewStack(ui.Vertical, 6)
 	card.Padding = ui.All(10)
 	card.Background = d.darkTheme.PanelAlt
 	card.Border = d.darkTheme.Border
 	card.BorderWidth = 1
 
-	hdr := ui.NewLabel(heading)
+	hdr := ui.NewLabelKey(headingKey)
 	hdr.Font = ui.FontSpec{Size: 14, Weight: 700}
 
 	body := ui.NewLabel("")

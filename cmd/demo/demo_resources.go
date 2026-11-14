@@ -103,7 +103,7 @@ func (d *demoApp) startProfilers() error {
 		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		go func() {
-			d.logf("Запущен HTTP pprof сервер на http://%s/debug/pprof/", d.flags.pprofAddr)
+			d.logf("Started HTTP pprof server at http://%s/debug/pprof/", d.flags.pprofAddr)
 			if err := http.ListenAndServe(d.flags.pprofAddr, mux); err != nil {
 				fmt.Fprintf(os.Stderr, "pprof http error: %v\n", err)
 			}
@@ -125,7 +125,7 @@ func (d *demoApp) startProfilers() error {
 			return fmt.Errorf("start cpuprofile: %w", err)
 		}
 		d.cpuProfFile = f
-		d.logf("Запись CPU-профиля в %s", d.flags.cpuProfile)
+		d.logf("Recording CPU profile to %s", d.flags.cpuProfile)
 	}
 	if d.flags.traceFile != "" {
 		f, err := os.Create(d.flags.traceFile)
@@ -137,7 +137,7 @@ func (d *demoApp) startProfilers() error {
 			return fmt.Errorf("start trace: %w", err)
 		}
 		d.traceOutFile = f
-		d.logf("Запись runtime/trace в %s", d.flags.traceFile)
+		d.logf("Recording runtime/trace to %s", d.flags.traceFile)
 	}
 	if d.flags.jsonlFile != "" {
 		f, err := os.Create(d.flags.jsonlFile)

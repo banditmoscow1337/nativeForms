@@ -21,6 +21,7 @@ import (
 type demoFlags struct {
 	backend            string
 	graphics           string
+	lang               string
 	width              int
 	height             int
 	scale              float64
@@ -46,9 +47,11 @@ type demoFlags struct {
 type demoApp struct {
 	flags       demoFlags
 	manager     *ui.Manager
+	langMgr     *ui.LanguageManager
 	app         *desktop.App
 	window      desktop.Window
 	secondWin   desktop.Window
+	subMgr      *ui.Manager
 	fonts       *ui.FontContext
 	darkTheme   ui.Theme
 	lightTheme  ui.Theme
@@ -58,9 +61,10 @@ type demoApp struct {
 	altBanner   *ui.ImageResource
 	usingAltImg bool
 
-	// Main navigation, MenuBar & status
+	// Main navigation, MenuBar, language selector & status
 	menuBar     *ui.MenuBar
 	header      *ui.Panel
+	langSelect  *ui.SegmentedControl
 	footer      *ui.Panel
 	tabs        *ui.Tabs
 	statusLabel *ui.Label
@@ -189,6 +193,9 @@ func newDemoApp(flags demoFlags) *demoApp {
 	fonts.SetLayoutCacheLimit(256 << 10)
 	mgr.SetFontContext(fonts)
 
+	langMgr := buildDemoLanguageManager(flags.lang)
+	mgr.SetLanguageManager(langMgr)
+
 	icons := []*ui.ImageResource{
 		makeProceduralIcon(20, color.NRGBA{R: 235, G: 180, B: 60, A: 255}, color.NRGBA{R: 180, G: 90, B: 20, A: 255}),
 		makeProceduralIcon(20, color.NRGBA{R: 70, G: 175, B: 240, A: 255}, color.NRGBA{R: 25, G: 95, B: 170, A: 255}),
@@ -205,16 +212,18 @@ func newDemoApp(flags demoFlags) *demoApp {
 	)
 
 	d := &demoApp{
-		flags:       flags,
-		manager:     mgr,
-		fonts:       fonts,
-		darkTheme:   dark,
-		lightTheme:  buildLightTheme(),
-		icons:       icons,
-		bannerImg:   banner,
-		altBanner:   altBanner,
-		closePolicy: platform.QuitApp,
-		jsonlBuf:    make([]byte, 0, 512),
+		flags:        flags,
+		manager:      mgr,
+		langMgr:      langMgr,
+		fonts:        fonts,
+		darkTheme:    dark,
+		lightTheme:   buildLightTheme(),
+		icons:        icons,
+		bannerImg:    banner,
+		altBanner:    altBanner,
+		autoTextStep: 1,
+		closePolicy:  platform.QuitApp,
+		jsonlBuf:     make([]byte, 0, 512),
 	}
 
 	var fallbackClip string
@@ -243,6 +252,14 @@ func newDemoApp(flags demoFlags) *demoApp {
 	return d
 }
 
+func (d *demoApp) tr(key string) string {
+	return d.manager.Tr(key)
+}
+
+func (d *demoApp) trf(key string, args ...any) string {
+	return d.manager.Trf(key, args...)
+}
+
 func (d *demoApp) logf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	if d.statusLabel != nil {
@@ -258,6 +275,7 @@ func parseFlags() demoFlags {
 	var f demoFlags
 	flag.StringVar(&f.backend, "backend", "", "Linux window backend: '', 'x11', or 'wayland'")
 	flag.StringVar(&f.graphics, "graphics", "auto", "Renderer backend: 'auto', 'hardware', or 'software'")
+	flag.StringVar(&f.lang, "lang", "en", "Initial UI language: 'en' or 'ru'")
 	flag.IntVar(&f.width, "width", 1280, "Logical window width")
 	flag.IntVar(&f.height, "height", 820, "Logical window height")
 	flag.Float64Var(&f.scale, "scale", 1.0, "Initial display scale factor (1.0 - 4.0)")

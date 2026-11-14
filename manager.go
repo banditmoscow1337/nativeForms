@@ -75,6 +75,7 @@ type Manager struct {
 	unhandled            func(Event) bool
 	theme                Theme
 	fonts                *FontContext
+	lang                 *LanguageManager
 	displayScale         float32
 	backingScale         float32
 	focused              Component
@@ -234,6 +235,7 @@ func (manager *Manager) Close() {
 	manager.clipboardRead, manager.clipboardWrite = nil, nil
 	manager.unhandled = nil
 	manager.frameObserver = nil
+	manager.lang = nil
 	clear(manager.shortcuts)
 	manager.mu.Unlock()
 
@@ -301,11 +303,15 @@ func (manager *Manager) SetRoot(root Component) {
 	manager.root = root
 	bindTree(root, nil, manager)
 	applyTheme(root, manager.theme)
+	lm := manager.lang
 	if est := estimateTreeCommands(root); est > cap(manager.frame.Commands) {
 		manager.frame.Commands = make([]DrawCommand, 0, est+64)
 		manager.prevCmdCount = 0
 	}
 	manager.mu.Unlock()
+	if lm != nil && root != nil {
+		applyLocale(root, lm)
+	}
 	if oldRoot != nil && canAutoRecycleRoot(oldRoot) {
 		ReleaseComponent(oldRoot)
 	}
@@ -386,9 +392,14 @@ func (manager *Manager) SetTheme(theme Theme) {
 	for _, popup := range manager.popups {
 		applyTheme(popup.content, theme)
 	}
+	lm := manager.lang
 	manager.mu.Unlock()
 	if prev.FontSize != theme.FontSize || prev.ControlHeight != theme.ControlHeight {
-		manager.InvalidateLayout()
+		if lm != nil {
+			manager.RefreshLocale()
+		} else {
+			manager.InvalidateLayout()
+		}
 	} else {
 		manager.InvalidatePaint()
 	}
@@ -403,8 +414,13 @@ func (manager *Manager) Theme() Theme {
 func (manager *Manager) SetFontContext(ctx *FontContext) {
 	manager.mu.Lock()
 	manager.fonts = ctx
+	lm := manager.lang
 	manager.mu.Unlock()
-	manager.InvalidateLayout()
+	if lm != nil {
+		manager.RefreshLocale()
+	} else {
+		manager.InvalidateLayout()
+	}
 }
 
 func (manager *Manager) FontContext() *FontContext {
@@ -422,9 +438,14 @@ func (manager *Manager) SetDisplayScale(scale float32) {
 	manager.mu.Lock()
 	changed := manager.displayScale != scale
 	manager.displayScale = scale
+	lm := manager.lang
 	manager.mu.Unlock()
 	if changed {
-		manager.InvalidateLayout()
+		if lm != nil {
+			manager.RefreshLocale()
+		} else {
+			manager.InvalidateLayout()
+		}
 	}
 }
 

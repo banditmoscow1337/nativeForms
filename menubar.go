@@ -4,6 +4,7 @@ package nativeforms
 type MenuBarItem struct {
 	ID       string
 	Label    string
+	LabelKey string
 	Icon     *ImageResource
 	Disabled bool
 	Items    []MenuItem

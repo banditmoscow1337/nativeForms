@@ -54,28 +54,25 @@ func (d *demoApp) buildEditorTab() ui.Component {
 	toolbar := ui.NewStack(ui.Horizontal, 6)
 	toolbar.UIState().SetFlexShrink(0)
 	toolbar.UIState().SetMinimumSize(ui.Vec2{Y: 38})
-	btnUndo := ui.NewButton("Undo", func() {
+
+	btnUndo := ui.NewButtonKey("ed.btn_undo", func() {
 		d.codeEditor.Handle(ui.Event{Type: ui.KeyDown, Key: ui.KeyZ, Mods: ui.ModControl})
 		d.updateEditorInfo()
 	})
-	btnUndo.UIState().SetMinimumSize(ui.Vec2{X: 80})
 
-	btnRedo := ui.NewButton("Redo", func() {
+	btnRedo := ui.NewButtonKey("ed.btn_redo", func() {
 		d.codeEditor.Handle(ui.Event{Type: ui.KeyDown, Key: ui.KeyY, Mods: ui.ModControl})
 		d.updateEditorInfo()
 	})
-	btnRedo.UIState().SetMinimumSize(ui.Vec2{X: 80})
 
-	btnCtxMenu := ui.NewButton("Контекстное меню (ПКМ / Shift+F10)", func() {
+	btnCtxMenu := ui.NewButtonKey("ed.btn_ctx", func() {
 		d.manager.PerformAccessibilityAction(d.codeEditor.UIState().AccessibilityID(), ui.AccessibilityFocus, "")
 		caret := d.codeEditor.CaretRect()
 		d.codeEditor.OpenContextMenu(caret.X, caret.Y+caret.H)
 	})
-	btnCtxMenu.UIState().SetMinimumSize(ui.Vec2{X: 230})
 
-	btnGoToDef := ui.NewButton("Go to Definition (F12)", func() {
+	btnGoToDef := ui.NewButtonKey("ed.btn_gotodef", func() {
 		if !d.codeEditor.GoToDefinition() {
-			// If caret is not on an identifier, position on ComputeScore call and jump.
 			if idx := strings.Index(d.codeDoc.Text(), "ComputeScore(128"); idx >= 0 {
 				d.codeEditor.SetSelection(idx, idx)
 				d.codeEditor.GoToDefinition()
@@ -83,27 +80,23 @@ func (d *demoApp) buildEditorTab() ui.Component {
 		}
 		d.updateEditorInfo()
 	})
-	btnGoToDef.UIState().SetMinimumSize(ui.Vec2{X: 170})
 
-	btnCompl := ui.NewButton("Автодополнение", func() {
+	btnCompl := ui.NewButtonKey("ed.btn_compl", func() {
 		d.manager.PerformAccessibilityAction(d.codeEditor.UIState().AccessibilityID(), ui.AccessibilityFocus, "")
 		d.showEditorCompletions()
 	})
-	btnCompl.UIState().SetMinimumSize(ui.Vec2{X: 145})
 
-	btnBp := ui.NewButton("Breakpoint (Line 17)", func() {
+	btnBp := ui.NewButtonKey("ed.btn_bp", func() {
 		cur := d.codeEditor.Breakpoint(16)
 		d.codeEditor.SetBreakpoint(16, !cur)
 		d.updateEditorInfo()
 	})
-	btnBp.UIState().SetMinimumSize(ui.Vec2{X: 155})
 
-	btnTokens := ui.NewButton("LSP Tokens", func() {
+	btnTokens := ui.NewButtonKey("ed.btn_tokens", func() {
 		d.applySampleSemanticTokens()
 	})
-	btnTokens.UIState().SetMinimumSize(ui.Vec2{X: 115})
 
-	btnLargeDoc := ui.NewButton("5 000 строк", func() {
+	btnLargeDoc := ui.NewButtonKey("ed.btn_5k", func() {
 		var b strings.Builder
 		b.WriteString(sampleGoSource)
 		for i := 0; i < 5000; i++ {
@@ -116,10 +109,9 @@ func (d *demoApp) buildEditorTab() ui.Component {
 			d.codeEditor.SetBreakpoint(2, true)
 			d.codeEditor.ScrollToLine(2500)
 			d.updateEditorInfo()
-			d.logf("Загружен документ на %d строк (%d байт)", doc.LineCount(), doc.Len())
+			d.logf("Loaded document with %d lines (%d bytes)", doc.LineCount(), doc.Len())
 		}
 	})
-	btnLargeDoc.UIState().SetMinimumSize(ui.Vec2{X: 120})
 
 	toolbar.Add(btnUndo, btnRedo, btnCtxMenu, btnGoToDef, btnCompl, btnBp, btnTokens, btnLargeDoc)
 
@@ -137,7 +129,7 @@ func (d *demoApp) buildEditorTab() ui.Component {
 	}
 	d.codeEditor.OnBreakpointChange = func(line int, enabled bool) {
 		d.updateEditorInfo()
-		d.logf("Breakpoint на строке %d: %v", line+1, enabled)
+		d.logf("Breakpoint at line %d: %v", line+1, enabled)
 	}
 	d.codeEditor.OnGoToDefinition = func(symbol string, offset int) {
 		if defOffset, ok := d.codeEditor.FindDefinitionOffset(symbol); ok {
@@ -145,9 +137,9 @@ func (d *demoApp) buildEditorTab() ui.Component {
 			pos, _ := d.codeDoc.UTF16Position(defOffset)
 			d.updateEditorInfo()
 			d.logf("Go to Definition: %q -> L%d:C%d (offset %d)", symbol, pos.Line+1, pos.Character+1, defOffset)
-			d.manager.Notifyf("Переход к определению %s (строка %d)", symbol, pos.Line+1)
+			d.manager.Notifyf("Jumped to definition %s (line %d)", symbol, pos.Line+1)
 		} else {
-			d.logf("Определение для %q не найдено в текущем документе", symbol)
+			d.logf("Definition for %q not found in current document", symbol)
 		}
 	}
 
@@ -172,8 +164,8 @@ func (d *demoApp) updateEditorInfo() {
 	if sym == "" {
 		sym = "-"
 	}
-	d.editorInfo.SetText(fmt.Sprintf(
-		"Документ v%d | Строк: %d | Каретка: L%d:C%d (символ: %s) | Видимые: [%d..%d) | Breakpoints: %v | ПКМ / Shift+F10 — контекстное меню",
+	d.editorInfo.SetText(d.trf(
+		"ed.info_fmt",
 		d.codeDoc.Version(), d.codeDoc.LineCount(),
 		pos.Line+1, pos.Character+1, sym, first, last, bps,
 	))
@@ -189,7 +181,7 @@ func (d *demoApp) showEditorCompletions() {
 		{ID: "fmt", Label: "fmt.Println(\"debug metric\")", Icon: d.icons[0], Action: func() { insertSnippet("fmt.Println(\"debug metric\")") }},
 		{ID: "for", Label: "for i := 0; i < count; i++ { ... }", Icon: d.icons[1], Action: func() { insertSnippet("for i := 0; i < count; i++ {\n\t\n}") }},
 		{ID: "err", Label: "if err != nil { return err }", Icon: d.icons[2], Action: func() { insertSnippet("if err != nil {\n\treturn err\n}") }},
-		{ID: "disabled", Label: "Недоступное предложение (Disabled)", Icon: d.icons[3], Disabled: true},
+		{ID: "disabled", LabelKey: "ed.compl_disabled", Icon: d.icons[3], Disabled: true},
 	}
 	d.codeEditor.ShowCompletions(items)
 }
@@ -207,7 +199,7 @@ func (d *demoApp) applySampleSemanticTokens() {
 	_ = d.codeEditor.SetStyleRanges(ver, []ui.StyledRange{
 		{Start: 0, End: 7, Style: ui.CodeKeyword},
 	})
-	d.logf("Применены SetSemanticTokens и SetStyleRanges для документа v%d", ver)
+	d.logf("Applied SetSemanticTokens and SetStyleRanges for document v%d", ver)
 }
 
 func (d *demoApp) buildVirtualTab() ui.Component {
@@ -217,16 +209,16 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	bar := ui.NewStack(ui.Horizontal, 8)
 	bar.UIState().SetFlexShrink(0)
 	bar.UIState().SetMinimumSize(ui.Vec2{Y: 38})
-	btn1k := ui.NewButton("1 000 записей", func() { d.resizeVirtualModels(1000) })
-	btn10k := ui.NewButton("10 000 записей", func() { d.resizeVirtualModels(10000) })
-	btn50k := ui.NewButton("50 000 записей", func() { d.resizeVirtualModels(50000) })
-	btnExpand := ui.NewButton("Развернуть/Свернуть дерево", func() {
+	btn1k := newFlexButtonKey("virt.btn_1k", func() { d.resizeVirtualModels(1000) })
+	btn10k := newFlexButtonKey("virt.btn_10k", func() { d.resizeVirtualModels(10000) })
+	btn50k := newFlexButtonKey("virt.btn_50k", func() { d.resizeVirtualModels(50000) })
+	btnExpand := newFlexButtonKey("virt.btn_expand", func() {
 		exp := !d.vTree.Expanded["w-controls"]
 		for _, k := range []string{"root-widgets", "w-controls", "w-layouts", "w-popups", "root-virtual", "root-editors", "root-platform"} {
 			d.vTree.SetExpanded(k, exp)
 		}
 	})
-	btnLog := ui.NewButton("Добавить 100 строк в OutputPanel", func() {
+	btnLog := newFlexButtonKey("virt.btn_log", func() {
 		var chunk strings.Builder
 		for i := 0; i < 100; i++ {
 			fmt.Fprintf(&chunk, "[BUILD %04d] Compiling widget module... OK (%.2fms)\n", i, 0.4+float64(i%9)*0.15)
@@ -240,7 +232,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 
 	treeBox := ui.NewStack(ui.Vertical, 4)
 	treeBox.UIState().SetFlex(1)
-	treeBox.Add(ui.NewLabel("VirtualTree (ПКМ для контекстного меню):"))
+	treeBox.Add(ui.NewLabelKey("virt.lbl_tree"))
 	d.vTreeModel = newDemoTreeModel(d.icons)
 	d.vTree = ui.NewVirtualTree(d.vTreeModel)
 	d.vTree.UIState().SetFlex(1)
@@ -248,7 +240,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 		d.vTree.SetExpanded(id, true)
 	}
 	d.vTree.OnSelect = func(id string) {
-		d.logf("VirtualTree выбран узел: %s (%s)", id, d.vTreeModel.Label(id))
+		d.logf("VirtualTree node selected: %s (%s)", id, d.vTreeModel.Label(id))
 	}
 	d.vTree.UIState().SetContextMenuBuilder(func(_, _ float32) []ui.MenuItem {
 		sel := d.vTree.SelectedID
@@ -258,7 +250,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 				if d.window != nil && sel != "" {
 					_ = d.window.SetClipboardText(d.vTreeModel.Label(sel))
 				}
-				d.logf("Скопирован узел дерева: %s", d.vTreeModel.Label(sel))
+				d.logf("Copied tree node: %s", d.vTreeModel.Label(sel))
 			}},
 			{ID: "toggle-node", Label: "Expand / Collapse Node", Disabled: !hasChildren, Action: func() {
 				d.vTree.SetExpanded(sel, !d.vTree.Expanded[sel])
@@ -280,12 +272,12 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 
 	listBox := ui.NewStack(ui.Vertical, 4)
 	listBox.UIState().SetFlex(1)
-	listBox.Add(ui.NewLabel("VirtualList (ПКМ для контекстного меню):"))
+	listBox.Add(ui.NewLabelKey("virt.lbl_list"))
 	d.vListModel = newDemoListModel(d.flags.count, d.icons)
 	d.vList = ui.NewVirtualList(d.vListModel)
 	d.vList.UIState().SetFlex(1)
 	d.vList.OnSelect = func(id string) {
-		d.logf("VirtualList выбрана строка ID=%s", id)
+		d.logf("VirtualList row selected ID=%s", id)
 	}
 	d.vList.UIState().SetContextMenuBuilder(func(_, _ float32) []ui.MenuItem {
 		sel := d.vList.SelectedID
@@ -294,7 +286,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 				if d.window != nil && sel != "" {
 					_ = d.window.SetClipboardText(sel)
 				}
-				d.logf("VirtualList скопирован ID=%s", sel)
+				d.logf("VirtualList copied ID=%s", sel)
 			}},
 			{ID: "top", Label: "Scroll to Top", Action: func() { d.vList.ScrollTo(0) }},
 			{ID: "bottom", Label: "Scroll to Bottom", Action: func() { d.vList.ScrollTo(max(0, d.vListModel.Len()-1)) }},
@@ -304,7 +296,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 
 	stackBox := ui.NewStack(ui.Vertical, 4)
 	stackBox.UIState().SetFlex(1)
-	stackBox.Add(ui.NewLabel("VirtualStack (StackModel + StackModelUpdater):"))
+	stackBox.Add(ui.NewLabelKey("virt.lbl_stack"))
 	d.vStackModel = newDemoStackModel(d.flags.count)
 	d.vStack = ui.NewVirtualStack(d.vStackModel)
 	d.vStackScroll = ui.NewScrollPanel(d.vStack)
@@ -318,13 +310,13 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 
 	tableBox := ui.NewStack(ui.Vertical, 4)
 	tableBox.UIState().SetFlex(1)
-	tableBox.Add(ui.NewLabel("VirtualTable (2D Scroll + ПКМ меню):"))
+	tableBox.Add(ui.NewLabelKey("virt.lbl_table"))
 	d.vTableModel = newDemoTableModel(d.flags.count, d.icons)
 	d.vTable = ui.NewVirtualTable(d.vTableModel)
 	d.vTable.ColumnWidth = 140
 	d.vTable.UIState().SetFlex(1)
 	d.vTable.OnSelect = func(id string) {
-		d.logf("VirtualTable выбрана строка: %s", id)
+		d.logf("VirtualTable row selected: %s", id)
 	}
 	d.vTable.UIState().SetContextMenuBuilder(func(_, _ float32) []ui.MenuItem {
 		sel := d.vTable.SelectedID
@@ -333,7 +325,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 				if d.window != nil && sel != "" {
 					_ = d.window.SetClipboardText(sel)
 				}
-				d.logf("VirtualTable скопирована строка: %s", sel)
+				d.logf("VirtualTable copied row: %s", sel)
 			}},
 			{ID: "reset-scroll", Label: "Reset Scroll Position", Action: func() {
 				d.vTable.Offset, d.vTable.OffsetX = 0, 0
@@ -348,17 +340,18 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 	outHeader := ui.NewStack(ui.Horizontal, 6)
 	outHeader.UIState().SetFlexShrink(0)
 	outHeader.UIState().SetMinimumSize(ui.Vec2{Y: 38})
-	outHeader.Add(ui.NewLabel("OutputPanel (потоковый лог с ПКМ меню):"))
-	btnClearOut := ui.NewButton("Очистить (Clear)", func() {
+	lblOut := ui.NewLabelKey("virt.lbl_output")
+	lblOut.UIState().SetFlex(1)
+	outHeader.Add(lblOut)
+	btnClearOut := ui.NewButtonKey("virt.btn_clear", func() {
 		d.outputPanel.Clear()
 	})
-	btnClearOut.UIState().SetMinimumSize(ui.Vec2{X: 140})
 	outHeader.Add(btnClearOut)
 
 	d.outputPanel = ui.NewOutputPanel()
 	d.outputPanel.SetMaxLines(500)
 	d.outputPanel.UIState().SetFlex(1)
-	d.outputPanel.AppendText("=== Инициализация OutputPanel завершена ===\n")
+	d.outputPanel.AppendText(d.tr("virt.init_log"))
 	d.outputPanel.List.UIState().SetContextMenuBuilder(func(_, _ float32) []ui.MenuItem {
 		lines := d.outputPanel.Lines()
 		return []ui.MenuItem{
@@ -366,7 +359,7 @@ func (d *demoApp) buildVirtualTab() ui.Component {
 				if d.window != nil {
 					_ = d.window.SetClipboardText(strings.Join(lines, "\n"))
 				}
-				d.manager.Notify("Лог скопирован в буфер обмена")
+				d.manager.Notify("Log copied to clipboard")
 			}},
 			{ID: "scroll-end", Label: "Scroll to End", Disabled: len(lines) == 0, Action: func() {
 				d.outputPanel.ScrollToEnd()
@@ -399,5 +392,5 @@ func (d *demoApp) resizeVirtualModels(count int) {
 	d.vStackModel.resize(count, fmt.Sprintf("Row[%dk]", count/1000))
 	d.vStack.ModelChanged()
 
-	d.logf("Размер виртуальных моделей обновлён до %d элементов", count)
+	d.logf("Virtual models resized to %d items", count)
 }

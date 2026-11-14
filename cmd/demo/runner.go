@@ -95,7 +95,7 @@ func (d *demoApp) runDesktop() error {
 	ready := make(chan struct{})
 
 	win, err := d.app.NewWindow(d.manager, desktop.Options{
-		Title:              "nativeForms — Widget Showcase & CPU/Memory Profiler",
+		Title:              d.tr("app.window_title"),
 		Width:              d.flags.width,
 		Height:             d.flags.height,
 		Scale:              float32(d.flags.scale),
@@ -110,18 +110,18 @@ func (d *demoApp) runDesktop() error {
 			close(ready)
 		},
 		OnFilesDropped: func(paths []string) {
-			d.manager.Notifyf("Перетащено файлов: %d", len(paths))
+			d.manager.Notifyf("Dropped files: %d", len(paths))
 			d.logf("OnFilesDropped: %v", paths)
 		},
 		OnCloseRequest: func(w desktop.Window) platform.CloseAction {
 			switch d.closePolicy {
 			case platform.HideWindow:
-				d.manager.Notify("Окно скрыто в системный трей (OnCloseRequest: HideWindow)")
-				d.logf("Окно скрыто в системный трей; откройте его через иконку NF в трее")
+				d.manager.Notify("Window hidden to system tray (OnCloseRequest: HideWindow)")
+				d.logf("Window hidden to system tray; click the NF tray icon to restore")
 				return platform.HideWindow
 			case platform.CancelClose:
-				d.manager.Notify("Закрытие отменено политикой CancelClose (переключите во вкладке 4)")
-				d.logf("Закрытие окна заблокировано (OnCloseRequest: CancelClose)")
+				d.manager.Notify("Close canceled by CancelClose policy (change on Tab 4)")
+				d.logf("Window close blocked (OnCloseRequest: CancelClose)")
 				return platform.CancelClose
 			default:
 				return platform.QuitApp
@@ -158,9 +158,6 @@ func (d *demoApp) runDesktop() error {
 			defer t.Stop()
 			endTimer = t.C
 		}
-		// When interval <= 20ms, frames are self-paced on the UI thread via
-		// setupObserver -> manager.Post, so the background ticker only acts as a
-		// coarse idle watchdog (avoiding 60Hz cross-thread condvar wakeups).
 		tickPeriod := d.flags.interval
 		if tickPeriod <= 20*time.Millisecond {
 			tickPeriod = 100 * time.Millisecond

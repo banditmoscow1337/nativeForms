@@ -133,6 +133,7 @@ func (c *Checkbox) Handle(e Event) bool {
 
 type RadioOption struct {
 	ID, Label string
+	LabelKey  string
 	Icon      *ImageResource
 }
 
@@ -325,7 +326,7 @@ func (c *ComboBox) open() bool {
 	}
 	items := make([]MenuItem, 0, len(c.Options))
 	for _, option := range c.Options {
-		items = append(items, MenuItem{ID: option.ID, Label: option.Label, Icon: option.Icon})
+		items = append(items, MenuItem{ID: option.ID, Label: option.Label, LabelKey: option.LabelKey, Icon: option.Icon})
 	}
 	m := NewMenu(items, c.SetSelected)
 	m.MaxVisibleItems = 8

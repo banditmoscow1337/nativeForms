@@ -3,9 +3,11 @@ package nativeforms
 // ToolbarItem describes an action button, toggle button, separator, or flexible
 // spacer inside a Toolbar.
 type ToolbarItem struct {
-	ID        string
-	Label     string
-	Tooltip   string
+	ID         string
+	Label      string
+	LabelKey   string
+	Tooltip    string
+	TooltipKey string
 	Icon      *ImageResource
 	Separator bool
 	Spacer    bool

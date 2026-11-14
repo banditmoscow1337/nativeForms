@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 	"strings"
 
@@ -15,12 +14,12 @@ func (d *demoApp) setStressMode(enabled bool) {
 		d.stressToggle.SetValue(enabled)
 	}
 	if enabled {
-		d.logf("Стресс-тест ЗАПУЩЕН (интервал %v)", d.flags.interval)
+		d.logf("Stress test STARTED (interval %v)", d.flags.interval)
 		if d.stressWarmupDone.Load() && d.uiStressStep != nil && d.stressQueued.CompareAndSwap(false, true) {
 			d.manager.Post(d.uiStressStep)
 		}
 	} else {
-		d.logf("Стресс-тест ОСТАНОВЛЕН")
+		d.logf("Stress test STOPPED")
 	}
 }
 
@@ -148,8 +147,10 @@ func (d *demoApp) runSelfTests() {
 	// 6. AutoSize & SizeToText test
 	d.autoSizeBtn.SetText("OK")
 	shortSz := d.autoSizeBtn.SizeToText()
-	d.autoSizeBtn.SetText("Длинная надпись на кнопке с авторазмером")
+	d.autoSizeBtn.SetText("Long localized button text with automatic size fitting")
 	longSz := d.autoSizeBtn.SizeToText()
+	d.autoSizeBtn.SetText(d.tr("ctrl.autosize_sample_1"))
+	d.autoSizeBtn.SizeToText()
 	check("SizeToText & AutoSize dynamically resize button to text width", shortSz.X > 0 && longSz.X > shortSz.X*1.5)
 
 	// 7. ColorPicker test
@@ -300,7 +301,22 @@ func (d *demoApp) runSelfTests() {
 		d.window.SetWindowControls(origControls)
 	}
 
-	msg := fmt.Sprintf("Самопроверка завершена: %d PASS, %d FAIL", passed, failed)
+	// 18. LanguageManager (EN/RU) live switching & LocaleSizeMaxEnvelope test
+	origLoc := d.manager.Locale()
+	d.setLanguage("en")
+	enFileMenu := d.menuBar.Menus[0].Label
+	enTab0 := d.tabs.Tabs[0].Title
+	enPlaceholder := d.validField.Placeholder
+	d.setLanguage("ru")
+	ruFileMenu := d.menuBar.Menus[0].Label
+	ruTab0 := d.tabs.Tabs[0].Title
+	ruPlaceholder := d.validField.Placeholder
+	check("LanguageManager switches MenuBar, Tabs, and TextField.Placeholder between EN and RU",
+		enFileMenu == "File" && ruFileMenu == "Файл" &&
+			enTab0 != ruTab0 && enPlaceholder == "Enter number..." && ruPlaceholder == "Введите число...")
+	d.setLanguage(origLoc)
+
+	msg := d.trf("selftest.done_fmt", passed, failed)
 	d.manager.Notify(msg)
 	d.logf("%s", msg)
 }

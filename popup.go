@@ -48,6 +48,9 @@ func (manager *Manager) OpenPopup(content Component, bounds Rect, modal bool) Po
 	id := manager.nextPopup
 	bindTree(content, nil, manager)
 	applyTheme(content, manager.theme)
+	if manager.lang != nil {
+		applyLocale(content, manager.lang)
+	}
 	manager.popups = append(manager.popups, popupEntry{id: id, content: content, bounds: bounds,
 		modal: modal, previous: manager.focused})
 	if menu, ok := content.(*Menu); ok {
@@ -80,6 +83,9 @@ func (manager *Manager) OpenUnfocusedPopup(content Component, options PopupOptio
 	id := manager.nextPopup
 	bindTree(content, nil, manager)
 	applyTheme(content, manager.theme)
+	if manager.lang != nil {
+		applyLocale(content, manager.lang)
+	}
 	manager.popups = append(manager.popups, popupEntry{
 		id: id, content: content, bounds: options.Bounds, passive: options.Passive,
 		keepFocus: true, owner: options.Owner, anchor: options.Anchor, onKeyDown: options.OnKeyDown,

@@ -2,6 +2,7 @@ package nativeforms
 
 type MenuItem struct {
 	ID, Label string
+	LabelKey  string
 	Shortcut  string
 	Icon      *ImageResource
 	Disabled  bool

@@ -9,47 +9,42 @@ import (
 	"github.com/banditmoscow1337/nativeForms/platform"
 )
 
-func newSectionHeader(text string) *ui.Label {
-	lbl := ui.NewLabel(text)
+func newSectionHeaderKey(key string) *ui.Label {
+	lbl := ui.NewLabelKey(key)
 	lbl.Font = ui.FontSpec{Size: 15, Weight: 700}
 	lbl.Wrap = true
 	return lbl
 }
 
-func newFlexButton(text string, onClick func()) *ui.Button {
-	btn := ui.NewButton(text, onClick)
+func newFlexButtonKey(key string, onClick func()) *ui.Button {
+	btn := ui.NewButton(key, onClick)
+	btn.SetTextKey(key)
 	btn.UIState().SetFlex(1)
-	return btn
-}
-
-func newMinWidthButton(text string, minWidth float32, onClick func()) *ui.Button {
-	btn := ui.NewButton(text, onClick)
-	btn.UIState().SetMinimumSize(ui.Vec2{X: minWidth})
 	return btn
 }
 
 func (d *demoApp) buildMenuBar() *ui.MenuBar {
 	return ui.NewMenuBar(
 		ui.MenuBarItem{
-			ID:    "file",
-			Label: "Файл",
-			Icon:  d.icons[0],
+			ID:       "file",
+			LabelKey: "menu.file",
+			Icon:     d.icons[0],
 			Items: []ui.MenuItem{
-				{ID: "new-tab", Label: "Новая динамическая вкладка", Icon: d.icons[2], Shortcut: "Ctrl+T", Action: d.openDynamicTab},
-				{ID: "open-file", Label: "Открыть файл (OpenFile)...", Icon: d.icons[1], Action: func() {
+				{ID: "new-tab", LabelKey: "menu.file.new_tab", Icon: d.icons[2], Shortcut: "Ctrl+T", Action: d.openDynamicTab},
+				{ID: "open-file", LabelKey: "menu.file.open", Icon: d.icons[1], Action: func() {
 					if d.window != nil {
 						path, err := d.window.OpenFile()
 						d.logf("MenuBar OpenFile: path=%q err=%v", path, err)
 					} else {
-						d.logf("MenuBar OpenFile (headless режим)")
+						d.logf("MenuBar OpenFile (headless)")
 					}
 				}},
-				{ID: "save-heap", Label: "Сохранить Heap Profile (heap.pprof)", Icon: d.icons[0], Action: func() {
+				{ID: "save-heap", LabelKey: "menu.file.save_heap", Icon: d.icons[0], Action: func() {
 					_ = writeHeapProfile("heap.pprof")
-					d.manager.Notify("Сохранён heap.pprof")
+					d.manager.Notify("heap.pprof saved")
 				}},
 				{Separator: true},
-				{ID: "quit", Label: "Выход", Icon: d.icons[3], Shortcut: "Cmd/Ctrl+Q", Action: func() {
+				{ID: "quit", LabelKey: "menu.file.quit", Icon: d.icons[3], Shortcut: "Cmd/Ctrl+Q", Action: func() {
 					if d.app != nil {
 						d.app.Quit()
 					}
@@ -57,37 +52,38 @@ func (d *demoApp) buildMenuBar() *ui.MenuBar {
 			},
 		},
 		ui.MenuBarItem{
-			ID:    "edit",
-			Label: "Правка",
+			ID:       "edit",
+			LabelKey: "menu.edit",
 			Items: []ui.MenuItem{
-				{ID: "undo", Label: "Отменить (CodeEditor Undo)", Shortcut: "Ctrl+Z", Action: func() {
+				{ID: "undo", LabelKey: "menu.edit.undo", Shortcut: "Ctrl+Z", Action: func() {
 					d.codeEditor.Handle(ui.Event{Type: ui.KeyDown, Key: ui.KeyZ, Mods: ui.ModControl})
 					d.updateEditorInfo()
 				}},
-				{ID: "redo", Label: "Повторить (CodeEditor Redo)", Shortcut: "Ctrl+Y", Action: func() {
+				{ID: "redo", LabelKey: "menu.edit.redo", Shortcut: "Ctrl+Y", Action: func() {
 					d.codeEditor.Handle(ui.Event{Type: ui.KeyDown, Key: ui.KeyY, Mods: ui.ModControl})
 					d.updateEditorInfo()
 				}},
 				{Separator: true},
-				{ID: "copy", Label: "Скопировать тестовую строку в буфер", Shortcut: "Ctrl+C", Action: func() {
+				{ID: "copy", LabelKey: "menu.edit.copy", Shortcut: "Ctrl+C", Action: func() {
 					if d.window != nil && d.window.Capabilities().Supports(platform.FeatureClipboard) {
 						_ = d.window.SetClipboardText(d.clipField.Text)
-						d.manager.Notify("Скопировано в системный буфер обмена")
+						d.manager.Notify("Copied to clipboard")
 					}
 				}},
 			},
 		},
 		ui.MenuBarItem{
-			ID:    "view",
-			Label: "Вид",
+			ID:       "view",
+			LabelKey: "menu.view",
 			Items: []ui.MenuItem{
-				{ID: "theme", Label: "Переключить тему (Dark / Light)", Icon: d.icons[0], Shortcut: "F2", Action: d.toggleTheme},
-				{ID: "frameless-controls", Label: "Переключить рамки контролов (SetFrameless)", Icon: d.icons[1], Action: func() {
+				{ID: "theme", LabelKey: "menu.view.theme", Icon: d.icons[0], Shortcut: "F2", Action: d.toggleTheme},
+				{ID: "lang", LabelKey: "menu.view.lang", Icon: d.icons[2], Shortcut: "F3", Action: d.toggleLanguage},
+				{ID: "frameless-controls", LabelKey: "menu.view.frameless", Icon: d.icons[1], Action: func() {
 					next := !d.framelessCtrlTgl.Value
 					d.framelessCtrlTgl.SetValue(next)
 					d.setFramelessControls(next)
 				}},
-				{ID: "rounded-controls", Label: "Переключить скругление углов (0px / 10px)", Icon: d.icons[2], Action: func() {
+				{ID: "rounded-controls", LabelKey: "menu.view.rounded", Icon: d.icons[2], Action: func() {
 					next := float32(10)
 					if d.radiusSlider != nil && d.radiusSlider.Value > 0 {
 						next = 0
@@ -97,60 +93,60 @@ func (d *demoApp) buildMenuBar() *ui.MenuBar {
 					}
 					d.setControlsCornerRadius(next)
 				}},
-				{ID: "autosize-controls", Label: "Авторазмер элементов под текст (SetAutoSize)", Icon: d.icons[3], Action: func() {
+				{ID: "autosize-controls", LabelKey: "menu.view.autosize", Icon: d.icons[3], Action: func() {
 					next := !d.autoSizeToggle.Value
 					d.autoSizeToggle.SetValue(next)
 					d.setControlsAutoSize(next)
 				}},
 				{Separator: true},
-				{ID: "scale-100", Label: "Масштаб DPI 1.0x", Action: func() { d.setDisplayScale(1.0) }},
-				{ID: "scale-125", Label: "Масштаб DPI 1.25x", Action: func() { d.setDisplayScale(1.25) }},
-				{ID: "scale-150", Label: "Масштаб DPI 1.5x", Action: func() { d.setDisplayScale(1.5) }},
-				{ID: "scale-200", Label: "Масштаб DPI 2.0x", Action: func() { d.setDisplayScale(2.0) }},
+				{ID: "scale-100", LabelKey: "menu.view.scale_100", Action: func() { d.setDisplayScale(1.0) }},
+				{ID: "scale-125", LabelKey: "menu.view.scale_125", Action: func() { d.setDisplayScale(1.25) }},
+				{ID: "scale-150", LabelKey: "menu.view.scale_150", Action: func() { d.setDisplayScale(1.5) }},
+				{ID: "scale-200", LabelKey: "menu.view.scale_200", Action: func() { d.setDisplayScale(2.0) }},
 			},
 		},
 		ui.MenuBarItem{
-			ID:    "window",
-			Label: "Окно и Трей",
+			ID:       "window",
+			LabelKey: "menu.window",
 			Items: []ui.MenuItem{
-				{ID: "win-frameless", Label: "Окно без стандартной рамки ОС (Window.SetFrameless)", Action: func() {
+				{ID: "win-frameless", LabelKey: "menu.window.frameless", Action: func() {
 					next := !d.winFramelessToggle.Value
 					d.winFramelessToggle.SetValue(next)
 					d.setWindowFrameless(next)
 				}},
-				{ID: "win-controls", Label: "Показать/скрыть кнопки окна ОС (SetWindowControls)", Action: func() {
+				{ID: "win-controls", LabelKey: "menu.window.controls", Action: func() {
 					next := !d.winControlsToggle.Value
 					d.winControlsToggle.SetValue(next)
 					d.setWindowControlsVisible(next)
 				}},
-				{ID: "win-min", Label: "Свернуть окно (Minimize)", Action: func() {
+				{ID: "win-min", LabelKey: "menu.window.minimize", Action: func() {
 					if d.window != nil {
 						d.window.Minimize()
 					}
 				}},
-				{ID: "win-max", Label: "Развернуть / Zoom (Maximize)", Action: func() {
+				{ID: "win-max", LabelKey: "menu.window.maximize", Action: func() {
 					if d.window != nil {
 						d.window.Maximize()
 					}
 				}},
 				{Separator: true},
-				{ID: "tray-toggle", Label: "Включить/выключить иконку в системном трее (SetTray)", Icon: d.icons[2], Action: func() {
+				{ID: "tray-toggle", LabelKey: "menu.window.tray", Icon: d.icons[2], Action: func() {
 					d.setTrayEnabled(!d.trayActive)
 				}},
-				{ID: "second-win", Label: "Открыть/закрыть дополнительное окно (App.NewWindow)", Icon: d.icons[1], Action: d.toggleSecondWindow},
+				{ID: "second-win", LabelKey: "menu.window.second", Icon: d.icons[1], Action: d.toggleSecondWindow},
 			},
 		},
 		ui.MenuBarItem{
-			ID:    "tools",
-			Label: "Инструменты",
+			ID:       "tools",
+			LabelKey: "menu.tools",
 			Items: []ui.MenuItem{
-				{ID: "selftest", Label: "Запустить самопроверку API", Icon: d.icons[2], Shortcut: "F5", Action: d.runSelfTests},
-				{ID: "stress", Label: "Стресс-тест вкл/выкл", Icon: d.icons[3], Shortcut: "F6", Action: func() {
+				{ID: "selftest", LabelKey: "menu.tools.selftest", Icon: d.icons[2], Shortcut: "F5", Action: d.runSelfTests},
+				{ID: "stress", LabelKey: "menu.tools.stress", Icon: d.icons[3], Shortcut: "F6", Action: func() {
 					d.setStressMode(!d.stressRunning.Load())
 				}},
-				{ID: "gc", Label: "Выполнить runtime.GC()", Shortcut: "Ctrl+G", Action: func() {
+				{ID: "gc", LabelKey: "menu.tools.gc", Shortcut: "Ctrl+G", Action: func() {
 					runtime.GC()
-					d.manager.Notify("Выполнен runtime.GC()")
+					d.manager.Notify("runtime.GC() executed")
 				}},
 			},
 		},
@@ -165,7 +161,7 @@ func (d *demoApp) buildUI() {
 		Role:        ui.RoleGroup,
 		Name:        "nativeForms Demo & Profiler Root",
 		Description: "Root container hosting MenuBar, all widget tabs, and live telemetry",
-		Language:    "ru",
+		Language:    d.manager.Locale(),
 	})
 
 	d.menuBar = d.buildMenuBar()
@@ -185,82 +181,88 @@ func (d *demoApp) buildUI() {
 	header.UIState().SetPreferredSize(ui.Vec2{Y: 50})
 	d.header = header
 
-	title := ui.NewLabel("nativeForms — Полное демо: ColorPicker, Скругления, Авторазмер, MenuBar, Трей и Профилировщик")
+	title := ui.NewLabelKey("shell.header_title")
 	title.Font = ui.FontSpec{Size: 16, Weight: 700}
 	title.Ellipsis = true
 	title.UIState().SetFlex(1)
 
-	btnTheme := ui.NewButton("Тема: Dark/Light (F2)", func() {
+	d.langSelect = ui.NewSegmentedControl([]ui.RadioOption{
+		{ID: "en", Label: "EN"},
+		{ID: "ru", Label: "RU"},
+	}, d.manager.Locale(), func(id string) {
+		d.setLanguage(id)
+	})
+	d.langSelect.SetLocaleSizePolicy(ui.LocaleSizeMaxEnvelope)
+	d.langSelect.SetTooltipKey("shell.tip_lang")
+
+	btnTheme := ui.NewButtonKey("shell.btn_theme", func() {
 		d.toggleTheme()
 	})
 	btnTheme.SetIcon(d.icons[0])
-	btnTheme.UIState().SetMinimumSize(ui.Vec2{X: 180})
-	btnTheme.UIState().SetTooltip("Переключить цветовую тему (SetTheme)")
+	btnTheme.SetTooltipKey("shell.tip_theme")
 
-	btnSelfTest := ui.NewButton("Авто-тест API (F5)", func() {
+	btnSelfTest := ui.NewButtonKey("shell.btn_selftest", func() {
 		d.runSelfTests()
 	})
 	btnSelfTest.SetIcon(d.icons[2])
-	btnSelfTest.UIState().SetMinimumSize(ui.Vec2{X: 170})
-	btnSelfTest.UIState().SetTooltip("Проверить корректность всех виджетов, ColorPicker, скруглений, авторазмера, MenuBar и виртуализации")
+	btnSelfTest.SetTooltipKey("shell.tip_selftest")
 
-	btnStress := ui.NewButton("Стресс-тест (F6)", func() {
+	btnStress := ui.NewButtonKey("shell.btn_stress", func() {
 		next := !d.stressRunning.Load()
 		d.setStressMode(next)
 	})
 	btnStress.SetIcon(d.icons[3])
-	btnStress.UIState().SetMinimumSize(ui.Vec2{X: 165})
-	btnStress.UIState().SetTooltip("Запустить/остановить автоматическую нагрузку на все вкладки для профилирования")
+	btnStress.SetTooltipKey("shell.tip_stress")
 
-	header.Add(title, btnTheme, btnSelfTest, btnStress)
+	header.Add(title, d.langSelect, btnTheme, btnSelfTest, btnStress)
 
 	d.tabs = ui.NewTabs([]ui.Tab{
 		{
 			ID:          "controls",
-			Title:       "1. Виджеты и Формы",
+			TitleKey:    "tab.controls",
 			Icon:        d.icons[0],
 			NonClosable: true,
 			Content:     d.buildControlsTab(),
 		},
 		{
 			ID:          "editor",
-			Title:       "2. CodeEditor и Текст",
+			TitleKey:    "tab.editor",
 			Icon:        d.icons[1],
 			NonClosable: true,
 			Content:     d.buildEditorTab(),
 		},
 		{
 			ID:          "virtual",
-			Title:       "3. Виртуализация и Логи",
+			TitleKey:    "tab.virtual",
 			Icon:        d.icons[2],
 			NonClosable: true,
 			Content:     d.buildVirtualTab(),
 		},
 		{
 			ID:          "popups",
-			Title:       "4. Попапы, Трей, Окно и ОС",
+			TitleKey:    "tab.popups",
 			Icon:        d.icons[3],
 			NonClosable: true,
 			Content:     d.buildPopupsAndPlatformTab(),
 		},
 		{
 			ID:          "profiler",
-			Title:       "5. Профилирование CPU/RAM",
+			TitleKey:    "tab.profiler",
 			Icon:        d.icons[1],
 			NonClosable: true,
 			Content:     d.buildProfilerTab(),
 		},
 	}, "controls", func(selected string) {
 		if !d.stressRunning.Load() {
-			d.logf("Выбрана вкладка: %s", selected)
+			d.logf("Tab selected: %s", selected)
 		}
 	})
 	d.tabs.UIState().SetFlex(1)
 	d.tabs.OnReorder = func(id string, index int) {
-		d.logf("Вкладка %q перемещена на позицию %d", id, index)
+		d.logf("Tab %q moved to index %d", id, index)
 	}
 	d.tabs.OnCloseRequest = func(id string) bool {
-		d.logf("Закрытие динамической вкладки %q", id)
+		d.logf("Closing dynamic tab %q", id)
 		return true
 	}
 
@@ -275,7 +277,7 @@ func (d *demoApp) buildUI() {
 	footer.UIState().SetPreferredSize(ui.Vec2{Y: 36})
 	d.footer = footer
 
-	d.statusLabel = ui.NewLabel("Status: Готово. Нажмите F2 для смены темы, F5 для самопроверки или F6 для стресс-теста.")
+	d.statusLabel = ui.NewLabelKey("shell.status_ready")
 	d.statusLabel.Ellipsis = true
 	d.statusLabel.UIState().SetFlex(1)
 
@@ -291,6 +293,38 @@ func (d *demoApp) buildUI() {
 	d.updateEditorInfo()
 }
 
+func (d *demoApp) setLanguage(locale string) {
+	if locale != "en" && locale != "ru" {
+		locale = "en"
+	}
+	if d.manager.Locale() == locale {
+		return
+	}
+	d.manager.SetLocale(locale)
+	if d.subMgr != nil {
+		d.subMgr.RefreshLocale()
+	}
+	if d.langSelect != nil && d.langSelect.SelectedID != locale {
+		d.langSelect.SetSelected(locale)
+	}
+	d.mu.Lock()
+	d.card1Cache, d.card2Cache, d.card3Cache = throttledText{}, throttledText{}, throttledText{}
+	d.mu.Unlock()
+	d.updateEditorInfo()
+	if d.trayActive && d.app != nil {
+		d.setTrayEnabled(true)
+	}
+	d.logf("Locale switched to %q (LanguageManager)", locale)
+}
+
+func (d *demoApp) toggleLanguage() {
+	if d.manager.Locale() == "ru" {
+		d.setLanguage("en")
+	} else {
+		d.setLanguage("ru")
+	}
+}
+
 func (d *demoApp) setDisplayScale(scale float32) {
 	if !(scale > 0 && scale <= 8) {
 		scale = 1
@@ -302,7 +336,7 @@ func (d *demoApp) setDisplayScale(scale float32) {
 			d.comboBox.SetSelected(id)
 		}
 	}
-	d.logf("Масштаб DPI (DisplayScale): %.3fx", scale)
+	d.logf("DisplayScale: %.3fx", scale)
 }
 
 func (d *demoApp) setFramelessControls(frameless bool) {
@@ -311,7 +345,7 @@ func (d *demoApp) setFramelessControls(frameless bool) {
 			comp.UIState().SetFrameless(frameless)
 		}
 	}
-	d.logf("Режим контролов без рамок (State.SetFrameless): %v", frameless)
+	d.logf("State.SetFrameless: %v", frameless)
 }
 
 func (d *demoApp) setControlsCornerRadius(radius float32) {
@@ -327,7 +361,7 @@ func (d *demoApp) setControlsCornerRadius(radius float32) {
 	} else {
 		d.manager.SetTheme(d.darkTheme)
 	}
-	d.logf("Скругление углов элементов (SetCornerRadius): %.0f px", radius)
+	d.logf("SetCornerRadius: %.0f px", radius)
 }
 
 func (d *demoApp) setControlsAutoSize(enabled bool) {
@@ -339,7 +373,7 @@ func (d *demoApp) setControlsAutoSize(enabled bool) {
 			}
 		}
 	}
-	d.logf("Автоматический размер под текст (SetAutoSize / SizeToText): %v", enabled)
+	d.logf("SetAutoSize / SizeToText: %v", enabled)
 }
 
 func (d *demoApp) applyPickedAccentColor(c ui.Color) {
@@ -365,7 +399,7 @@ func (d *demoApp) applyPickedAccentColor(c ui.Color) {
 		d.manager.SetTheme(d.darkTheme)
 	}
 	if !d.stressRunning.Load() {
-		d.logf("ColorPicker выбрал акцентный цвет: %s", c.HexAlpha())
+		d.logf("ColorPicker accent color: %s", c.HexAlpha())
 	}
 }
 
@@ -374,20 +408,24 @@ func (d *demoApp) openDynamicTab() {
 	content := ui.NewStack(ui.Vertical, 8)
 	content.Padding = ui.All(16)
 	var nonClosable bool
-	content.Add(
-		ui.NewLabel(fmt.Sprintf("Динамическая вкладка %s (можно перетаскивать заголовок или закрыть крестиком ×)", id)),
-		ui.NewButton("Пометить вкладку изменённой (SetDirty)", func() {
-			d.tabs.SetDirty(id, true)
-		}),
-		ui.NewButton("Переключить запрет закрытия (SetNonClosable)", func() {
-			nonClosable = !nonClosable
-			d.tabs.SetNonClosable(id, nonClosable)
-			d.logf("Tabs.SetNonClosable(%s, %v)", id, nonClosable)
-		}),
-	)
+	infoLbl := ui.NewLabel("")
+	infoLbl.SetOnLocaleChange(func(lm *ui.LanguageManager) {
+		infoLbl.SetText(lm.Trf("tab.dyn_info", id))
+	})
+	btnDirty := ui.NewButton("", func() {
+		d.tabs.SetDirty(id, true)
+	})
+	btnDirty.SetTextKey("tab.dyn_dirty")
+	btnLock := ui.NewButton("", func() {
+		nonClosable = !nonClosable
+		d.tabs.SetNonClosable(id, nonClosable)
+		d.logf("Tabs.SetNonClosable(%s, %v)", id, nonClosable)
+	})
+	btnLock.SetTextKey("tab.dyn_lock")
+	content.Add(infoLbl, btnDirty, btnLock)
 	d.tabs.Open(ui.Tab{
 		ID:      id,
-		Title:   "Вкладка " + id,
+		Title:   d.trf("tab.dyn_title", id),
 		Icon:    d.icons[2],
 		Content: content,
 		Dirty:   true,
@@ -399,6 +437,11 @@ func (d *demoApp) registerShortcuts() {
 		Key:          ui.KeyF2,
 		AllowInModal: true,
 		Action:       d.toggleTheme,
+	})
+	d.manager.AddShortcut(ui.Shortcut{
+		Key:          ui.KeyF3,
+		AllowInModal: true,
+		Action:       d.toggleLanguage,
 	})
 	d.manager.AddShortcut(ui.Shortcut{
 		Key:          ui.KeyF5,
@@ -424,7 +467,7 @@ func (d *demoApp) registerShortcuts() {
 		Mods: ui.ModControl,
 		Action: func() {
 			runtime.GC()
-			d.manager.Notify("Выполнен runtime.GC()")
+			d.manager.Notify("runtime.GC() executed")
 		},
 	})
 }
@@ -434,10 +477,10 @@ func (d *demoApp) toggleTheme() {
 	if d.isLight {
 		d.codeEditor.Palette = lightSyntaxPalette()
 		d.manager.SetTheme(d.lightTheme)
-		d.logf("Установлена светлая тема (Light Theme)")
+		d.logf("Theme switched to Light Theme")
 	} else {
 		d.codeEditor.Palette = darkSyntaxPalette()
 		d.manager.SetTheme(d.darkTheme)
-		d.logf("Установлена тёмная тема (Dark Theme)")
+		d.logf("Theme switched to Dark Theme")
 	}
 }

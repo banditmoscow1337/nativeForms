@@ -55,9 +55,16 @@ type State struct {
 	onEvent         func(Event) bool
 	contextMenu     []MenuItem
 	contextMenuFunc func(x, y float32) []MenuItem
-	tooltip         string
-	accessibleID    AccessibleID
-	accessibility   AccessibilityInfo
+	tooltip          string
+	textKey          string
+	tooltipKey       string
+	placeholderKey   string
+	localeSizePolicy LocaleSizePolicy
+	baseMinSize      Vec2
+	baseMinCaptured  bool
+	onLocaleChange   func(*LanguageManager)
+	accessibleID     AccessibleID
+	accessibility    AccessibilityInfo
 }
 
 func (state *State) UIState() *State { return state }
@@ -202,6 +209,9 @@ func (state *State) Add(children ...Component) {
 		bindTree(child, state.owner, state.manager)
 		if state.themed {
 			applyTheme(child, state.theme)
+		}
+		if state.manager != nil && state.manager.lang != nil {
+			applyLocale(child, state.manager.lang)
 		}
 	}
 	if state.manager != nil {
